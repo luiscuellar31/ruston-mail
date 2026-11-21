@@ -410,37 +410,26 @@ pub struct LocalCache {
 }
 
 impl LocalCache {
-    /// Opens the cache of the account saved under `profile`. Only a session
-    /// saved before its account ID was recorded needs Proton: it is resumed
-    /// once, which records the ID for next time.
-    pub async fn open(profile: &str) -> Result<Self> {
+    /// Opens the cache of the account saved under `profile`, which the
+    /// saved session names, without asking Proton.
+    pub fn open(profile: &str) -> Result<Self> {
         validate_profile_name(profile)?;
         let store = KeyringStore::new(profile.to_owned());
-        let saved = Self::open_saved(&Paths::system()?, &store, profile, |identity| {
+        Self::open_saved(&Paths::system()?, &store, profile, |identity| {
             Cache::default_account_path(profile, identity)
-        })?;
-        match saved {
-            Some(cache) => Ok(cache),
-            None => Ok(Self {
-                cache: Client::resume(profile).await?.open_cache()?,
-            }),
-        }
+        })
     }
 
-    /// `None` when the saved session does not name its account.
     fn open_saved(
         paths: &Paths,
         store: &dyn SecretStore,
         profile: &str,
         path: impl FnOnce(&CacheIdentity) -> Result<PathBuf>,
-    ) -> Result<Option<Self>> {
+    ) -> Result<Self> {
         let loaded = Session::load(paths, profile, store)?.ok_or(Error::Unauthorized)?;
-        let Some(user_id) = loaded.session.user_id.as_deref() else {
-            return Ok(None);
-        };
-        let identity = CacheIdentity::new(&loaded.session.base_url, user_id)?;
+        let identity = CacheIdentity::new(&loaded.session.base_url, &loaded.session.user_id)?;
         let cache = Cache::open_for_account(&path(&identity)?, &identity)?;
-        Ok(Some(Self { cache }))
+        Ok(Self { cache })
     }
 
     /// One page of a folder, with how many cached messages it holds: unread

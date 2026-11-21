@@ -626,7 +626,7 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
             base_url: base_url.into(),
             password_mode: 1,
             user_agent: None,
-            user_id: None,
+            user_id: "user-1".into(),
         };
         let tokens = Tokens {
             uid: "UID1".into(),

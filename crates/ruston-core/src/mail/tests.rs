@@ -65,7 +65,7 @@ async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Cl
         base_url: base_url.into(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,
@@ -369,7 +369,7 @@ async fn old_logout_preserves_a_replacement_session_in_the_same_profile() {
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &client.paths,

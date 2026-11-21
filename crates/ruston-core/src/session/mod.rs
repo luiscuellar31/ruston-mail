@@ -78,10 +78,8 @@ pub struct Session {
     /// The `User-Agent` its requests send, when sign-in was given one.
     pub user_agent: Option<String>,
     /// The account's user ID, which names its local cache, so the cache can
-    /// be opened without asking Proton. Sessions saved before it was recorded
-    /// have none until they are next resumed.
-    #[serde(default)]
-    pub user_id: Option<String>,
+    /// be opened without asking Proton.
+    pub user_id: String,
 }
 
 /// A saved session read back whole: its file and its secrets.
@@ -260,25 +258,6 @@ impl Session {
             let _ = std::fs::remove_file(&temporary);
         }
         written
-    }
-
-    /// Records the account's user ID in the saved metadata of session `uid`,
-    /// once it is known. Leaves a later login in the same profile alone.
-    pub(crate) fn record_user_id(
-        paths: &Paths,
-        profile: &str,
-        uid: &str,
-        user_id: &str,
-    ) -> Result<()> {
-        let _lock = Self::lock(paths, profile)?;
-        let Some(mut session) = Self::read_metadata(paths, profile)? else {
-            return Ok(());
-        };
-        if session.uid != uid || session.user_id.as_deref() == Some(user_id) {
-            return Ok(());
-        }
-        session.user_id = Some(user_id.to_owned());
-        session.write_metadata(paths, profile)
     }
 
     /// Saves the pair of tokens a refresh issued, and nothing else of the

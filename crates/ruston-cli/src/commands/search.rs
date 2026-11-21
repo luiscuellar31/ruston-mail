@@ -20,9 +20,7 @@ pub async fn index(ctx: &Ctx, folder: String, max_pages: u32, page_size: u32) ->
 }
 
 pub async fn search(ctx: &Ctx, query: String, limit: u32) -> Result<()> {
-    let msgs = LocalCache::open(&ctx.profile)
-        .await?
-        .search(&query, limit)?;
+    let msgs = LocalCache::open(&ctx.profile)?.search(&query, limit)?;
     render::messages_list(ctx.json, msgs.len() as u32, &msgs);
     Ok(())
 }

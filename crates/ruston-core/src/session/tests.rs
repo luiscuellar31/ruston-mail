@@ -71,7 +71,7 @@ fn a_session_counts_as_saved_by_its_metadata_alone() {
         base_url: crate::DEFAULT_BASE_URL.into(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,
@@ -243,7 +243,7 @@ fn stored_names_and_formats_stay_as_they_are() {
         written,
         serde_json::json!({
             "uid": "UID1", "app_version": "Other", "base_url": "https://mail.proton.me/api",
-            "password_mode": 1, "user_agent": null, "user_id": null
+            "password_mode": 1, "user_agent": null, "user_id": "user-1"
         })
     );
     for (key, value) in [
@@ -308,7 +308,7 @@ fn a_login_whose_token_write_fails_leaves_no_earlier_tokens_behind() {
         base_url: base_url.into(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     };
     let tokens = |uid: &str| Tokens {
         uid: uid.into(),
@@ -364,7 +364,7 @@ fn metadata(uid: &str, base_url: &str) -> Session {
         base_url: base_url.into(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
 }
 
@@ -459,7 +459,7 @@ fn session_metadata_requires_password_mode() {
         base_url: "https://mail.proton.me/api".into(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     };
     let current = serde_json::to_value(session).unwrap();
     let mut incomplete = current;
@@ -468,27 +468,25 @@ fn session_metadata_requires_password_mode() {
 }
 
 #[test]
-fn sessions_saved_by_other_versions_still_load() {
+fn a_later_version_s_session_loads_and_one_without_its_account_does_not() {
     let base = unique_base();
     let paths = Paths::with_base(&base);
     let store = MemoryStore::new();
     let session = saved_session("https://mail.proton.me/api", &paths, &store);
 
-    // Written before the account ID was recorded.
-    let mut older = serde_json::to_value(&session).unwrap();
-    older.as_object_mut().unwrap().remove("user_id");
-    std::fs::write(paths.metadata_file("default"), older.to_string()).unwrap();
-    let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-    assert_eq!(loaded.session.uid, "UID1");
-    assert_eq!(loaded.session.user_id, None);
-
     // Written by a later version, with a field this one does not know.
     let mut newer = serde_json::to_value(&session).unwrap();
-    newer["user_id"] = "user-1".into();
     newer["recorded_by_a_later_version"] = true.into();
     std::fs::write(paths.metadata_file("default"), newer.to_string()).unwrap();
     let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-    assert_eq!(loaded.session.user_id.as_deref(), Some("user-1"));
+    assert_eq!(loaded.session.uid, "UID1");
+    assert_eq!(loaded.session.user_id, "user-1");
+
+    // Without the account it belongs to, as before 0.8.0, it is no session.
+    let mut older = serde_json::to_value(&session).unwrap();
+    older.as_object_mut().unwrap().remove("user_id");
+    std::fs::write(paths.metadata_file("default"), older.to_string()).unwrap();
+    assert!(Session::load(&paths, "default", &store).unwrap().is_none());
     std::fs::remove_dir_all(base).unwrap();
 }
 
@@ -499,15 +497,10 @@ fn metadata_that_is_no_session_is_ignored_but_a_failed_read_is_an_error() {
     let store = MemoryStore::new();
     saved_session("https://mail.proton.me/api", &paths, &store);
 
-    // Metadata that is not a session: there is none to resume, no ID is
-    // recorded into it, and its secrets are still cleared.
+    // Metadata that is not a session: there is none to resume, and its
+    // secrets are still cleared.
     std::fs::write(paths.metadata_file("default"), b"not json").unwrap();
     assert!(Session::load(&paths, "default", &store).unwrap().is_none());
-    Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
-    assert_eq!(
-        std::fs::read(paths.metadata_file("default")).unwrap(),
-        b"not json"
-    );
     Session::clear_if_current(&paths, "default", &store, "UID1").unwrap();
     assert!(store.get(K_TOKENS).unwrap().is_none());
 
@@ -515,44 +508,7 @@ fn metadata_that_is_no_session_is_ignored_but_a_failed_read_is_an_error() {
     let _ = std::fs::remove_file(paths.metadata_file("default"));
     std::fs::create_dir(paths.metadata_file("default")).unwrap();
     assert!(Session::load(&paths, "default", &store).is_err());
-    assert!(Session::record_user_id(&paths, "default", "UID1", "user-1").is_err());
     assert!(Session::clear_if_current(&paths, "default", &store, "UID1").is_err());
-    std::fs::remove_dir_all(base).unwrap();
-}
-
-#[test]
-fn the_account_id_is_recorded_only_for_the_session_it_belongs_to() {
-    let base = unique_base();
-    let paths = Paths::with_base(&base);
-    let store = MemoryStore::new();
-    saved_session("https://mail.proton.me/api", &paths, &store);
-
-    // A later login replaced the session: its file is left alone.
-    Session::record_user_id(&paths, "default", "OTHER-UID", "user-2").unwrap();
-    let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-    assert_eq!(loaded.session.user_id, None);
-
-    Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
-    let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
-    assert_eq!(loaded.session.user_id.as_deref(), Some("user-1"));
-    // Everything else, and the secrets, are as they were.
-    assert_eq!(loaded.session.uid, "UID1");
-    assert_eq!(loaded.tokens.access.expose_secret(), "acc");
-    assert_eq!(loaded.skp.expose_secret(), "skp");
-
-    // The file is replaced whole, with its permissions kept.
-    assert!(!paths.metadata_temp_file("default").exists());
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let file = std::fs::metadata(paths.metadata_file("default")).unwrap();
-        assert_eq!(file.permissions().mode() & 0o777, 0o600);
-    }
-
-    // Nothing to record without a saved session.
-    Session::clear(&paths, "default", &store).unwrap();
-    Session::record_user_id(&paths, "default", "UID1", "user-1").unwrap();
-    assert!(!paths.metadata_file("default").exists());
     std::fs::remove_dir_all(base).unwrap();
 }
 

@@ -290,7 +290,7 @@ impl Client {
             base_url: base_url.to_owned(),
             password_mode: login.password_mode,
             user_agent: opts.user_agent.clone(),
-            user_id: Some(user_id),
+            user_id,
         };
         let paths = Paths::system()?;
         let (saved_in, profile, tokens) =
@@ -340,23 +340,11 @@ impl Client {
 
         let (user, addresses) = account(&http).await?;
         let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
-        let user_id = user.id.clone();
         let skp = loaded.skp;
         let keys = off_thread(move || {
             crypto::keys::unlock_with_skp(&crypto::provider(), &user, &addresses, &skp)
         })
         .await?;
-        if loaded.session.user_id.as_deref() != Some(user_id.as_str()) {
-            // A session saved without its account ID records it now, so its
-            // cache opens offline next time. Nothing else depends on it.
-            let (paths, profile) = (paths.clone(), profile.to_owned());
-            let uid = loaded.session.uid.clone();
-            let recorded =
-                off_thread(move || Session::record_user_id(&paths, &profile, &uid, &user_id)).await;
-            if let Err(error) = recorded {
-                tracing::debug!(target: "ruston_core::mail", %error, "resume: account ID not recorded");
-            }
-        }
 
         Ok(Client {
             http,

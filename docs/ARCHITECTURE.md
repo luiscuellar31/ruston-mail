@@ -1368,10 +1368,8 @@ skips `open_cache`: it opens an existing account database read-only, creating,
 migrating, binding and tightening nothing, refuses a symlink, a folder others
 could write and another account's database, and answers `None` when there is
 none, so a program that keeps no mail on disk can search an index the CLI
-built. SQLite runs on the blocking pool there. A session saved before the ID was kept is
-resumed once instead, which records it. Metadata writes replace the file with
-one rename under the profile lock, and a resume records the ID only for the
-session it loaded. It selects
+built. SQLite runs on the blocking pool there. Metadata writes replace the file with
+one rename under the profile lock. It selects
 `accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
 the complete account identity stored in SQLite before using the database. A
 test pins the identity's JSON and the file name it yields: changing either

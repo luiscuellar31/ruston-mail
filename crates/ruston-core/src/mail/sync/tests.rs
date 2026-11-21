@@ -171,14 +171,14 @@ fn a_saved_account_s_cache_opens_without_contacting_proton() {
     builder.create(&cache_dir).unwrap();
     let paths = Paths::with_base(base.join("config"));
     let store = MemoryStore::new();
-    let save = |user_id: Option<&str>| {
+    let save = |user_id: &str| {
         let session = Session {
             uid: "UID1".into(),
             app_version: "Other".into(),
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
             user_agent: None,
-            user_id: user_id.map(str::to_owned),
+            user_id: user_id.into(),
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -206,18 +206,15 @@ fn a_saved_account_s_cache_opens_without_contacting_proton() {
 
     // Signed out, there is no account to read.
     assert!(matches!(open(), Err(Error::Unauthorized)));
-    // A session saved before its account ID was kept is resumed once.
-    save(None);
-    assert!(open().unwrap().is_none());
-    // With the ID, the cache opens and reads without a single request.
-    save(Some("user-1"));
-    let cache = open().unwrap().unwrap();
+    // Signed in, the cache opens and reads without a single request.
+    save("user-1");
+    let cache = open().unwrap();
     let (total, messages) = cache.messages_page("inbox", false, 0, 25).unwrap();
     assert_eq!((total, messages.len()), (0, 0));
     assert!(cache.search("anything", 10).unwrap().is_empty());
     drop(cache);
     // The database stays bound to the account that first opened it.
-    save(Some("user-2"));
+    save("user-2");
     assert!(matches!(open(), Err(Error::Cache(_))));
 
     std::fs::remove_dir_all(base).unwrap();
