@@ -84,6 +84,22 @@ impl KeyPress {
             other_modifier: false,
         }
     }
+
+    /// Whether this key leaves Settings: the one that backs out of what is
+    /// on top, or the one that opens them. The window asks before leaving
+    /// unapplied changes, and reads it here so that it asks for every key
+    /// the mailbox takes to leave.
+    pub fn leaves_settings(self) -> bool {
+        matches!(
+            shortcut(self),
+            Some(Shortcut::Dismiss | Shortcut::ToggleSettings)
+        )
+    }
+
+    /// Whether this key opens the selected conversation.
+    pub fn opens_conversation(self) -> bool {
+        shortcut(self) == Some(Shortcut::Open)
+    }
 }
 
 impl App {
@@ -207,6 +223,38 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_window_reads_what_a_key_means_from_the_same_table() {
+        let (plain, command) = (KeyPress::plain, KeyPress::with_command);
+        // What leaves Settings, which the window asks about first.
+        assert!(plain(Key::Escape).leaves_settings());
+        assert!(command(Key::Character(',')).leaves_settings());
+        assert!(!plain(Key::Character(',')).leaves_settings());
+        assert!(!command(Key::Escape).leaves_settings());
+        // What opens a conversation, which a narrow window then shows.
+        assert!(plain(Key::Enter).opens_conversation());
+        assert!(!command(Key::Enter).opens_conversation());
+        let held = KeyPress {
+            other_modifier: true,
+            ..plain(Key::Enter)
+        };
+        assert!(!held.opens_conversation());
+        // Neither can drift from the mailbox: a key it takes to back out
+        // leaves Settings, whichever key that comes to be.
+        for key in [Key::Escape, Key::Enter, Key::Delete, Key::Character('j')] {
+            for press in [plain(key), command(key)] {
+                assert_eq!(
+                    press.leaves_settings(),
+                    matches!(
+                        shortcut(press),
+                        Some(Shortcut::Dismiss | Shortcut::ToggleSettings)
+                    ),
+                    "{press:?}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn keys_map_to_mailbox_shortcuts() {

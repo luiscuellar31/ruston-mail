@@ -272,10 +272,7 @@ impl DesktopApp {
         }
         let message = if self.app.showing_settings() {
             match message {
-                Message::KeyPressed(press)
-                    if (press.key == Key::Escape && !press.command && !press.other_modifier)
-                        || (press.key == Key::Character(',') && press.command) =>
-                {
+                Message::KeyPressed(press) if press.leaves_settings() => {
                     Message::ShowSettings(false)
                 }
                 other => other,
@@ -355,9 +352,7 @@ impl DesktopApp {
         let compact_destination = match &message {
             Message::SelectFolder(_) => Some(mailbox::CompactView::Mail),
             Message::SelectConversation(_) => Some(mailbox::CompactView::Reader),
-            Message::KeyPressed(press)
-                if press.key == Key::Enter && !press.command && !press.other_modifier =>
-            {
+            Message::KeyPressed(press) if press.opens_conversation() => {
                 Some(mailbox::CompactView::Reader)
             }
             _ => None,
