@@ -1556,6 +1556,9 @@ struct Sight {
     heights: BlockHeights,
     /// Whether everything is laid out: for a screen reader, which reads what
     /// is out of sight too, and while the keyboard moves among the links.
+    /// Not while it types in a field: the keys go there, and the message
+    /// behind would be laid out whole at each one and each blink of the
+    /// cursor.
     all: bool,
     /// What a height depends on besides the block: the width it wraps in,
     /// the scale, and the choices in Settings that change what shows.
@@ -1583,7 +1586,7 @@ impl Sight {
                 data.get_temp_mut_or_default::<BlockHeights>(egui::Id::NULL)
                     .clone()
             }),
-            all: ui.memory(|memory| memory.focused().is_some())
+            all: (ui.memory(|memory| memory.focused().is_some()) && !ui.ctx().text_edit_focused())
                 || ui
                     .ctx()
                     .accesskit_node_builder(ui.unique_id(), |_| ())

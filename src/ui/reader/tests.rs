@@ -2779,3 +2779,37 @@ fn textures_go_with_the_pictures_the_app_no_longer_keeps() {
     forget_textures(&context, &HashMap::new());
     assert_eq!(kept(&context), 0);
 }
+
+#[test]
+fn typing_in_another_field_does_not_lay_the_whole_message_out() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Whether a message drawn under a field and a button is laid out whole,
+    // once the focus has settled where `focus` puts it.
+    let whole = |focus: Option<bool>| {
+        let mut whole = false;
+        for _ in 0..3 {
+            context
+                .run_ui(egui::RawInput::default(), |ui| {
+                    let mut typed = String::new();
+                    let field = ui.add(egui::TextEdit::singleline(&mut typed).id_salt("search"));
+                    let button = ui.button("Archive");
+                    match focus {
+                        Some(true) => field.request_focus(),
+                        Some(false) => button.request_focus(),
+                        None => ui.memory_mut(|memory| memory.surrender_focus(button.id)),
+                    }
+                    whole = Sight::new(ui, Reading::default()).all;
+                })
+                .drop_without_applying_deltas();
+        }
+        whole
+    };
+    assert!(!whole(None));
+    // Focus on a button may move into the message with Tab, which reaches
+    // only what is laid out.
+    assert!(whole(Some(false)));
+    // The cursor in the search field blinks and takes every key: the message
+    // behind it stays as it was.
+    assert!(!whole(Some(true)));
+}
