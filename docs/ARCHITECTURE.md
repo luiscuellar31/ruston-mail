@@ -534,7 +534,10 @@ once a message uncovers it, `App::update` marks the conversation opened behind
 the draft, if it is still the open one. Core's
 [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) converts sanitized
 HTML into the rich-body model both apps draw, which the desktop adapter keeps
-as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
+as `MessageBody::Rich`. Before it builds a tree, the sanitizer counts what the
+tree would cost, a step for each element open around each tag, and keeps a
+body over the limit (`MAX_TREE_WORK`) as its text alone, since elements opened
+tens of thousands deep would take seconds to parse. The sanitizer keeps, of styles, only `display` and
 `visibility`, and the `hidden` attribute, so `html::hides` can tell text the
 sender hid: the model keeps it, marked on its spans and blocks, and an
 element of the same name within the hidden one does not end it. It also keeps

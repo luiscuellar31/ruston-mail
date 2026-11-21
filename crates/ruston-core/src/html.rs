@@ -74,8 +74,97 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
 /// Image tags may remain; renderers decide whether to display or fetch them.
 /// Links keep only http, https and mailto URLs. What hides text the sender
 /// hid stays, for the readers to tell.
+///
+/// A body whose markup would cost too much to build a tree of, as elements
+/// opened tens of thousands deep do, is kept as its text alone: its words
+/// stay, with their line breaks, and its markup goes.
 pub fn sanitize(html: &str) -> String {
+    if tree_work(html) > MAX_TREE_WORK {
+        return escape_text(&to_text(html)).replace('\n', "<br>");
+    }
     SANITIZER.clean(html).to_string()
+}
+
+/// The most the tree of a body may cost to build, in the steps [`tree_work`]
+/// counts. The parser walks the elements open around a tag for each tag it
+/// reads, so a body that opens `<div>` forty thousand times over takes
+/// eight hundred million steps, and seconds. A newsletter of a megabyte
+/// takes about a million.
+const MAX_TREE_WORK: usize = 20_000_000;
+
+/// What building the tree of `html` costs: for each tag, one step for every
+/// element still open around it. It counts no fewer elements open than the
+/// parser keeps, apart from the few it adds unasked, such as a table's body
+/// and rows: a tag closes an element only where the parser surely does.
+fn tree_work(html: &str) -> usize {
+    let tokenizer = Tokenizer::new(WorkSink::default(), TokenizerOpts::default());
+    let input = BufferQueue::default();
+    input.push_back(StrTendril::from_slice(html));
+    let _ = tokenizer.feed(&input);
+    tokenizer.end();
+    tokenizer.sink.work.get()
+}
+
+/// Elements a sender may leave open: the next of the same name closes one,
+/// and so does the end of what holds them, so a run of them is no deeper
+/// than one.
+const CLOSED_BY_THEIR_NEXT: &[&str] = &[
+    "dd", "dt", "li", "optgroup", "option", "p", "rp", "rt", "tbody", "td", "tfoot", "th", "thead",
+    "tr",
+];
+
+#[derive(Default)]
+struct WorkSink {
+    open: RefCell<Vec<html5ever::LocalName>>,
+    work: std::cell::Cell<usize>,
+}
+
+impl TokenSink for WorkSink {
+    type Handle = ();
+
+    fn process_token(&self, token: Token, _line_number: u64) -> TokenSinkResult<()> {
+        let Token::TagToken(tag) = token else {
+            return TokenSinkResult::Continue;
+        };
+        let mut open = self.open.borrow_mut();
+        self.work.set(self.work.get().saturating_add(open.len()));
+        let name = &*tag.name;
+        match tag.kind {
+            TagKind::StartTag => {
+                if CLOSED_BY_THEIR_NEXT.contains(&name) {
+                    close(&mut open, &tag.name);
+                }
+                if !VOID_ELEMENTS.contains(&name) {
+                    open.push(tag.name.clone());
+                }
+                match name {
+                    "script" => TokenSinkResult::RawData(RawKind::ScriptData),
+                    "style" => TokenSinkResult::RawData(RawKind::Rawtext),
+                    "title" | "textarea" => TokenSinkResult::RawData(RawKind::Rcdata),
+                    _ => TokenSinkResult::Continue,
+                }
+            }
+            TagKind::EndTag => {
+                close(&mut open, &tag.name);
+                TokenSinkResult::Continue
+            }
+        }
+    }
+}
+
+/// Closes the nearest open `name`, with what is open inside it, when that is
+/// only elements a sender may leave open. Under anything else it stays open:
+/// the parser may keep it, as it keeps a `div` whose end comes inside a table.
+fn close(open: &mut Vec<html5ever::LocalName>, name: &html5ever::LocalName) {
+    for index in (0..open.len()).rev() {
+        if open[index] == *name {
+            open.truncate(index);
+            return;
+        }
+        if !CLOSED_BY_THEIR_NEXT.contains(&&*open[index]) {
+            return;
+        }
+    }
 }
 
 /// Elements whose content is never read.
@@ -541,6 +630,40 @@ fn link_target(tag: &Tag) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markup_too_costly_to_build_is_kept_as_its_text() {
+        // Every tag makes the parser walk the elements open around it, so
+        // forty thousand of them, one inside the other, took seconds.
+        let hostile = format!("{}first<br>second &amp; third", "<div>".repeat(40_000));
+        assert!(tree_work(&hostile) > MAX_TREE_WORK);
+        assert_eq!(sanitize(&hostile), "first<br>second &amp; third");
+        // A deep run that stays shallow for long is counted too, and so is
+        // what an end tag in the wrong place leaves open.
+        let tail = format!("{}{}", "<div>".repeat(4_000), "<p>x".repeat(5_100));
+        assert!(tree_work(&tail) > MAX_TREE_WORK);
+        for left_open in ["<div><table><td></div>", "<b><div></b>", "<p><button></p>"] {
+            let nested = left_open.repeat(20_000);
+            assert!(tree_work(&nested) > MAX_TREE_WORK, "{left_open}");
+        }
+
+        // What real mail nests and repeats is built as before: elements
+        // closed in order, and those HTML lets a sender leave open.
+        let deep = format!("{}deep{}", "<div>".repeat(4_096), "</div>".repeat(4_096));
+        assert!(sanitize(&deep).starts_with("<div><div>"));
+        for unclosed in [
+            "<p>line<p>next<li>item<li>more<tr><td>cell<td>next<br>",
+            "<ul><li>one<li>two</ul><p>after",
+            "<table><tr><td>a<td>b<tr><td>c</table>",
+            "<div><p>open</div>",
+        ] {
+            let body = unclosed.repeat(20_000);
+            assert!(tree_work(&body) < MAX_TREE_WORK / 10, "{unclosed}");
+        }
+        let newsletter = "<table><tr><td><p><b>word</b></p></td></tr></table>".repeat(20_000);
+        assert!(tree_work(&newsletter) < MAX_TREE_WORK / 10);
+        assert!(sanitize(&newsletter).contains("<b>word</b>"));
+    }
 
     #[test]
     fn a_drawing_goes_with_everything_in_it() {
