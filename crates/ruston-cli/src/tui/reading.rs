@@ -331,13 +331,18 @@ fn web_links(text: &str) -> Vec<String> {
             .unwrap_or(rest.len());
         from = start + end.max(1);
         let mut address = &rest[..end];
+        // Counted once: counting again at each bracket taken off would cost
+        // the square of a run of them, which a sender can make as long as
+        // the body.
+        let opening = address.matches('(').count();
+        let mut closing = address.matches(')').count();
         while let Some(last) = address.chars().last() {
             // A closing bracket ends the address unless it closes one of its own.
-            let unopened =
-                last == ')' && address.matches('(').count() < address.matches(')').count();
+            let unopened = last == ')' && opening < closing;
             if !(unopened || matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | ']' | '}' | '*')) {
                 break;
             }
+            closing -= usize::from(last == ')');
             address = &address[..address.len() - last.len_utf8()];
         }
         if !(address.starts_with("http://") || address.starts_with("https://")) {
@@ -663,6 +668,17 @@ mod tests {
                 "https://en.wikipedia.org/wiki/Rust_(programming_language)",
             ]
         );
+    }
+
+    #[test]
+    fn a_long_run_of_brackets_after_an_address_costs_its_length() {
+        // Counting the brackets again at each one taken off took over a
+        // second for 40,000 of them, and the square of that for more.
+        let run = 400_000;
+        let text = format!("https://example.test/a(b){} end", ")".repeat(run));
+        assert_eq!(web_links(&text), ["https://example.test/a(b)"]);
+        let mixed = format!("https://example.test/a{}", ").".repeat(run));
+        assert_eq!(web_links(&mixed), ["https://example.test/a"]);
     }
 
     #[test]
