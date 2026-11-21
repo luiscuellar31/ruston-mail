@@ -577,7 +577,11 @@ fn file_dialog_slot_blocks_duplicates_and_releases_after_a_stale_cancellation() 
     desktop.file_dialog_open = true;
     desktop.dispatch(Message::PickComposeAttachments, &context);
     desktop.dispatch(
-        Message::SaveAttachmentAs("message".into(), "file".into(), "report.pdf".into()),
+        Message::SaveAttachmentAs {
+            message_id: "message".into(),
+            attachment_id: "file".into(),
+            name: "report.pdf".into(),
+        },
         &context,
     );
     assert!(desktop.file_dialog_open);

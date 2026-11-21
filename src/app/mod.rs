@@ -172,10 +172,18 @@ pub enum Message {
     KeyPressed(KeyPress),
     /// The window changed size, which is worth remembering for next time.
     WindowResized(Window),
-    /// Fetches one attachment and saves it, by message and attachment id.
-    SaveAttachment(String, String),
-    /// Selects a destination before fetching the attachment.
-    SaveAttachmentAs(String, String, String),
+    /// Fetches one attachment of a message and saves it in the downloads
+    /// folder.
+    SaveAttachment {
+        message_id: String,
+        attachment_id: String,
+    },
+    /// Asks where to save an attachment before fetching it, offering `name`.
+    SaveAttachmentAs {
+        message_id: String,
+        attachment_id: String,
+        name: String,
+    },
     AttachmentDestinationChosen(AttachmentSaveRequest, Option<PathBuf>),
     /// Where an attachment landed, or why it did not.
     AttachmentSaved(AttachmentSaveRequest, Result<PathBuf, SaveError>),
@@ -1071,10 +1079,17 @@ impl App {
                     self.remember(|settings| settings.window = window);
                 }
             }
-            Message::SaveAttachment(message_id, attachment_id) => {
+            Message::SaveAttachment {
+                message_id,
+                attachment_id,
+            } => {
                 return self.save_attachment(message_id, attachment_id, None);
             }
-            Message::SaveAttachmentAs(message_id, attachment_id, name) => {
+            Message::SaveAttachmentAs {
+                message_id,
+                attachment_id,
+                name,
+            } => {
                 return self.save_attachment(message_id, attachment_id, Some(name));
             }
             Message::AttachmentDestinationChosen(request, path) => {

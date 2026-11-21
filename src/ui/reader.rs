@@ -1263,20 +1263,20 @@ fn attachment_row(
             )
             .clicked()
         {
-            messages.push(Message::SaveAttachment(
-                message_id.to_owned(),
-                attachment.id.clone(),
-            ));
+            messages.push(Message::SaveAttachment {
+                message_id: message_id.to_owned(),
+                attachment_id: attachment.id.clone(),
+            });
         }
         if ui
             .add_enabled(!saving, theme::compact_button("Save as…"))
             .clicked()
         {
-            messages.push(Message::SaveAttachmentAs(
-                message_id.to_owned(),
-                attachment.id.clone(),
-                attachment.name.clone(),
-            ));
+            messages.push(Message::SaveAttachmentAs {
+                message_id: message_id.to_owned(),
+                attachment_id: attachment.id.clone(),
+                name: attachment.name.clone(),
+            });
         }
     });
     // A failed save is told beside its own file, not above every

@@ -262,7 +262,7 @@ impl DesktopApp {
         if self.file_dialog_open
             && matches!(
                 &message,
-                Message::PickComposeAttachments | Message::SaveAttachmentAs(_, _, _)
+                Message::PickComposeAttachments | Message::SaveAttachmentAs { .. }
             )
         {
             return;
