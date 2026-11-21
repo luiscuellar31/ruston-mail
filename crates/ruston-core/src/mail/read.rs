@@ -11,6 +11,7 @@ use crate::model::{Conversation, MimeType};
 use crate::transport::Doer;
 use futures::{Stream, StreamExt, TryStreamExt, stream};
 use jiff::civil::Date;
+use std::collections::HashMap;
 
 /// Keep conversation reads responsive without flooding Proton or buffering many bodies.
 const CONVERSATION_BODY_FETCH_CONCURRENCY: usize = 3;
@@ -382,10 +383,21 @@ impl Client {
     /// the reason as [`ConversationMessage::Unreadable`]. A failed key lookup
     /// only leaves a body unverified, so a failure to open is about this
     /// message alone.
-    async fn open_or_unreadable(&self, message: Message) -> ConversationMessage {
+    ///
+    /// `sender_pubs` are the sender's keys when they are already known, even
+    /// to be none; without them they are asked for.
+    async fn open_or_unreadable(
+        &self,
+        message: Message,
+        sender_pubs: Option<Vec<String>>,
+    ) -> ConversationMessage {
         let meta = message.meta.clone();
         let reply_tos = message.reply_tos.clone();
-        match self.open_message(message).await {
+        let opened = match sender_pubs {
+            Some(sender_pubs) => self.open_message_with(message, sender_pubs).await,
+            None => self.open_message(message).await,
+        };
+        match opened {
             Ok(message) => ConversationMessage::Opened(message),
             Err(error) => {
                 tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message could not be opened");
@@ -407,26 +419,32 @@ impl Client {
             .or_else(|| self.keys().primary_address())
     }
 
-    /// Asks for the keys of every distinct sender at once, a few at a time,
-    /// so no body waits for another sender's lookup. A lookup that fails is
-    /// tried again, and reported, by the body that needs it.
-    async fn prefetch_sender_keys(&self, messages: &[Message]) {
-        let mut senders: Vec<&str> = Vec::new();
+    /// The keys of every distinct sender, asked for at once, a few at a time,
+    /// so no body waits for another sender's lookup. Each body takes its
+    /// sender's from here, none included: most senders outside Proton have
+    /// none, and are not asked about again for each of their messages. A
+    /// lookup that fails is left out, to be tried again, and reported, by the
+    /// body that needs it.
+    async fn sender_keys_of(&self, messages: &[Message]) -> HashMap<String, Vec<String>> {
+        // Each address as its sender wrote it, under the one spelling the
+        // bodies look it up by.
+        let mut senders: Vec<(String, String)> = Vec::new();
         for message in messages {
-            let sender = message.meta.sender.address.as_str();
-            if !sender.is_empty()
-                && !senders
-                    .iter()
-                    .any(|known| known.eq_ignore_ascii_case(sender))
-            {
-                senders.push(sender);
+            let written = &message.meta.sender.address;
+            let sender = written.to_ascii_lowercase();
+            if !sender.is_empty() && senders.iter().all(|(known, _)| *known != sender) {
+                senders.push((sender, written.clone()));
             }
         }
         stream::iter(senders)
-            .for_each_concurrent(SENDER_KEY_CONCURRENCY, |sender| async move {
-                let _ = self.sender_pubkeys(sender).await;
+            .map(|(sender, written)| async move {
+                let keys = self.sender_pubkeys(&written).await.ok()?;
+                Some((sender, keys))
             })
-            .await;
+            .buffer_unordered(SENDER_KEY_CONCURRENCY)
+            .filter_map(std::future::ready)
+            .collect()
+            .await
     }
 
     /// Fetch one message's metadata (subject, sender, labels) without
@@ -450,7 +468,7 @@ impl Client {
     /// as an error. A failed download still fails.
     pub async fn read_message_or_unreadable(&self, id: &str) -> Result<ConversationMessage> {
         let msg = api::messages::get_message(self.http(), id).await?;
-        Ok(self.open_or_unreadable(msg).await)
+        Ok(self.open_or_unreadable(msg, None).await)
     }
 
     /// Fetch and decrypt a message for a caller that keeps only its text: the
@@ -486,11 +504,15 @@ impl Client {
         let (conv, mut msgs) = api::conversations::get_conversation(self.http(), id).await?;
         msgs.sort_by_key(|m| m.meta.time);
         // The senders are known now: fetch their keys together up front.
-        self.prefetch_sender_keys(&msgs).await;
+        let keys = &self.sender_keys_of(&msgs).await;
         // Bodies download and decrypt at the same time, three of each at
         // most, and still come out in conversation order.
         let out = fetch_conversation_bodies(self.http(), msgs)
-            .map_ok(|message| async move { Ok::<_, Error>(self.open_or_unreadable(message).await) })
+            .map_ok(|message| async move {
+                let sender = message.meta.sender.address.to_ascii_lowercase();
+                let sender_pubs = keys.get(&sender).cloned();
+                Ok::<_, Error>(self.open_or_unreadable(message, sender_pubs).await)
+            })
             .try_buffered(CONVERSATION_BODY_FETCH_CONCURRENCY)
             .try_collect()
             .await?;

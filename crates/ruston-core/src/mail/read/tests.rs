@@ -176,14 +176,20 @@ async fn serve_conversation(
     senders.sort_unstable();
     senders.dedup();
     for sender in senders {
+        // A sender outside Proton has no keys there.
+        let keys = if sender.starts_with("outside@") {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{"PublicKey": public, "Flags": 3}])
+        };
         Mock::given(method("GET"))
             .and(path("/core/v4/keys/all"))
             .and(query_param("Email", sender))
-            .respond_with(ResponseTemplate::new(200).set_delay(delay).set_body_json(
-                serde_json::json!({
-                    "Code": 1000, "Address": {"Keys": [{"PublicKey": public, "Flags": 3}]}
-                }),
-            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(delay)
+                    .set_body_json(serde_json::json!({"Code": 1000, "Address": {"Keys": keys}})),
+            )
             .expect(1)
             .mount(server)
             .await;
@@ -211,6 +217,29 @@ async fn a_conversation_opens_in_order_with_one_key_lookup_per_sender() {
             .all(|message| message.verdict == Verdict::Verified)
     );
     // Each sender's keys were asked for once, as the mocks expect.
+}
+
+#[tokio::test]
+async fn a_sender_without_keys_is_asked_about_once_for_a_whole_thread() {
+    let server = wiremock::MockServer::start().await;
+    let (client, address, public) = conversation_client(&server);
+    // Most mail from outside Proton: there is nothing to keep of the first
+    // answer, and each body asked again.
+    let messages = [
+        ("outside@example.org", 10),
+        ("outside@example.org", 20),
+        ("outside@example.org", 30),
+    ];
+    serve_conversation(&server, &address, &public, &messages, Duration::ZERO).await;
+
+    let (_, read) = client.read_conversation("c1").await.unwrap();
+
+    assert_eq!(read.len(), 3);
+    assert!(
+        read.iter()
+            .all(|message| message.verdict != Verdict::Verified)
+    );
+    // Asked once, as the mock expects.
 }
 
 #[tokio::test]

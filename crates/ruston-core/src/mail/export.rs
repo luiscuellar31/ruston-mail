@@ -165,7 +165,10 @@ impl Client {
             return Ok(Exported::AlreadyThere);
         }
         let message = api::messages::get_message(self.http(), message_id).await?;
-        let full = match self.open_message(message.clone()).await {
+        // The file carries no word on who signed the body, so the sender's
+        // keys are not asked for: one lookup a message is what gets a long
+        // export refused for asking too much.
+        let full = match self.open_message_with(message.clone(), Vec::new()).await {
             Ok(full) => full,
             Err(error) => return Ok(skipped(message, error)),
         };

@@ -713,6 +713,34 @@ async fn an_export_stops_at_its_maximum_inside_a_page() {
 }
 
 #[tokio::test]
+async fn an_export_asks_for_no_keys_to_check_a_body_it_does_not_vouch_for() {
+    let server = MockServer::start().await;
+    let (client, attachment) = attachment_client(&server).await;
+    let address = client.keys().primary_address().unwrap();
+    let mut message = message_with_attachment(attachment);
+    message.attachments.clear();
+    message.body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+    message.mime_type = "text/plain".into();
+    serve_folder(&server, &[message]).await;
+    let folder = export_directory("export-no-keys");
+
+    let written = client.export_folder("inbox", &folder, 10).await;
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(written.unwrap(), 1);
+    // The file says nothing of who signed the body, so nobody is asked: a
+    // lookup for each of ten thousand messages is what gets an export refused.
+    let lookups = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/core/v4/keys/all")
+        .count();
+    assert_eq!(lookups, 0);
+}
+
+#[tokio::test]
 async fn a_rerun_resumes_without_fetching_exported_messages_again() {
     let server = MockServer::start().await;
     let (client, attachment) = attachment_client(&server).await;
