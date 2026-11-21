@@ -349,7 +349,29 @@ fn capture_snippet(target: Option<(u16, &str)>) -> String {
         None => format!("(location.hash.match(/{FRAGMENT_KEY}=(\\d+\\.[0-9a-f]+)/)||[])[1]"),
     };
     format!(
-        "(function(){{var t={target},b=document.createElement('div');b.style='position:fixed;left:0;right:0;bottom:0;background:#111;color:#0f0;font:13px monospace;z-index:2147483647;padding:8px';document.body.appendChild(b);if(!t){{b.style.background='#300';b.textContent='ruston-cli: open the captcha from the link in your terminal, then try again';return}}var p=t.split('.');b.textContent='ruston-cli: solve the captcha — token returns automatically';addEventListener('message',function(e){{var d=e.data;if(typeof d==='string'){{try{{d=JSON.parse(d)}}catch(x){{return}}}}if(d&&d.type==='pm_captcha'&&d.token){{b.style.background='#030';b.textContent='ruston-cli: token captured — returning…';location.href='http://127.0.0.1:'+p[0]+'/token?nonce='+p[1]+'&value='+encodeURIComponent(d.token)}}}});console.log('ruston-cli: ready (pm_captcha listener installed)')}})()"
+        concat!(
+            "(function(){{",
+            "var t={target},b=document.createElement('div');",
+            "b.style='position:fixed;left:0;right:0;bottom:0;background:#111;color:#0f0;font:13px monospace;z-index:2147483647;padding:8px';",
+            "document.body.appendChild(b);",
+            "if(!t){{",
+            "b.style.background='#300';",
+            "b.textContent='ruston-cli: open the captcha from the link in your terminal, then try again';",
+            "return}}",
+            "var p=t.split('.');",
+            "b.textContent='ruston-cli: solve the captcha — token returns automatically';",
+            "addEventListener('message',function(e){{",
+            "var d=e.data;",
+            "if(typeof d==='string'){{try{{d=JSON.parse(d)}}catch(x){{return}}}}",
+            "if(d&&d.type==='pm_captcha'&&d.token){{",
+            "b.style.background='#030';",
+            "b.textContent='ruston-cli: token captured — returning…';",
+            "location.href='http://127.0.0.1:'+p[0]+'/token?nonce='+p[1]+'&value='+encodeURIComponent(d.token)",
+            "}}}});",
+            "console.log('ruston-cli: ready (pm_captcha listener installed)')",
+            "}})()",
+        ),
+        target = target,
     )
 }
 
