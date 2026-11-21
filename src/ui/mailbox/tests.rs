@@ -1924,6 +1924,15 @@ fn times_are_formatted_relative_to_now() {
     // Yesterday wins over last year's date on the first of January.
     let new_year = Utc.with_ymd_and_hms(2027, 1, 1, 8, 0, 0).unwrap();
     assert_eq!(format_time(at(2026, 12, 31, 22, 0), &new_year), "Yesterday");
+
+    // The day is the reader's own: late on the 10th in UTC is already the
+    // 11th two hours to the east.
+    let east = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+    let now_east = now.with_timezone(&east);
+    assert_eq!(format_time(at(2026, 9, 10, 23, 30), &now_east), "01:30");
+    assert_eq!(format_time(at(2026, 9, 9, 23, 30), &now_east), "Yesterday");
+    // A time no date can hold shows nothing.
+    assert_eq!(format_time(i64::MAX, &now), "");
 }
 
 #[test]

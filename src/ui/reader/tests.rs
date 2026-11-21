@@ -896,6 +896,15 @@ fn message_times_are_complete() {
         format_message_time(timestamp, &Utc),
         "Sep 11, 2026 at 09:42"
     );
+    // A day of one digit is written as one, in the reader's own zone.
+    let east = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+    let late = Utc
+        .with_ymd_and_hms(2026, 9, 8, 23, 30, 0)
+        .unwrap()
+        .timestamp();
+    assert_eq!(format_message_time(late, &east), "Sep 9, 2026 at 01:30");
+    // A time no date can hold shows nothing.
+    assert_eq!(format_message_time(i64::MAX, &Utc), "");
 }
 
 #[test]

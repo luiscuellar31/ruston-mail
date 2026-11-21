@@ -103,6 +103,17 @@ mod tests {
             http_date_secs("Sun, 06 Nov 1994 08:49:37 GMT"),
             Some(784_111_777)
         );
+        // The same moment however the header writes it.
+        for same in [
+            "Sun, 06 Nov 1994 08:49:37 +0000",
+            "Sun, 06 Nov 1994 03:49:37 -0500",
+            "Sun, 6 Nov 1994 08:49:37 GMT",
+            "06 Nov 1994 08:49:37 GMT",
+        ] {
+            assert_eq!(http_date_secs(same), Some(784_111_777), "{same}");
+        }
+        // Without a zone it names no moment.
+        assert_eq!(http_date_secs("Sun, 06 Nov 1994 08:49:37"), None);
         assert_eq!(http_date_secs("yesterday"), None);
         assert_eq!(http_date_secs(""), None);
     }

@@ -526,7 +526,23 @@ fn search_dates_are_whole_days_in_utc() {
         (1_705_276_800, 1_705_363_199)
     );
     assert!(parse_date("2024-02-29").is_ok());
-    for invalid in ["2023-02-29", "nonsense", "2024-01-15T10:00"] {
+    // Spaces around it and single digits are taken, as they always were.
+    for same in [" 2024-01-15 ", "2024-1-15"] {
+        assert_eq!(parse_date(same).unwrap(), day, "{same}");
+    }
+    assert!(parse_date("0001-01-01").is_ok() && parse_date("9999-12-31").is_ok());
+    for invalid in [
+        "2023-02-29",
+        "nonsense",
+        "2024-01-15T10:00",
+        "2024-01-15x",
+        "2024-13-01",
+        "2024-00-10",
+        "20240115",
+        "2024/01/15",
+        "10000-01-01",
+        "",
+    ] {
         assert!(parse_date(invalid).is_err(), "{invalid}");
         assert!(validate_search_date(invalid).is_err(), "{invalid}");
     }
