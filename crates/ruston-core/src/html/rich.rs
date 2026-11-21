@@ -477,6 +477,10 @@ struct Builder {
     /// A separating space has already been written since the last visible
     /// character.
     space: bool,
+    /// Whether the text shown last in this block ends in a space, or none is
+    /// shown yet: kept as runs are written, so a space after hidden text
+    /// need not look back over every run for it.
+    shown_ends_in_space: bool,
     strong: u16,
     emphasis: u16,
     code: u16,
@@ -529,6 +533,7 @@ impl Builder {
             blocks: Vec::new(),
             spans: Vec::new(),
             space: false,
+            shown_ends_in_space: true,
             strong: 0,
             emphasis: 0,
             code: 0,
@@ -893,12 +898,7 @@ impl Builder {
         if !self.space && self.wants_space() {
             let beside_space = !self.marking()
                 && self.spans.last().is_some_and(|span| span.hidden)
-                && self
-                    .spans
-                    .iter()
-                    .rev()
-                    .find(|span| !span.hidden)
-                    .is_none_or(|span| span.text.ends_with(char::is_whitespace));
+                && self.shown_ends_in_space;
             self.push_run(" ", self.marking() || beside_space);
             self.space = true;
         }
@@ -950,6 +950,9 @@ impl Builder {
         };
         if self.spans.is_empty() {
             self.centered = self.centers();
+        }
+        if !hidden && !text.is_empty() {
+            self.shown_ends_in_space = text.ends_with(char::is_whitespace);
         }
         let run = RichSpan {
             text: text.to_owned(),
@@ -1112,6 +1115,7 @@ impl Builder {
         }
         self.spans.retain(|span| !span.text.is_empty());
         self.space = false;
+        self.shown_ends_in_space = true;
         if self.spans.is_empty() {
             return;
         }
