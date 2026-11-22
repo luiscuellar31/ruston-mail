@@ -1360,7 +1360,7 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
         .show(root, |ui| {
             if let Some(error) = app.mailto_error() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(error);
+                    ui.label(error.message());
                     if ui.button("Dismiss").clicked() {
                         messages.push(Message::DismissMailtoError);
                     }

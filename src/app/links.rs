@@ -1,7 +1,8 @@
 //! A link clicked in a message: where it really goes, the question that
 //! waits for a yes when Settings ask for one, and opening it.
 
-use super::{App, Effects, Message, open_in_browser};
+use super::{App, Effects, MailtoError, open_in_browser};
+use crate::mailto::Request;
 
 /// A link clicked in a message, waiting for the user to confirm it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -34,11 +35,8 @@ impl PendingLink {
 /// when the composer would refuse the link.
 fn mail_target(link: &str) -> Option<String> {
     const NAMED: usize = 3;
-    let (to, _, _) = crate::mailto::Request::parse(link)?.into_fields();
-    let addresses: Vec<_> = to
-        .split(", ")
-        .filter(|address| !address.is_empty())
-        .collect();
+    let request = Request::parse(link)?;
+    let addresses = request.recipients();
     if addresses.len() <= NAMED {
         return Some(addresses.join(", "));
     }
@@ -55,17 +53,13 @@ impl App {
     }
 
     pub(super) fn open_link_target(&mut self, url: String) -> Effects {
-        if url
-            .get(..7)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
-        {
-            self.update(
-                crate::mailto::Request::parse(&url)
-                    .map(Message::ReceiveMailto)
-                    .unwrap_or(Message::MailtoRejected),
-            )
-        } else {
-            open_in_browser(url)
+        if !Request::is_mailto(&url) {
+            return open_in_browser(url);
         }
+        match Request::parse(&url) {
+            Some(request) => self.receive_mailto(request),
+            None => self.mailto_error = Some(MailtoError::Unreadable),
+        }
+        Effects::none()
     }
 }

@@ -53,6 +53,7 @@ pub use mailbox::{
     ActionRequest, DeviceIndex, ListAttempt, ListStatus, Mailbox, ReaderRequest, SearchRequest,
     Step, UndoMove,
 };
+pub use mailto::MailtoError;
 pub use pictures::InlineImage;
 pub use reader::{ConversationReader, ReaderState};
 
@@ -305,7 +306,7 @@ pub struct App {
     /// A link clicked in a message, waiting for the user to confirm it.
     pending_link: Option<PendingLink>,
     pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
-    mailto_error: Option<&'static str>,
+    mailto_error: Option<MailtoError>,
     backend: Option<MailBackend>,
     /// The Proton account the open session belongs to. The demo has none.
     account: Option<String>,
@@ -813,9 +814,7 @@ impl App {
                 return Effects::ui(UiEffect::CopyText(addresses.join(", ")));
             }
             Message::ReceiveMailto(request) => self.receive_mailto(request),
-            Message::MailtoRejected => {
-                self.mailto_error = Some("This email link could not be opened.")
-            }
+            Message::MailtoRejected => self.mailto_error = Some(MailtoError::Unreadable),
             Message::OpenPendingMailto => return self.open_pending_mailto(),
             Message::DismissPendingMailto => {
                 self.pending_mailto.pop_front();
