@@ -2813,3 +2813,129 @@ fn typing_in_another_field_does_not_lay_the_whole_message_out() {
     // behind it stays as it was.
     assert!(!whole(Some(true)));
 }
+
+#[test]
+fn a_long_table_lays_out_only_the_rows_near_sight_and_keeps_its_shape() {
+    let mut html = String::from("<table><tr><th>Item</th><th>Count</th><th>Price</th></tr>");
+    for row in 0..400 {
+        html.push_str(&format!(
+            "<tr><td>item {row}</td><td>{}</td><td>${row}.00</td></tr>",
+            row % 7
+        ));
+    }
+    html.push_str("</table>");
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(&html));
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    // A frame of the message in a pane 700 points square scrolled to
+    // `offset`, with a button below it that has the keyboard's focus when
+    // `focused`, which has everything laid out: the message's length, where
+    // each cell painted is, how many texts were laid out, and whether egui
+    // asked for another frame at once.
+    let frame = |context: &egui::Context, offset: f32, reading: Reading, focused: bool| {
+        let mut length = 0.0;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(700.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                length = egui::ScrollArea::vertical()
+                    .vertical_scroll_offset(offset)
+                    .show(ui, |ui| {
+                        message_card(
+                            ui,
+                            &reader.detail().messages[0],
+                            reader.preview_at(0),
+                            &reader,
+                            AttachmentSaves::default(),
+                            reading,
+                            &mut Vec::new(),
+                        );
+                    })
+                    .content_size
+                    .y;
+                let button = ui.button("Archive");
+                if focused {
+                    button.request_focus();
+                }
+            },
+        );
+        let cells: HashMap<String, egui::Pos2> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("item ") => {
+                    Some((text.galley.text().to_owned(), text.pos))
+                }
+                _ => None,
+            })
+            .collect();
+        let again = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.repaint_delay.is_zero());
+        output.drop_without_applying_deltas();
+        // The texts the frame used, which it laid out or took from the cache.
+        let texts = context.fonts(|fonts| fonts.num_galleys_in_cache());
+        (length, cells, texts, again)
+    };
+    // The scroll bars and the table's shape settle over a few frames, a
+    // bar's animation over a quarter of a second of them.
+    let settled = |context: &egui::Context, offset: f32, reading: Reading, focused: bool| {
+        let mut last = frame(context, offset, reading, focused);
+        for _ in 0..30 {
+            last = frame(context, offset, reading, focused);
+        }
+        last
+    };
+
+    for reading in [
+        Reading::default(),
+        Reading {
+            data_tables: false,
+            ..Reading::default()
+        },
+    ] {
+        // With the keyboard's focus on a button every row is laid out, which
+        // gives the whole shape.
+        let whole = egui::Context::default();
+        theme::install(&whole);
+        let near = egui::Context::default();
+        theme::install(&near);
+        let (length, _, _, _) = settled(&whole, 0.0, reading, true);
+        let middle = length / 2.0;
+        let (whole_length, all, every_text, _) = settled(&whole, middle, reading, true);
+        let (near_length, painted, texts, again) = settled(&near, middle, reading, false);
+
+        assert!(painted.contains_key("item 200"), "{reading:?}");
+        assert!(
+            texts * 3 < every_text,
+            "{texts} texts laid out near sight, {every_text} with the whole table"
+        );
+        assert!(
+            (near_length - whole_length).abs() < 1.0,
+            "{near_length} with the rows near sight, {whole_length} with all"
+        );
+        // The rows in sight are where they are with the whole table laid
+        // out, its columns as wide.
+        assert_eq!(painted.len(), all.len(), "{reading:?}");
+        for (cell, at) in &painted {
+            let whole_at = all[cell];
+            assert!(
+                (at.x - whole_at.x).abs() < 0.5 && (at.y - whole_at.y).abs() < 0.5,
+                "{cell} at {at:?}, {whole_at:?} with the whole table"
+            );
+        }
+        // Nothing keeps asking for another frame once it has settled.
+        assert!(!again, "{reading:?}");
+    }
+}

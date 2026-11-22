@@ -589,8 +589,12 @@ deeper content keeps the last indent, so text never leaves the column. A long
 message costs what is near the screen, not all it holds: `block_in_sight`
 remembers the height each block took, with the width, scale and Settings it
 depended on, and a block more than a screen away only leaves that room. A
-screen reader, which reads what is out of sight too, and keyboard focus, which
-moves among links, have everything laid out as before.
+table of data is one block, so `TableLayouts` keeps the same for its rows:
+laid out whole once, it remembers each row's height and each column's width,
+and after that only the rows near the screen are, with the columns as wide
+as the whole table made them, the first and last rows always. A screen
+reader, which reads what is out of sight too, and keyboard focus outside a
+text field, which moves among links, have everything laid out as before.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.

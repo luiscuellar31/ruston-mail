@@ -1655,15 +1655,67 @@ fn text_stamp(block: &RichBlock) -> u64 {
         BlockKind::Preformatted(text) => (0, text.len()),
         BlockKind::Image { description, .. } => (0, description.len()),
         BlockKind::Rule => (0, 0),
-        BlockKind::Table(rows) => (
-            rows.len(),
-            rows.iter()
-                .flat_map(|row| &row.cells)
-                .map(|cell| texts(cell).1)
-                .sum(),
-        ),
+        BlockKind::Table(rows) => return rows_stamp(rows),
     };
     (runs as u64).rotate_left(40) ^ bytes as u64
+}
+
+/// [`text_stamp`] of a table: how many rows it has and how much text.
+fn rows_stamp(rows: &[TableRow]) -> u64 {
+    let bytes: usize = rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .flatten()
+        .map(|span| span.text.len())
+        .sum();
+    (rows.len() as u64).rotate_left(40) ^ bytes as u64
+}
+
+/// What tables of data took when last laid out whole, by where their rows
+/// are kept. A table is one block, so a long one in sight was laid out row
+/// by row at every frame; once its rows' heights and its columns' widths are
+/// known, the rows far from sight only leave their room, and those drawn
+/// keep the columns as wide as the whole table made them.
+#[derive(Clone, Default)]
+struct TableLayouts(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, TableLayout>>>,
+);
+
+/// The most tables whose layout is remembered; past it they are forgotten
+/// and measured again.
+const MAX_TABLE_LAYOUTS: usize = 256;
+
+#[derive(Clone, Default)]
+struct TableLayout {
+    /// What the layout depended on, as [`Sight::stamp`] and [`rows_stamp`].
+    stamp: u64,
+    /// The height of each row, without the space after it.
+    rows: Vec<f32>,
+    /// The width of each column, as a grid of data: its widest cell.
+    columns: Vec<f32>,
+}
+
+impl TableLayouts {
+    fn of(ui: &egui::Ui) -> Self {
+        ui.data_mut(|data| data.get_temp_mut_or_default::<Self>(egui::Id::NULL).clone())
+    }
+
+    fn get(&self, key: usize, stamp: u64) -> Option<TableLayout> {
+        let layouts = self.0.lock().ok()?;
+        layouts
+            .get(&key)
+            .filter(|layout| layout.stamp == stamp)
+            .cloned()
+    }
+
+    fn keep(&self, key: usize, layout: TableLayout) {
+        if let Ok(mut layouts) = self.0.lock() {
+            if layouts.len() >= MAX_TABLE_LAYOUTS {
+                layouts.clear();
+            }
+            layouts.insert(key, layout);
+        }
+    }
 }
 
 fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
@@ -1792,11 +1844,35 @@ fn block(
 /// A table of data, its columns lined up and its row of headings in the
 /// bold ink, scrolling sideways if it is wider than the reader; or, when
 /// Settings ask for it, its rows as lines of text, as before.
+///
+/// The first time, and whenever what it depends on changes, the table is
+/// laid out whole and its shape kept; after that only the rows near sight
+/// are, the first always, so the columns keep their widths.
 fn table(ui: &mut egui::Ui, rows: &[TableRow], reading: Reading, messages: &mut Vec<Message>) {
+    let sight = Sight::new(ui, reading);
+    let layouts = TableLayouts::of(ui);
+    let key = rows.as_ptr() as usize;
+    let stamp = sight.stamp ^ rows_stamp(rows);
+    let known = (!sight.all).then(|| layouts.get(key, stamp)).flatten();
+    let mut measured = TableLayout {
+        stamp,
+        ..TableLayout::default()
+    };
+    // The room `index` takes when it is far from sight, if it is known. The
+    // first and last rows are always laid out: they hold the table's edges.
+    let skipped = |ui: &egui::Ui, index: usize| {
+        let height = *known.as_ref()?.rows.get(index)?;
+        let edge = index == 0 || index + 1 == rows.len();
+        (!edge && out_of_sight(ui.cursor().top(), height, ui.clip_rect())).then_some(height)
+    };
     if !reading.data_tables {
         for (index, row) in rows.iter().enumerate() {
             if index > 0 {
                 ui.add_space(8.0);
+            }
+            if let Some(height) = skipped(ui, index) {
+                ui.allocate_space(egui::vec2(ui.available_width(), height));
+                continue;
             }
             let mut line = Vec::new();
             for cell in &row.cells {
@@ -1808,38 +1884,67 @@ fn table(ui: &mut egui::Ui, rows: &[TableRow], reading: Reading, messages: &mut 
                 }
                 line.extend(cell.iter().cloned());
             }
-            rich_line(ui, &line, None, false, reading, messages);
+            let drawn = ui.scope(|ui| rich_line(ui, &line, None, false, reading, messages));
+            measured.rows.push(drawn.response.rect.height());
         }
-        return;
-    }
-    egui::ScrollArea::horizontal()
-        .id_salt(ui.next_auto_id())
-        .show(ui, |ui| {
-            egui::Grid::new(ui.next_auto_id())
-                .striped(true)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    for row in rows {
-                        for cell in &row.cells {
-                            let header: Vec<RichSpan>;
-                            let spans = if row.header {
-                                header = cell
-                                    .iter()
-                                    .map(|span| RichSpan {
-                                        strong: true,
-                                        ..span.clone()
+    } else {
+        egui::ScrollArea::horizontal()
+            .id_salt(ui.next_auto_id())
+            .show(ui, |ui| {
+                egui::Grid::new(ui.next_auto_id())
+                    .striped(true)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        for (index, row) in rows.iter().enumerate() {
+                            if let Some(height) = skipped(ui, index) {
+                                ui.allocate_space(egui::vec2(0.0, height));
+                                ui.end_row();
+                                continue;
+                            }
+                            let mut tallest: f32 = 0.0;
+                            for (column, cell) in row.cells.iter().enumerate() {
+                                let header: Vec<RichSpan>;
+                                let spans = if row.header {
+                                    header = cell
+                                        .iter()
+                                        .map(|span| RichSpan {
+                                            strong: true,
+                                            ..span.clone()
+                                        })
+                                        .collect();
+                                    &header
+                                } else {
+                                    cell
+                                };
+                                let width = known
+                                    .as_ref()
+                                    .and_then(|known| known.columns.get(column).copied());
+                                let drawn = ui
+                                    .horizontal(|ui| {
+                                        if let Some(width) = width {
+                                            ui.set_min_width(width);
+                                        }
+                                        rich_spans(ui, spans, None, reading, messages);
                                     })
-                                    .collect();
-                                &header
-                            } else {
-                                cell
-                            };
-                            ui.horizontal(|ui| rich_spans(ui, spans, None, reading, messages));
+                                    .response
+                                    .rect;
+                                tallest = tallest.max(drawn.height());
+                                if measured.columns.len() <= column {
+                                    measured.columns.resize(column + 1, 0.0);
+                                }
+                                measured.columns[column] =
+                                    measured.columns[column].max(drawn.width());
+                            }
+                            measured.rows.push(tallest);
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
-                });
-        });
+                    });
+            });
+    }
+    // Only a table laid out whole knows all its rows.
+    if known.is_none() {
+        layouts.keep(key, measured);
+    }
 }
 
 /// A line of text, wrapped. One the sender's style centers is centered when
