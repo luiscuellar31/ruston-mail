@@ -573,6 +573,50 @@ fn a_link_the_sender_drew_as_a_button_is_one_and_still_asks_where_it_goes() {
 }
 
 #[test]
+fn a_link_is_underlined_at_rest_and_one_drawn_as_a_button_is_not() {
+    let link = |text: &str, button: bool| RichSpan {
+        text: text.into(),
+        link: Some("https://example.test/".into()),
+        button,
+        ..RichSpan::default()
+    };
+    let plain = RichSpan {
+        text: "Read ".into(),
+        ..RichSpan::default()
+    };
+    let spans = [plain, link("the report", false), link("Buy", true)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        rich_spans(ui, &spans, None, Reading::default(), &mut Vec::new());
+    });
+    let underlined: Vec<(String, bool)> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                text.galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|section| section.format.underline != egui::Stroke::NONE),
+            )),
+            _ => None,
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    assert_eq!(
+        underlined,
+        [
+            ("Read ".to_owned(), false),
+            ("the report".to_owned(), true),
+            ("Buy".to_owned(), false)
+        ]
+    );
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),

@@ -2007,8 +2007,7 @@ fn rich_spans(
         rest = after;
         let mut job = span_layout(ui, span, heading, reading);
         if let Some(link) = &span.link
-            && span.button
-            && reading.sender_text_styles
+            && drawn_as_button(span, reading)
         {
             // A link the sender drew as a button is one, whatever styles its
             // text has, and still goes through the prompt that says where.
@@ -2040,6 +2039,12 @@ fn rich_spans(
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
     }
+}
+
+/// Whether `span` is drawn as a button: a link its sender drew as one, while
+/// the reader uses the sender's text styles.
+fn drawn_as_button(span: &RichSpan, reading: Reading) -> bool {
+    span.link.is_some() && span.button && reading.sender_text_styles
 }
 
 /// Whether `next` is more of the button `span` starts: the same link, drawn
@@ -2107,8 +2112,8 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
         } else {
             FontId::proportional(size)
         },
-        // A link's colour is the one thing left to `Link`, which fills in
-        // the placeholder with the hyperlink colour and underlines on hover.
+        // A link's colour is left to `Link`, which fills in the placeholder
+        // with the hyperlink colour.
         color: if span.link.is_some() {
             Color32::PLACEHOLDER
         } else {
@@ -2120,6 +2125,11 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
     if span.code {
         format.background = theme::colors(ui).code_fill;
         format.expand_bg = CODE_PADDING;
+    }
+    // Underlined at rest, not only on hover as `Link` does, so a link stands
+    // out from the text by more than its colour; a button needs none.
+    if span.link.is_some() && !drawn_as_button(span, reading) {
+        format.underline = Stroke::new(1.0, Color32::PLACEHOLDER);
     }
     if struck {
         let rule = if span.link.is_some() {

@@ -554,7 +554,9 @@ always writes them as Markdown markers. The same stack notes an element with a
 background of its own, `background-color` or a cell's `bgcolor`, white aside:
 when it ends having held nothing but one link of at most 60 characters, the
 link's runs are marked `button`, and the reader draws them as one button that
-still goes through the link prompt, under the same setting. A table is read as the paragraphs of
+still goes through the link prompt, under the same setting. Any other link is
+underlined at rest, not only on hover as egui's `Link` is, so it stands out
+from the text by more than its colour. A table is read as the paragraphs of
 its rows, as before, while its cells are kept apart; at its end, one that
 holds data replaces those paragraphs with a `BlockKind::Table`: no table within
 it, no image, list, heading or other block, no text outside a cell, cells of at
