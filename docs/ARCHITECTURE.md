@@ -1138,9 +1138,10 @@ instead of an unknown outcome.
   A PGP/MIME body (a `multipart/` MIME type) carries attachments Proton cannot
   see. Reading one appends them to `FullMessage::attachments`, named `mime-`
   and their position in the body, with no key packets or signature, and
-  `list_attachments` and `for_each_attachment` open such a body, unverified,
-  to list them. Downloading one fetches and decrypts the message again with
-  the sender's keys and returns that part; only an `Invalid` body verdict
+  `list_attachments` opens such a body, unverified, to list them. Downloading
+  one fetches and decrypts the message again with the sender's keys and
+  returns that part, while `for_each_attachment` opens the body once with
+  them for all its parts; only an `Invalid` body verdict
   refuses it with `AttachmentVerificationFailed`, while an unsigned body, or
   one left unverified because no sender keys were found, lets it through, as
   reading shows such a body. Every caller, export included, reaches them

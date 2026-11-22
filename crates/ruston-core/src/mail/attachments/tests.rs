@@ -278,6 +278,40 @@ async fn attachments_inside_a_pgp_mime_body_list_and_download_by_position() {
 }
 
 #[tokio::test]
+async fn the_attachments_inside_a_pgp_mime_body_come_from_one_download_of_it() {
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    let message = pgp_mime_message(&client);
+    serve_message(&server, &message).await;
+
+    let mut received = Vec::new();
+    client
+        .for_each_attachment("message", true, |name, bytes| {
+            received.push((name, bytes));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let logo = STANDARD.decode("iVBORw0KGgo=").unwrap();
+    assert_eq!(
+        received,
+        [
+            ("report.pdf".to_owned(), b"%PDF-1.4\n".to_vec()),
+            ("attachment-2".to_owned(), logo)
+        ]
+    );
+    let requests = server.received_requests().await.unwrap();
+    let asked = |route: &str| {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == route)
+            .count()
+    };
+    assert_eq!(asked("/mail/v4/messages/message"), 1);
+    assert_eq!(asked("/core/v4/keys/all"), 1);
+}
+
+#[tokio::test]
 async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() {
     // Signed with a key that is not the sender's: invalid, so refused.
     let server = MockServer::start().await;
@@ -320,6 +354,12 @@ async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() 
     assert!(matches!(
         client
             .download_listed_attachment(&read.meta, &read.attachments[0])
+            .await,
+        Err(Error::AttachmentVerificationFailed)
+    ));
+    assert!(matches!(
+        client
+            .for_each_attachment("message", true, |_, _| Ok(()))
             .await,
         Err(Error::AttachmentVerificationFailed)
     ));

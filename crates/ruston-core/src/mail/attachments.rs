@@ -402,7 +402,9 @@ impl Client {
     }
 
     /// Download attachments sequentially, handing each plaintext to `receive`.
-    /// The callback completes before the next attachment is fetched.
+    /// The callback completes before the next attachment is fetched. Those
+    /// inside a PGP/MIME body all come from one download of it, under the
+    /// signature rules of [`Self::download_attachment`].
     pub async fn for_each_attachment<F>(
         &self,
         message_id: &str,
@@ -413,12 +415,32 @@ impl Client {
         F: FnMut(String, Vec<u8>) -> Result<()>,
     {
         let msg = api::messages::get_message(self.http(), message_id).await?;
-        let (meta, attachments) = self.attachments_of(msg).await?;
-        for att in &attachments {
-            if include_inline || !att.is_inline() {
-                let (name, bytes) = self.download_listed_attachment(&meta, att).await?;
-                receive(name, bytes)?;
-            }
+        let (meta, attachments, mut inside, refused) = if msg.mime_type.starts_with("multipart/") {
+            let sender_pubs = self.verifier_keys(&msg.meta.sender.address).await;
+            let (opened, inside) = self.open_message_and_parts(msg, sender_pubs).await?;
+            let refused = opened.verdict == crypto::Verdict::Invalid;
+            (opened.meta, opened.attachments, inside, refused)
+        } else {
+            (msg.meta, msg.attachments, Vec::new(), false)
+        };
+        for att in attachments
+            .iter()
+            .filter(|att| include_inline || !att.is_inline())
+        {
+            let (name, bytes) = match mime_attachment_position(&att.id) {
+                Some(_) if refused => return Err(Error::AttachmentVerificationFailed),
+                Some(position) => {
+                    let bytes = inside
+                        .get_mut(position - 1)
+                        .map(std::mem::take)
+                        .ok_or_else(|| Error::NotFound {
+                            kind: "attachment".into(),
+                        })?;
+                    (att.name.clone(), bytes)
+                }
+                None => self.download_listed_attachment(&meta, att).await?,
+            };
+            receive(name, bytes)?;
         }
         Ok(())
     }

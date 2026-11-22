@@ -215,6 +215,18 @@ fn mime_attachments(msg: &mail_parser::Message) -> Vec<Attachment> {
         .collect()
 }
 
+/// The bytes of each attachment inside a PGP/MIME body, in the order
+/// [`mime_attachments`] lists them.
+fn mime_attachment_parts(raw: &[u8]) -> Vec<Vec<u8>> {
+    mail_parser::MessageParser::default()
+        .parse(raw)
+        .map_or_else(Vec::new, |msg| {
+            msg.attachments()
+                .map(|part| part.contents().to_vec())
+                .collect()
+        })
+}
+
 /// The name and bytes of the attachment at `position`, from 1, inside a
 /// PGP/MIME body, as [`mime_attachments`] names it.
 pub(super) fn mime_attachment(raw: &[u8], position: usize) -> Option<(String, Vec<u8>)> {
@@ -379,6 +391,21 @@ impl Client {
         super::off_thread(move || open_body(&addr, message, &sender_pubs)).await
     }
 
+    /// [`Self::open_message_with`], giving as well the bytes of each
+    /// attachment inside a PGP/MIME body, in the order the message lists
+    /// them, so saving them all opens the body once.
+    pub(super) async fn open_message_and_parts(
+        &self,
+        message: Message,
+        sender_pubs: Vec<String>,
+    ) -> Result<(FullMessage, Vec<Vec<u8>>)> {
+        let addr = self
+            .keys_for_message(&message.meta.address_id)
+            .ok_or_else(|| Error::Crypto("no address key for message".into()))?
+            .clone();
+        super::off_thread(move || open_body_and_parts(&addr, message, &sender_pubs)).await
+    }
+
     /// Opens `message` or, when it cannot be opened, returns its headers and
     /// the reason as [`ConversationMessage::Unreadable`]. A failed key lookup
     /// only leaves a body unverified, so a failure to open is about this
@@ -537,6 +564,30 @@ fn open_body(
     let provider = crypto::provider();
     let (body, verdict) =
         crypto::message::decrypt_body_bytes(&provider, addr, sender_pubs, &m.body)?;
+    Ok(read_body(m, body, verdict))
+}
+
+/// [`open_body`], with the bytes of each attachment inside a PGP/MIME body
+/// as well, in the order the message lists them.
+fn open_body_and_parts(
+    addr: &crypto::keys::AddressKeys,
+    m: Message,
+    sender_pubs: &[String],
+) -> Result<(FullMessage, Vec<Vec<u8>>)> {
+    let provider = crypto::provider();
+    let (body, verdict) =
+        crypto::message::decrypt_body_bytes(&provider, addr, sender_pubs, &m.body)?;
+    let parts = if m.mime_type.starts_with("multipart/") {
+        mime_attachment_parts(&body)
+    } else {
+        Vec::new()
+    };
+    Ok((read_body(m, body, verdict), parts))
+}
+
+/// Message `m` as it is read, from its decrypted `body` and what checking
+/// its signature found: parsed, and sanitized when it is HTML.
+fn read_body(m: Message, body: zeroize::Zeroizing<Vec<u8>>, verdict: Verdict) -> FullMessage {
     let mut attachments = m.attachments;
     let (body, mime_type) = if m.mime_type.starts_with("multipart/") {
         let (body, mime_type, inside) = extract_mime(&body);
@@ -557,14 +608,14 @@ fn open_body(
     } else {
         body
     };
-    Ok(FullMessage {
+    FullMessage {
         meta: m.meta,
         body,
         mime_type,
         verdict,
         attachments,
         reply_tos: m.reply_tos,
-    })
+    }
 }
 
 fn fetch_conversation_bodies<D: Doer>(
