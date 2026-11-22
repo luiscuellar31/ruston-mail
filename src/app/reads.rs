@@ -1,7 +1,6 @@
-//! Marking a conversation read once its content shows. The demo marks it
-//! when it is selected; Proton's conversations are marked once the detail
-//! the reader waits for arrives, or one cached opens, unless Settings say not
-//! to. Either way, while a draft covers the reader the conversation opens
+//! Marking a conversation read once its content shows, unless Settings say
+//! not to. The demo marks it when it is selected; Proton's conversations are
+//! marked once the detail the reader waits for arrives, or one cached opens. Either way, while a draft covers the reader the conversation opens
 //! where nobody sees it, so `postpone_read_while_covered` keeps it unread
 //! until `update` sees the reader uncovered and `mark_read_once_shown` marks
 //! it, if it is still the one open.
@@ -56,7 +55,9 @@ impl App {
         }
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => {
-                self.mark_demo_read(&service, &id);
+                if self.settings.mark_read_on_open {
+                    self.mark_demo_read(&service, &id);
+                }
                 Effects::none()
             }
             Some(MailBackend::Proton(_)) => self.mark_opened_read(),

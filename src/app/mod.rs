@@ -1035,6 +1035,7 @@ impl App {
         }
         self.pending_link = None;
         if let Some(MailBackend::Demo(service)) = self.backend.clone()
+            && self.settings.mark_read_on_open
             && !self.postpone_read_while_covered(&id)
             && !self.mark_demo_read(&service, &id)
         {
