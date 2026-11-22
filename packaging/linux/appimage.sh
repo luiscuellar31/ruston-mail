@@ -70,7 +70,7 @@ for cmd in desktop-file-validate ldconfig readelf; do
     command -v "$cmd" > /dev/null 2>&1 || die "Missing required command: $cmd"
 done
 
-VERSION="$(grep -m 1 '^version = ' "$REPO_ROOT/Cargo.toml" | cut -d '"' -f 2)"
+VERSION="$("$REPO_ROOT/packaging/workspace-version.sh")"
 ARCH="$(uname -m)"
 case "$ARCH" in
     x86_64) LDCONFIG_ARCH="x86-64" ;;

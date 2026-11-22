@@ -27,9 +27,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      tag_name: ${{ steps.meta.outputs.tag_name }}
-      tag_commit: ${{ steps.meta.outputs.tag_commit }}
-      version: ${{ steps.meta.outputs.version }}
+      tag_name: ${{ steps.source.outputs.tag_name }}
+      tag_commit: ${{ steps.source.outputs.tag_commit }}
+      version: ${{ steps.source.outputs.version }}
 
     steps:
       # Actions are pinned to a commit SHA so release builds remain deterministic.
@@ -40,13 +40,14 @@ jobs:
           fetch-depth: 0
 
       - name: Validate version and tag when present
-        id: meta
+        id: source
         run: |
           set -euo pipefail
 
-          version="$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n1)"
-          if [[ -z "$version" ]]; then
-            echo "Could not detect the workspace version in Cargo.toml"
+          version="$(packaging/workspace-version.sh)"
+          # A release tag is v and this version, so only digits and dots.
+          if [[ ! "$version" =~ ^[0-9][0-9.]*$ ]]; then
+            echo "Unsupported workspace version: '$version' (expected: X.Y.Z)"
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"

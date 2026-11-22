@@ -2,7 +2,7 @@
 ; Ruston Mail - Windows installer (Inno Setup 6)
 ; Installs for the current user without administrator rights. package.ps1
 ; passes the version, the architecture, and the folders:
-;   ISCC /DVersion=0.7.1 /DArch=x86_64 /DSourceDir=<binaries> /DOutputDir=<dist> ruston-mail.iss
+;   ISCC /DVersion=<x.y.z> /DArch=x86_64 /DSourceDir=<binaries> /DOutputDir=<dist> ruston-mail.iss
 ; ==============================================================================
 
 #ifndef Version
@@ -62,6 +62,7 @@ WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
 OutputDir={#OutputDir}
+; package.ps1 looks for the installer under this name.
 OutputBaseFilename=ruston-mail-{#Version}-{#Arch}-setup-UNSIGNED
 
 [Languages]

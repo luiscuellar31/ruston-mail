@@ -3,7 +3,9 @@
 All three packages use Rust 2024 and require Rust 1.96 or newer. Their shared
 version, edition, and minimum Rust version are set in the root
 [`Cargo.toml`](../Cargo.toml) under `[workspace.package]`, whose
-`resolver = "3"` prefers dependency versions that minimum can build.
+`resolver = "3"` prefers dependency versions that minimum can build. The
+release workflow and the macOS and Linux packaging scripts read that version
+with [`packaging/workspace-version.sh`](../packaging/workspace-version.sh).
 [`rust-toolchain.toml`](../rust-toolchain.toml) names the Rust that builds
 them here, in CI and in releases, which rustup fetches on first use; it moves
 up only when that file does, so a new Rust release cannot fail a build on its

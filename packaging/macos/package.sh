@@ -84,8 +84,7 @@ for cmd in codesign hdiutil sips; do
     command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd"
 done
 
-# Read version from Cargo.toml
-VERSION="$(grep -m 1 '^version = ' "$REPO_ROOT/Cargo.toml" | cut -d '"' -f 2)"
+VERSION="$("$REPO_ROOT/packaging/workspace-version.sh")"
 BUILD="${VERSION%%-*}"
 ARCH="$(uname -m)"
 [[ -n "$TARGET_TRIPLE" ]] && ARCH="${TARGET_TRIPLE%%-*}"

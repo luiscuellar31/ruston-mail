@@ -88,6 +88,7 @@ try {
 Write-Step 'Compiling the installer'
 & $InnoSetup /Q "/DVersion=$version" "/DArch=$Architecture" "/DSourceDir=$stage" "/DOutputDir=$Dist" (Join-Path $PSScriptRoot 'ruston-mail.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+# The name OutputBaseFilename in ruston-mail.iss gives the installer.
 $setup = Join-Path $Dist "$name-setup-UNSIGNED.exe"
 if (-not (Test-Path -LiteralPath $setup)) { throw "Missing $setup" }
 
