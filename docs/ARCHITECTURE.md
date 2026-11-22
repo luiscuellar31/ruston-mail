@@ -687,7 +687,9 @@ Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
 collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
 memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
-[`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
+[`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs), whose
+attachments, recipients, replies and packages each have a module under
+`mail/send/`. The
 result returns to the app as a message. A reply opens with To, and Cc for
 Reply all, filled in as core would address it; whatever the fields then hold
 is sent, as for a new message or a forward. One draft is open at a time: asking
@@ -716,7 +718,7 @@ which classifies the key lookup the way sending picks a package. It looks up
 four addresses at a time, in their order, and the whole batch shares one
 request deadline; an address still waiting when it runs out reads as a failed
 lookup. Only the first `PROTECTION_LOOKUP_LIMIT` addresses (100, from core's
-`mail/send.rs`) are asked about, and the notice counts the rest in one line
+`mail/send/recipients.rs`) are asked about, and the notice counts the rest in one line
 as not checked; the terminal interface's question before sending applies the
 same limit. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
@@ -742,7 +744,7 @@ reads their sizes on Tokio's blocking pool, and the draft keeps them for the
 composer to show: asking the file system on the interface thread would wait
 on a network share that stopped answering.
 
-Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
+Core [`mail/send/attachments.rs`](../crates/ruston-core/src/mail/send/attachments.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local
 attachments must be regular readable files, at most 32 MiB each and 128 MiB in
 total. Core validates sizes before creating a draft, then checks each opened
