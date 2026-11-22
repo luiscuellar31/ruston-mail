@@ -158,19 +158,26 @@ pub enum DeviceIndex {
     Unreadable,
 }
 
-/// The loaded part of one folder while another folder is open.
-/// Memory-only, so Ruston never creates a second persistent mail store.
-struct CachedListing {
-    folder: FolderKey,
+/// What a folder's listing holds of the mailbox: kept while another folder
+/// is open, and put back when it opens again.
+#[derive(Default)]
+struct Listing {
     conversations: Vec<ConversationSummary>,
     row_ids: HashSet<String>,
     last_dated_time: Option<i64>,
     next_page: u32,
     has_more: bool,
+    groups: ConversationGroups,
+}
+
+/// The loaded part of one folder while another folder is open.
+/// Memory-only, so Ruston never creates a second persistent mail store.
+struct CachedListing {
+    folder: FolderKey,
+    listing: Listing,
     /// A confirmed mailbox change may have affected this folder. It can still
     /// be shown immediately, but must be refreshed before it is cached clean.
     dirty: bool,
-    groups: ConversationGroups,
 }
 
 struct SplitConversation {
@@ -1880,13 +1887,8 @@ impl Mailbox {
             self.cached_listings.remove(0);
         }
         if let Some(cached) = cached {
-            self.conversations = cached.conversations;
-            self.row_ids = cached.row_ids;
-            self.last_dated_time = cached.last_dated_time;
-            self.next_page = cached.next_page;
-            self.has_more = cached.has_more;
+            self.put_listing(cached.listing);
             self.active_dirty = cached.dirty;
-            self.groups = cached.groups;
             self.recompute_visible();
             if cached.dirty {
                 // From this point on only a change made while this request is
@@ -1899,13 +1901,8 @@ impl Mailbox {
                 None
             }
         } else {
-            self.conversations.clear();
-            self.row_ids.clear();
-            self.last_dated_time = None;
-            self.next_page = 0;
-            self.has_more = false;
+            self.put_listing(Listing::default());
             self.active_dirty = false;
-            self.groups = ConversationGroups::default();
             self.recompute_visible();
             self.status = ListStatus::Loading(request);
             Some(self.first_page_request(request))
@@ -1922,16 +1919,44 @@ impl Mailbox {
         let folder = FolderKey::of(&self.folder);
         self.cached_listings
             .retain(|cached| cached.folder != folder);
+        let listing = self.take_listing();
         self.cached_listings.push(CachedListing {
             folder,
+            listing,
+            dirty,
+        });
+    }
+
+    /// The open folder's listing, taken out of the mailbox, which is left
+    /// with none.
+    fn take_listing(&mut self) -> Listing {
+        Listing {
             conversations: std::mem::take(&mut self.conversations),
             row_ids: std::mem::take(&mut self.row_ids),
             last_dated_time: self.last_dated_time.take(),
-            next_page: self.next_page,
-            has_more: self.has_more,
-            dirty,
+            next_page: std::mem::take(&mut self.next_page),
+            has_more: std::mem::take(&mut self.has_more),
             groups: std::mem::take(&mut self.groups),
-        });
+        }
+    }
+
+    /// Makes `listing` the open folder's. Each of its fields is named here,
+    /// so one added to [`Listing`] cannot be left behind.
+    fn put_listing(&mut self, listing: Listing) {
+        let Listing {
+            conversations,
+            row_ids,
+            last_dated_time,
+            next_page,
+            has_more,
+            groups,
+        } = listing;
+        self.conversations = conversations;
+        self.row_ids = row_ids;
+        self.last_dated_time = last_dated_time;
+        self.next_page = next_page;
+        self.has_more = has_more;
+        self.groups = groups;
     }
 
     fn take_cached_listing(&mut self, folder: &FolderKey) -> Option<CachedListing> {
@@ -2105,12 +2130,15 @@ impl Mailbox {
             .cached_listings
             .iter_mut()
             .find(|cached| cached.folder == FolderKey::of(folder))
-            && cached
-                .groups
-                .apply_split(&mut cached.conversations, conversation_id, split_rows)
+            && cached.listing.groups.apply_split(
+                &mut cached.listing.conversations,
+                conversation_id,
+                split_rows,
+            )
         {
-            cached.row_ids = collect_ids(&cached.conversations);
-            cached.last_dated_time = last_dated_time(&cached.conversations);
+            let listing = &mut cached.listing;
+            listing.row_ids = collect_ids(&listing.conversations);
+            listing.last_dated_time = last_dated_time(&listing.conversations);
         }
     }
 
