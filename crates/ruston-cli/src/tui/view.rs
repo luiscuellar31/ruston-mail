@@ -975,10 +975,9 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
     // As the desktop lands on a message: unless it starts in the upper third
     // already, where a short conversation keeps its subject in view.
     if let Some(&(_, start)) = app.landing.take().and_then(|index| starts.get(index)) {
-        let scroll = usize::from(app.scroll.get());
+        let scroll = app.scroll.get();
         if start < scroll || start > scroll + height / 3 {
-            app.scroll
-                .set(u16::try_from(start.min(bottom)).unwrap_or(u16::MAX));
+            app.scroll.set(start.min(bottom));
         }
     }
     // As `z` keeps the place: the line at the top back there, as far into it
@@ -991,11 +990,10 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
             .rposition(|(shows, _)| shows.is_some_and(|shows| shows <= line));
         if let Some(at) = back {
             let into = if lines[at].0 == Some(line) { into } else { 0 };
-            let scroll = (row_of[at] + into).min(bottom);
-            app.scroll.set(u16::try_from(scroll).unwrap_or(u16::MAX));
+            app.scroll.set((row_of[at] + into).min(bottom));
         }
     }
-    let top = usize::from(app.scroll.get()).min(bottom);
+    let top = app.scroll.get().min(bottom);
     let line_at_top = row_of.partition_point(|&row| row <= top) - 1;
     app.top_line.set(
         lines
@@ -1006,7 +1004,6 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
     app.in_view
         .set(at_top.or((!starts.is_empty()).then_some(0)));
     *app.message_rows.borrow_mut() = starts.iter().map(|&(_, own)| own).collect();
-    let bottom = u16::try_from(bottom).unwrap_or(u16::MAX);
     app.reader_bottom.set(bottom);
     app.reader_rows.set(inner.height.max(1));
     if (0..reading.messages.len()).any(|index| reading.folds(index)) {

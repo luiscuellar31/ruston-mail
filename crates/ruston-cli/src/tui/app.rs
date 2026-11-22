@@ -224,7 +224,7 @@ pub(crate) struct App {
     pub(crate) reading: Option<Reading>,
     /// How many rows down the reader is scrolled; the view scrolls it to
     /// the message `landing` names.
-    pub(crate) scroll: Cell<u16>,
+    pub(crate) scroll: Cell<usize>,
     /// The message of the open conversation the reader brings to its top
     /// when next drawn, unless it starts in the upper third already: where
     /// the conversation opens, or one just folded or shown. The view takes
@@ -289,7 +289,7 @@ pub(crate) struct App {
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
-    pub(crate) reader_bottom: Cell<u16>,
+    pub(crate) reader_bottom: Cell<usize>,
     /// How many rows of the reader fit when last drawn, for a page.
     pub(crate) reader_rows: Cell<u16>,
     /// Where each pane was last drawn, which the view sets, for a click or
@@ -1857,7 +1857,12 @@ impl App {
             Message::Wheel { by, .. } => by * WHEEL_ROWS,
             _ => return,
         };
-        self.help_scroll = scrolled(self.help_scroll, by, self.help_bottom.get());
+        let help = scrolled(
+            usize::from(self.help_scroll),
+            by,
+            usize::from(self.help_bottom.get()),
+        );
+        self.help_scroll = u16::try_from(help).unwrap_or(u16::MAX);
     }
 
     /// Moves the selection of `pane`'s list, or the reader, `by` rows, as
@@ -2087,9 +2092,8 @@ fn page_of(rows: &Cell<u16>) -> isize {
 
 /// Where a view scrolled down `scroll` rows goes `by` rows on, between its
 /// top and `bottom`, the furthest it can go.
-fn scrolled(scroll: u16, by: isize, bottom: u16) -> u16 {
-    let scroll = usize::from(scroll).saturating_add_signed(by);
-    u16::try_from(scroll.min(usize::from(bottom))).unwrap_or(u16::MAX)
+fn scrolled(scroll: usize, by: isize, bottom: usize) -> usize {
+    scroll.saturating_add_signed(by).min(bottom)
 }
 
 /// Whether `conversation` is starred.

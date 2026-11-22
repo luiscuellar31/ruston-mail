@@ -271,6 +271,32 @@ fn the_reader_shows_the_open_conversation_and_scrolls_within_it() {
 }
 
 #[test]
+fn the_reader_reaches_the_end_of_a_conversation_longer_than_65535_rows() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    app.reading = Some(Reading {
+        id: "log".into(),
+        subject: "A long log".into(),
+        lines: (0..70_000).map(|n| format!("line {n}")).collect(),
+        quotes: Vec::new(),
+        links: Vec::new(),
+        attachments: Vec::new(),
+        messages: Vec::new(),
+        answer: None,
+        wrapped: Default::default(),
+    });
+    app.focus = Pane::Reader;
+    let _ = drawn(120, 30, &app, &Theme::new(false));
+    // End goes as far as the last line, past the 65,535th row.
+    app.update(Message::Bottom);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(screen.contains("line 69999"), "{screen}");
+    app.update(Message::Up);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(!screen.contains("line 69999"), "{screen}");
+    assert!(screen.contains("line 69998"), "{screen}");
+}
+
+#[test]
 fn the_reader_names_the_labels_the_conversation_bears() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
     let label = |id: &str, name: &str| Place {
@@ -1567,10 +1593,10 @@ fn a_long_conversation_is_wrapped_once_and_drawn_from_where_it_shows() {
     let first = text(&drawn(120, 30, &app, &theme));
     assert!(first.contains("line 0 word"), "{first}");
     // Every line takes as many rows, under the subject and its blank row.
-    let rows = usize::from(app.reader_bottom.get()) + usize::from(app.reader_rows.get());
+    let rows = app.reader_bottom.get() + usize::from(app.reader_rows.get());
     let each = (rows - 2) / 2_500;
-    assert!(each > 1 && (rows - 2) % 2_500 == 0, "{rows}");
-    app.scroll.set(u16::try_from(2 + 1_000 * each).unwrap());
+    assert!(each > 1 && (rows - 2).is_multiple_of(2_500), "{rows}");
+    app.scroll.set(2 + 1_000 * each);
     let started = std::time::Instant::now();
     let mut screen = String::new();
     for _ in 0..40 {

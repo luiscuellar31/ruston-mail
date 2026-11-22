@@ -820,7 +820,11 @@ instead of an unknown outcome.
   while Ctrl+Z suspends it where the shell has job control, and an async
   loop over crossterm's event stream, less the mouse moving, which asks for
   nothing and would cost a draw for every cell it crosses, and the answers
-  of the tasks it runs. A task that panics answers
+  of the tasks it runs. It draws again only after a message, a new size or
+  a resume: any other event asks for nothing and changes nothing. The
+  reader scrolls by `usize` rows and hands the widget only the lines that
+  show, so a conversation of any length can be read to its end. A task that
+  panics answers
   with a message the status bar shows, and its panic is not reported, so the
   interface keeps its screen. Quitting waits up to three seconds for the
   changes still on their way and then, through `Client::settle`, for a token

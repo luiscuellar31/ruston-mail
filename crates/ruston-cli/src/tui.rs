@@ -137,9 +137,10 @@ fn login_options() -> Result<LoginArgs> {
 
 /// Draws, then waits for a key or for an answer to work handed out, until
 /// the person quits or the terminal stops sending events. A resize needs no
-/// message: the next draw fits the new size. The mouse moving asks for
-/// nothing, so it never reaches the loop, which would draw again for every
-/// cell it crosses.
+/// message: the next draw fits the new size. Any other event that asks for
+/// nothing, such as a key let go of, changes nothing, so the screen is not
+/// drawn again for it. The mouse moving asks for nothing, so it never
+/// reaches the loop, which would draw again for every cell it crosses.
 async fn run_loop(
     terminal: &mut ratatui::DefaultTerminal,
     app: &mut App,
@@ -152,8 +153,11 @@ async fn run_loop(
     for effect in app.start() {
         tasks.run(effect, mailbox, &sender);
     }
+    let mut changed = true;
     while !app.quit {
-        terminal.draw(|frame| view::draw(frame, app, theme))?;
+        if changed {
+            terminal.draw(|frame| view::draw(frame, app, theme))?;
+        }
         let message = tokio::select! {
             event = events.next() => match event {
                 Some(event) => {
@@ -161,8 +165,10 @@ async fn run_loop(
                     #[cfg(unix)]
                     if suspends(&event) {
                         suspend(terminal)?;
+                        changed = true;
                         continue;
                     }
+                    changed = matches!(event, crossterm::event::Event::Resize(..));
                     app.message_for(&event)
                 }
                 None => break,
@@ -170,6 +176,7 @@ async fn run_loop(
             Some(answer) = answers.recv() => Some(answer),
         };
         if let Some(message) = message {
+            changed = true;
             for effect in app.update(message) {
                 tasks.run(effect, mailbox, &sender);
             }
