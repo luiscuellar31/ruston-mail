@@ -395,6 +395,12 @@ pub enum MailboxError {
     AttachmentVerificationFailed,
 }
 
+/// A session Proton no longer accepts, whatever was being done.
+pub(crate) const SESSION_EXPIRED: &str = "Your Proton session has expired. Sign in again.";
+
+/// An attachment whose signature does not check out, whatever was being done.
+const ATTACHMENT_UNVERIFIED: &str = "Ruston Mail could not verify the attachment signature.";
+
 /// The saved session can be fixed in place, or replaced by signing in again.
 const SESSION_UNAVAILABLE: &str = "Ruston Mail could not access the saved Proton session. \
     Unlock your password storage and try again, or sign in again.";
@@ -403,39 +409,33 @@ impl MailboxError {
     pub fn folder_message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to Proton.",
-            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionExpired => SESSION_EXPIRED,
             Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not load this folder. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this folder. Try again.",
-            Self::AttachmentVerificationFailed => {
-                "Ruston Mail could not verify the attachment signature."
-            }
+            Self::AttachmentVerificationFailed => ATTACHMENT_UNVERIFIED,
         }
     }
 
     pub fn conversation_message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to load this conversation.",
-            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionExpired => SESSION_EXPIRED,
             Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not load this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not load this conversation. Try again.",
-            Self::AttachmentVerificationFailed => {
-                "Ruston Mail could not verify the attachment signature."
-            }
+            Self::AttachmentVerificationFailed => ATTACHMENT_UNVERIFIED,
         }
     }
 
     pub fn action_message(self) -> &'static str {
         match self {
             Self::Connection => "Ruston Mail could not connect to update this conversation.",
-            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionExpired => SESSION_EXPIRED,
             Self::SessionUnavailable => SESSION_UNAVAILABLE,
             Self::Service => "Proton Mail could not update this conversation. Try again later.",
             Self::Unavailable => "Ruston Mail could not update this conversation. Try again.",
-            Self::AttachmentVerificationFailed => {
-                "Ruston Mail could not verify the attachment signature."
-            }
+            Self::AttachmentVerificationFailed => ATTACHMENT_UNVERIFIED,
         }
     }
 }
