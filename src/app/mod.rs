@@ -635,6 +635,35 @@ impl App {
         )
     }
 
+    /// Says where the attachment `request` saved went, or why it failed,
+    /// while that save is still the one under way.
+    fn finish_attachment_save(
+        &mut self,
+        request: AttachmentSaveRequest,
+        outcome: Result<PathBuf, SaveError>,
+    ) {
+        if self
+            .current_save(&request, SaveStage::Downloading)
+            .is_none()
+        {
+            return;
+        }
+        self.saving_attachment = None;
+        // An expired session ends here as it does for any request.
+        if matches!(outcome, Err(SaveError::SessionExpired)) {
+            self.close_mailbox(Some(AuthError::SessionExpired));
+            return;
+        }
+        // A save that landed after the session ended has nobody left to tell,
+        // and its news must not surface in the next one.
+        if self.mailbox.is_some() {
+            match outcome {
+                Ok(path) => self.notice = Some(Notice::Saved(path)),
+                Err(error) => self.failed_save = Some((request.attachment_id, error)),
+            }
+        }
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -669,6 +698,24 @@ impl App {
         change(&mut self.settings);
         if self.settings != before {
             self.settings_revision += 1;
+        }
+    }
+
+    /// Keeps the window's size and place. A drag reports many sizes; only a
+    /// real change is worth a write.
+    fn remember_window(&mut self, window: Window) {
+        let saved = self.settings.window;
+        let far = |a: f32, b: f32| (a - b).abs() >= RESIZE_STEP;
+        let moved = match (window.position, saved.position) {
+            (Some([x, y]), Some([saved_x, saved_y])) => far(x, saved_x) || far(y, saved_y),
+            (now, before) => now != before,
+        };
+        let changed = far(window.width, saved.width)
+            || far(window.height, saved.height)
+            || window.maximized != saved.maximized
+            || moved;
+        if changed {
+            self.remember(|settings| settings.window = window);
         }
     }
 
@@ -807,24 +854,7 @@ impl App {
                 }
             }
             Message::SearchSubmitted => return self.start_search(),
-            Message::SearchLoaded(request, result) => {
-                // With Proton out of reach, this device's index answers
-                // instead when asked to; never for a later page, as the
-                // index gives all it finds at once.
-                let unreachable = matches!(result, Err(MailboxError::Connection));
-                if unreachable
-                    && request.page == 0
-                    && self.settings.search_device_offline
-                    && self.backend.is_some()
-                {
-                    return self.fetch_device_search(request);
-                }
-                let error = self
-                    .mailbox
-                    .as_mut()
-                    .and_then(|mailbox| mailbox.finish_search(&request, result));
-                self.end_session_if_expired(error);
-            }
+            Message::SearchLoaded(request, result) => return self.finish_search(request, result),
             Message::DeviceSearchLoaded(request, found) => {
                 if let Some(mailbox) = self.mailbox.as_mut() {
                     mailbox.finish_device_search(&request, found);
@@ -865,45 +895,7 @@ impl App {
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
             Message::LoadMoreConversations => return self.load_more_conversations(),
             Message::ConversationsLoaded(request, result) => {
-                if !self.accepts_page(request) {
-                    return Effects::none();
-                }
-                let mut result = result;
-                let candidates = match &mut result {
-                    Ok(page) => std::mem::take(&mut page.inspect_candidates),
-                    Err(_) => Vec::new(),
-                };
-                let error = self
-                    .mailbox
-                    .as_mut()
-                    .and_then(|mailbox| mailbox.finish_page(request, result));
-                self.end_session_if_expired(error);
-                if error.is_none() {
-                    let revalidating = self
-                        .mailbox
-                        .as_ref()
-                        .is_some_and(Mailbox::needs_revalidation);
-                    if revalidating {
-                        return self.refresh_mailbox();
-                    }
-                }
-                // A search submitted while this page loaded has waited for it.
-                if self
-                    .mailbox
-                    .as_mut()
-                    .is_some_and(Mailbox::take_deferred_search)
-                {
-                    return self.start_search();
-                }
-                if error.is_none() {
-                    let accepted = self
-                        .mailbox
-                        .as_ref()
-                        .is_some_and(|m| m.status() == ListStatus::Loaded);
-                    if accepted && !candidates.is_empty() {
-                        return self.inspect_candidates(candidates);
-                    }
-                }
+                return self.finish_page(request, result);
             }
             Message::ThreadInspected {
                 epoch,
@@ -913,54 +905,17 @@ impl App {
                 conversation_id,
                 result,
             } => {
-                // Finishing first frees the answer's place even when the
-                // folder was renamed meanwhile, which keeps the folder.
-                if !self.is_current_session(epoch)
-                    || !self.inspections.finish(request, &conversation_id)
-                    || !self
-                        .mailbox
-                        .as_ref()
-                        .is_some_and(|mailbox| mailbox.shows(&folder))
-                {
-                    return Effects::none();
-                }
-                match result {
-                    Ok(Some(split_rows)) => {
-                        if let Some(mailbox) = self.mailbox.as_mut()
-                            && mailbox.inspection_revision() == revision
-                        {
-                            mailbox.split_conversation(&folder, &conversation_id, split_rows);
-                        }
-                    }
-                    Ok(None) => {
-                        if let Some(mailbox) = self.mailbox.as_mut()
-                            && mailbox.inspection_revision() == revision
-                        {
-                            mailbox.keep_whole(&conversation_id);
-                        }
-                    }
-                    Err(error) => {
-                        self.end_session_if_expired(Some(error));
-                    }
-                }
-                return self.start_inspections();
+                return self.finish_inspection(
+                    epoch,
+                    request,
+                    revision,
+                    folder,
+                    conversation_id,
+                    result,
+                );
             }
             Message::ConversationLoaded(request, result) => {
-                // Only the load the reader waits for opens anything. A late
-                // answer for a conversation left behind must not mark the one
-                // on screen read: it may have been marked unread meanwhile.
-                let awaited = self
-                    .mailbox
-                    .as_ref()
-                    .is_some_and(|mailbox| mailbox.awaits(&request));
-                let error = self
-                    .mailbox
-                    .as_mut()
-                    .and_then(|mailbox| mailbox.finish_conversation(&request, result));
-                self.end_session_if_expired(error);
-                if awaited {
-                    return Effects::batch([self.mark_opened_read(), self.preload_successor()]);
-                }
+                return self.finish_conversation(request, result);
             }
             Message::ConversationPreloaded(request, result) => {
                 let error = self
@@ -969,28 +924,7 @@ impl App {
                     .and_then(|mailbox| mailbox.finish_preload(&request, result));
                 self.end_session_if_expired(error);
             }
-            Message::FoldersLoaded(epoch, result) => {
-                if !self.is_current_session(epoch) {
-                    return Effects::none();
-                }
-                match result {
-                    Ok(places) => {
-                        self.folders = places.folders;
-                        self.place_looks = places.looks;
-                    }
-                    // Without them the sidebar shows Proton's own until the
-                    // next refresh asks again. A list that did not arrive says
-                    // nothing about the open folder, which stays open.
-                    Err(error) => {
-                        self.refetch_folders = true;
-                        self.end_session_if_expired(Some(error));
-                        return Effects::none();
-                    }
-                }
-                // Counts were asked for before the folders were known, so ask
-                // again now that they are.
-                return Effects::batch([self.reconcile_open_folder(), self.reload_counts()]);
-            }
+            Message::FoldersLoaded(epoch, result) => return self.finish_folders(epoch, result),
             Message::CountsLoaded(request, result) => {
                 let error = self
                     .mailbox
@@ -999,27 +933,7 @@ impl App {
                 self.end_session_if_expired(error);
             }
             Message::NewMailLoaded(epoch, request, result) => {
-                if !self.is_current_session(epoch)
-                    || !self.auth_state.is_authenticated()
-                    || !self.settings.desktop_notifications
-                    || self.new_mail.pending != Some(request)
-                {
-                    return Effects::none();
-                }
-                self.new_mail.pending = None;
-                match result {
-                    Ok(messages) => {
-                        if let Some(mail) = self.new_mail.observe(&messages) {
-                            return Effects::ui(UiEffect::NotifyNewMail {
-                                sender: mail.sender.clone(),
-                                subject: mail.subject.clone(),
-                            });
-                        }
-                    }
-                    Err(error) => {
-                        self.end_session_if_expired(Some(error));
-                    }
-                }
+                return self.finish_new_mail(epoch, request, result);
             }
             Message::ActionFinished(request, result) => {
                 return self.finish_mail_action(request, result);
@@ -1079,22 +993,7 @@ impl App {
                 return Effects::ui(UiEffect::ResetLayout);
             }
             Message::KeyPressed(press) => return self.handle_key(press),
-            // A drag reports many sizes; only a real change is worth a write.
-            Message::WindowResized(window) => {
-                let saved = self.settings.window;
-                let far = |a: f32, b: f32| (a - b).abs() >= RESIZE_STEP;
-                let moved = match (window.position, saved.position) {
-                    (Some([x, y]), Some([saved_x, saved_y])) => far(x, saved_x) || far(y, saved_y),
-                    (now, before) => now != before,
-                };
-                let changed = far(window.width, saved.width)
-                    || far(window.height, saved.height)
-                    || window.maximized != saved.maximized
-                    || moved;
-                if changed {
-                    self.remember(|settings| settings.window = window);
-                }
-            }
+            Message::WindowResized(window) => self.remember_window(window),
             Message::SaveAttachment {
                 message_id,
                 attachment_id,
@@ -1118,26 +1017,7 @@ impl App {
                 self.finish_inline_image(epoch, &attachment_id, picture);
             }
             Message::AttachmentSaved(request, outcome) => {
-                if self
-                    .current_save(&request, SaveStage::Downloading)
-                    .is_none()
-                {
-                    return Effects::none();
-                }
-                self.saving_attachment = None;
-                // An expired session ends here as it does for any request.
-                if matches!(outcome, Err(SaveError::SessionExpired)) {
-                    self.close_mailbox(Some(AuthError::SessionExpired));
-                    return Effects::none();
-                }
-                // A save that landed after the session ended has nobody left
-                // to tell, and its news must not surface in the next one.
-                if self.mailbox.is_some() {
-                    match outcome {
-                        Ok(path) => self.notice = Some(Notice::Saved(path)),
-                        Err(error) => self.failed_save = Some((request.attachment_id, error)),
-                    }
-                }
+                self.finish_attachment_save(request, outcome);
             }
             Message::RevealAttachment(path) => return reveal_in_file_manager(path),
             Message::ShowSettings(showing) => self.showing_settings = showing,
@@ -1785,6 +1665,32 @@ impl App {
         )
     }
 
+    /// Shows the page of results a search brought, or asks this device's
+    /// index instead when Proton was out of reach.
+    fn finish_search(
+        &mut self,
+        request: SearchRequest,
+        result: Result<ConversationPage, MailboxError>,
+    ) -> Effects {
+        // With Proton out of reach, this device's index answers instead when
+        // asked to; never for a later page, as the index gives all it finds
+        // at once.
+        let unreachable = matches!(result, Err(MailboxError::Connection));
+        if unreachable
+            && request.page == 0
+            && self.settings.search_device_offline
+            && self.backend.is_some()
+        {
+            return self.fetch_device_search(request);
+        }
+        let error = self
+            .mailbox
+            .as_mut()
+            .and_then(|mailbox| mailbox.finish_search(&request, result));
+        self.end_session_if_expired(error);
+        Effects::none()
+    }
+
     /// Looks in this device's index for a search Proton could not answer.
     fn fetch_device_search(&self, request: SearchRequest) -> Effects {
         let Some(backend) = self.backend.clone() else {
@@ -1875,6 +1781,55 @@ impl App {
         )
     }
 
+    /// Shows a page of the list, if it is the one awaited, and goes on with
+    /// what waited for it: listing again when a change made meanwhile left
+    /// it stale, a search submitted meanwhile, or the rows worth looking into.
+    fn finish_page(
+        &mut self,
+        request: RequestId,
+        mut result: Result<ConversationPage, MailboxError>,
+    ) -> Effects {
+        if !self.accepts_page(request) {
+            return Effects::none();
+        }
+        let candidates = match &mut result {
+            Ok(page) => std::mem::take(&mut page.inspect_candidates),
+            Err(_) => Vec::new(),
+        };
+        let error = self
+            .mailbox
+            .as_mut()
+            .and_then(|mailbox| mailbox.finish_page(request, result));
+        self.end_session_if_expired(error);
+        if error.is_none() {
+            let revalidating = self
+                .mailbox
+                .as_ref()
+                .is_some_and(Mailbox::needs_revalidation);
+            if revalidating {
+                return self.refresh_mailbox();
+            }
+        }
+        // A search submitted while this page loaded has waited for it.
+        if self
+            .mailbox
+            .as_mut()
+            .is_some_and(Mailbox::take_deferred_search)
+        {
+            return self.start_search();
+        }
+        if error.is_none() {
+            let accepted = self
+                .mailbox
+                .as_ref()
+                .is_some_and(|m| m.status() == ListStatus::Loaded);
+            if accepted && !candidates.is_empty() {
+                return self.inspect_candidates(candidates);
+            }
+        }
+        Effects::none()
+    }
+
     fn inspect_candidates(&mut self, candidates: Vec<String>) -> Effects {
         let Some(mailbox) = self.mailbox.as_ref() else {
             return Effects::none();
@@ -1945,6 +1900,50 @@ impl App {
         Effects::batch(effects)
     }
 
+    /// Splits the row an inspection looked into, or keeps it whole, while its
+    /// answer is still wanted, and starts the inspections waiting.
+    fn finish_inspection(
+        &mut self,
+        epoch: SessionEpoch,
+        request: RequestId,
+        revision: u64,
+        folder: Folder,
+        conversation_id: String,
+        result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
+    ) -> Effects {
+        // Finishing first frees the answer's place even when the folder was
+        // renamed meanwhile, which keeps the folder.
+        if !self.is_current_session(epoch)
+            || !self.inspections.finish(request, &conversation_id)
+            || !self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.shows(&folder))
+        {
+            return Effects::none();
+        }
+        match result {
+            Ok(Some(split_rows)) => {
+                if let Some(mailbox) = self.mailbox.as_mut()
+                    && mailbox.inspection_revision() == revision
+                {
+                    mailbox.split_conversation(&folder, &conversation_id, split_rows);
+                }
+            }
+            Ok(None) => {
+                if let Some(mailbox) = self.mailbox.as_mut()
+                    && mailbox.inspection_revision() == revision
+                {
+                    mailbox.keep_whole(&conversation_id);
+                }
+            }
+            Err(error) => {
+                self.end_session_if_expired(Some(error));
+            }
+        }
+        self.start_inspections()
+    }
+
     /// Asks for the folders the account made. They change rarely, so only a
     /// list that failed to load is asked for again, by the next refresh.
     fn fetch_folders(&mut self) -> Effects {
@@ -1957,6 +1956,35 @@ impl App {
         Effects::perform(async move { backend.list_folders().await }, move |result| {
             Message::FoldersLoaded(epoch, result)
         })
+    }
+
+    /// Keeps the folders the account made, which arrived, and asks for the
+    /// counts again now that they are known.
+    fn finish_folders(
+        &mut self,
+        epoch: SessionEpoch,
+        result: Result<OwnPlaces, MailboxError>,
+    ) -> Effects {
+        if !self.is_current_session(epoch) {
+            return Effects::none();
+        }
+        match result {
+            Ok(places) => {
+                self.folders = places.folders;
+                self.place_looks = places.looks;
+            }
+            // Without them the sidebar shows Proton's own until the next
+            // refresh asks again. A list that did not arrive says nothing about
+            // the open folder, which stays open.
+            Err(error) => {
+                self.refetch_folders = true;
+                self.end_session_if_expired(Some(error));
+                return Effects::none();
+            }
+        }
+        // Counts were asked for before the folders were known, so ask again
+        // now that they are.
+        Effects::batch([self.reconcile_open_folder(), self.reload_counts()])
     }
 
     fn fetch_counts(&self, request: Option<RequestId>) -> Effects {
@@ -1992,6 +2020,38 @@ impl App {
         )
     }
 
+    /// Notifies of the newest mail in the Inbox that arrived, if it is new
+    /// and notifications are still wanted.
+    fn finish_new_mail(
+        &mut self,
+        epoch: SessionEpoch,
+        request: RequestId,
+        result: Result<Vec<IncomingMail>, MailboxError>,
+    ) -> Effects {
+        if !self.is_current_session(epoch)
+            || !self.auth_state.is_authenticated()
+            || !self.settings.desktop_notifications
+            || self.new_mail.pending != Some(request)
+        {
+            return Effects::none();
+        }
+        self.new_mail.pending = None;
+        match result {
+            Ok(messages) => {
+                if let Some(mail) = self.new_mail.observe(&messages) {
+                    return Effects::ui(UiEffect::NotifyNewMail {
+                        sender: mail.sender.clone(),
+                        subject: mail.subject.clone(),
+                    });
+                }
+            }
+            Err(error) => {
+                self.end_session_if_expired(Some(error));
+            }
+        }
+        Effects::none()
+    }
+
     fn fetch_conversation(&mut self, request: Option<ReaderRequest>) -> Effects {
         let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
             return Effects::none();
@@ -2021,6 +2081,31 @@ impl App {
                 )
             },
         )
+    }
+
+    /// Shows a conversation that arrived, and then, if the reader waited for
+    /// it, marks it read as opening it does and preloads the one after it.
+    fn finish_conversation(
+        &mut self,
+        request: ReaderRequest,
+        result: Result<ConversationDetail, MailboxError>,
+    ) -> Effects {
+        // Only the load the reader waits for opens anything. A late answer for
+        // a conversation left behind must not mark the one on screen read: it
+        // may have been marked unread meanwhile.
+        let awaited = self
+            .mailbox
+            .as_ref()
+            .is_some_and(|mailbox| mailbox.awaits(&request));
+        let error = self
+            .mailbox
+            .as_mut()
+            .and_then(|mailbox| mailbox.finish_conversation(&request, result));
+        self.end_session_if_expired(error);
+        if awaited {
+            return Effects::batch([self.mark_opened_read(), self.preload_successor()]);
+        }
+        Effects::none()
     }
 
     /// Loads into the reader's cache, in the background, the conversation
