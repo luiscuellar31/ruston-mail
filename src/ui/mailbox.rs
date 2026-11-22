@@ -399,7 +399,7 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
             email.unwrap_or("Proton Mail account")
         };
         let label = egui::RichText::new(account_label)
-            .size(12.0)
+            .size(theme::CAPTION_SIZE)
             .color(theme::colors(ui).muted);
         if app.is_demo_process() || signing_out {
             ui.add(egui::Label::new(label).truncate())
@@ -554,7 +554,7 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new("New message")
-                .size(15.0)
+                .size(theme::BODY_SIZE)
                 .color(theme::ON_ACCENT)
                 .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
             egui::Atom::grow(),
@@ -692,8 +692,13 @@ fn conversation_pane(
             refresh_button(ui, app, mailbox, messages);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(title).heading().size(21.0).strong())
-                        .truncate(),
+                    egui::Label::new(
+                        egui::RichText::new(title)
+                            .heading()
+                            .size(theme::LIST_TITLE_SIZE)
+                            .strong(),
+                    )
+                    .truncate(),
                 );
             });
         });

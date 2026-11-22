@@ -1770,7 +1770,7 @@ fn block(
         BlockKind::Preformatted(content) => {
             egui::Frame::new()
                 .fill(theme::colors(ui).code_fill)
-                .corner_radius(6)
+                .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -1797,7 +1797,7 @@ fn block(
                     let shown = ui.add(
                         egui::Image::new(&texture)
                             .fit_to_exact_size(egui::vec2(width, size.y * width / size.x))
-                            .corner_radius(4),
+                            .corner_radius(theme::PICTURE_CORNER_RADIUS),
                     );
                     if !description.is_empty() {
                         shown.on_hover_text(description);
@@ -1823,7 +1823,7 @@ fn block(
             // in for one, as a placeholder rather than a footnote.
             egui::Frame::new()
                 .stroke(Stroke::new(1.0, theme::colors(ui).border))
-                .corner_radius(6)
+                .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -2146,10 +2146,11 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
 }
 
 fn heading_size(level: u8) -> f32 {
+    let [first, second, rest] = theme::BODY_HEADING_SIZES;
     match level {
-        1 => 24.0,
-        2 => 20.0,
-        _ => 17.0,
+        1 => first,
+        2 => second,
+        _ => rest,
     }
 }
 

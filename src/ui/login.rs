@@ -155,7 +155,9 @@ fn icon_button(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, label: &str)
 /// The card stays horizontally centred while the whole page can scroll at
 /// small window sizes or high zoom levels.
 fn card(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) -> egui::Response {
-    let mut frame = theme::card(ui).inner_margin(CARD_PADDING).corner_radius(20);
+    let mut frame = theme::card(ui)
+        .inner_margin(CARD_PADDING)
+        .corner_radius(theme::SIGN_IN_CORNER_RADIUS);
     if !ui.visuals().dark_mode {
         frame = frame.stroke(egui::Stroke::NONE).shadow(egui::Shadow {
             offset: [0, 6],

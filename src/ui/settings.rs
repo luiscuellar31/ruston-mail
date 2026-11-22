@@ -90,7 +90,11 @@ fn page(
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
 ) {
-    ui.heading(egui::RichText::new("Settings").size(24.0).strong());
+    ui.heading(
+        egui::RichText::new("Settings")
+            .size(theme::PAGE_TITLE_SIZE)
+            .strong(),
+    );
     ui.add_space(18.0);
 
     reading(ui, settings);
@@ -428,7 +432,7 @@ fn about(
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION")))
-                        .size(18.0)
+                        .size(theme::ABOUT_TITLE_SIZE)
                         .strong(),
                 );
                 description(ui, "A native Proton Mail client.");
@@ -651,7 +655,9 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str, keys_width: f32) {
 }
 
 fn key_text(keys: &str) -> egui::RichText {
-    egui::RichText::new(keys).monospace().size(12.0)
+    egui::RichText::new(keys)
+        .monospace()
+        .size(theme::CAPTION_SIZE)
 }
 
 /// The width of the keys column: its widest key, or more. A key wider than
@@ -685,7 +691,11 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
         .show(ui, |ui| {
             // Cards fill the page instead of sizing to their longest line.
             ui.set_width(ui.available_width());
-            ui.heading(egui::RichText::new(title).size(17.0).strong());
+            ui.heading(
+                egui::RichText::new(title)
+                    .size(theme::SECTION_TITLE_SIZE)
+                    .strong(),
+            );
             ui.add_space(4.0);
             content(ui);
         })
