@@ -207,9 +207,14 @@ impl Client {
         if let Some(id) = known_label_id(folder) {
             return Ok(id);
         }
-        let mut own = self.list_folders().await?;
-        own.extend(self.list_labels().await?);
-        folder_id_among(&own, folder)
+        folder_id_among(&self.own_places().await?, folder)
+    }
+
+    /// The folders and labels the account made, asked for at once.
+    async fn own_places(&self) -> Result<Vec<Label>> {
+        let (mut own, labels) = tokio::try_join!(self.list_folders(), self.list_labels())?;
+        own.extend(labels);
+        Ok(own)
     }
 
     /// Makes a label named `name` in `color`, or with `folder` a folder,
@@ -243,9 +248,9 @@ impl Client {
         let (name, color) = match (name, color) {
             (Some(name), Some(color)) => (name.to_owned(), color.to_owned()),
             _ => {
-                let mut own = self.list_folders().await?;
-                own.extend(self.list_labels().await?);
-                let current = own
+                let current = self
+                    .own_places()
+                    .await?
                     .into_iter()
                     .find(|label| label.id == id)
                     .ok_or_else(|| Error::NotFound {

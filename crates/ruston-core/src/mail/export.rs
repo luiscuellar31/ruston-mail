@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::mail::attachments::safe_attachment_name;
 use crate::model::MimeType;
 use crate::model::enums::resolve_folder;
-use crate::model::message::{Attachment, Message, Recipient};
+use crate::model::message::{Attachment, MessageMetadata, Recipient};
 pub use crate::private_file::create_private;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::collections::HashSet;
@@ -164,16 +164,17 @@ impl Client {
         if std::fs::symlink_metadata(&path).is_ok() {
             return Ok(Exported::AlreadyThere);
         }
-        let message = api::messages::get_message(self.http(), message_id).await?;
+        let mut message = api::messages::get_message(self.http(), message_id).await?;
+        let header = message.header.take();
+        // What a report of it would name, kept apart: the message itself,
+        // its encrypted body and all, goes to be opened.
+        let (meta, reply_tos) = (message.meta.clone(), message.reply_tos.clone());
         // The file carries no word on who signed the body, so the sender's
         // keys are not asked for: one lookup a message is what gets a long
         // export refused for asking too much.
-        let (full, mut inside) = match self
-            .open_message_and_parts(message.clone(), Vec::new())
-            .await
-        {
+        let (full, mut inside) = match self.open_message_and_parts(message, Vec::new()).await {
             Ok(opened) => opened,
-            Err(error) => return Ok(skipped(message, error)),
+            Err(error) => return Ok(skipped(meta, reply_tos, error)),
         };
         // The file is written under a hidden name and moved into place once
         // complete, so an interrupted export never leaves a partial file
@@ -184,12 +185,12 @@ impl Client {
         let mut file = BufWriter::new(create_private(&temp)?);
 
         let result = async {
-            let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
+            let mut eml = EmlWriter::new(&mut file, &full, header.as_deref())?;
             // Those inside a PGP/MIME body come from the one opened here.
             let refused = full.verdict == crate::crypto::Verdict::Invalid;
             for attachment in &full.attachments {
                 let (_, bytes) = self
-                    .take_attachment(&message.meta, attachment, &mut inside, refused)
+                    .take_attachment(&full.meta, attachment, &mut inside, refused)
                     .await?;
                 eml.attachment(attachment, &bytes)?;
             }
@@ -208,17 +209,19 @@ impl Client {
         match placed {
             Ok(true) => Ok(Exported::Written),
             Ok(false) => Ok(Exported::AlreadyThere),
-            Err(error) if is_about_the_message(&error) => Ok(skipped(message, error)),
+            Err(error) if is_about_the_message(&error) => {
+                Ok(skipped(full.meta, full.reply_tos, error))
+            }
             Err(error) => Err(error),
         }
     }
 }
 
-fn skipped(message: Message, error: Error) -> Exported {
-    tracing::debug!(target: "ruston_core::mail", message_id = %message.meta.id, error = %error, "message skipped by export");
+fn skipped(meta: MessageMetadata, reply_tos: Vec<Recipient>, error: Error) -> Exported {
+    tracing::debug!(target: "ruston_core::mail", message_id = %meta.id, error = %error, "message skipped by export");
     Exported::Skipped(Box::new(UnreadableMessage {
-        meta: message.meta,
-        reply_tos: message.reply_tos,
+        meta,
+        reply_tos,
         error,
     }))
 }
@@ -597,7 +600,13 @@ impl<'a, W: Write> Base64Lines<'a, W> {
     }
 
     fn flush_line(&mut self) -> Result<()> {
-        write!(self.out, "{}\r\n", STANDARD.encode(&self.line[..self.len]))?;
+        // Encoded where it is written, with no string a line.
+        let mut encoded = [0; BASE64_LINE_BYTES / 3 * 4 + 2];
+        let length = STANDARD
+            .encode_slice(&self.line[..self.len], &mut encoded)
+            .map_err(|error| Error::Other(format!("base64 line: {error}")))?;
+        encoded[length..length + 2].copy_from_slice(b"\r\n");
+        self.out.write_all(&encoded[..length + 2])?;
         self.len = 0;
         Ok(())
     }

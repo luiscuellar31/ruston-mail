@@ -7,7 +7,11 @@ use crate::crypto::{self, AddressKeys};
 use crate::error::{Error, Result};
 use crate::model::enums::label_ids;
 use crate::model::message::MessageMetadata;
+use futures::{StreamExt, TryStreamExt, stream};
 use serde_json::json;
+
+/// How many of the drafts to delete are checked at once.
+const DRAFT_CHECK_CONCURRENCY: usize = 3;
 
 /// A draft written from `addr`, its body encrypted to that address's key:
 /// what saving a draft writes, and what sending one starts from.
@@ -129,12 +133,15 @@ impl Client {
         }
     }
 
-    /// Delete drafts permanently. Every ID is checked first: if any of them
-    /// is not a draft, nothing is deleted.
+    /// Delete drafts permanently. Every ID is checked first, a few at a
+    /// time and answered in order, so the first that is not a draft is the
+    /// one named: if any is not, nothing is deleted.
     pub async fn delete_draft(&self, ids: &[String]) -> Result<()> {
-        for id in ids {
-            self.draft_metadata(id).await?;
-        }
+        stream::iter(ids)
+            .map(|id| self.draft_metadata(id))
+            .buffered(DRAFT_CHECK_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
         api::messages::delete(self.http(), ids).await
     }
 }

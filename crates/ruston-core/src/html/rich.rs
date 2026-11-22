@@ -965,9 +965,14 @@ impl Builder {
             styled,
             button: false,
         };
-        // A cell keeps its own copy, in case its table holds data; a line
-        // break within it reads as a space there.
-        if let Some(cell) = self.open_table().and_then(|table| table.cell.as_mut()) {
+        // A cell keeps its own copy, in case its table holds data, which ends
+        // once the table is known to hold none; a line break within it reads
+        // as a space there.
+        if let Some(cell) = self
+            .open_table()
+            .filter(|table| table.data)
+            .and_then(|table| table.cell.as_mut())
+        {
             let text = if text == "\n" { " " } else { text };
             match cell.last_mut() {
                 Some(last) if same_style(last, &run) => last.text.push_str(text),
