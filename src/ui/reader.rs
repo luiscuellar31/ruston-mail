@@ -1495,7 +1495,7 @@ fn texture(
     }
     let texture = ui.ctx().load_texture(
         format!("message-picture-{attachment}"),
-        egui::ColorImage::from_rgba_unmultiplied(picture.size, &picture.rgba),
+        egui::ColorImage::from_rgba_premultiplied(picture.size, &picture.rgba),
         egui::TextureOptions::LINEAR,
     );
     ui.data_mut(|data| {
