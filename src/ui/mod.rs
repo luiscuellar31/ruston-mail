@@ -185,6 +185,23 @@ enum SettingsExit {
     CloseWindow,
 }
 
+/// What the screen drawn in one pass asks of the shell.
+#[derive(Default)]
+struct ScreenPass {
+    messages: Vec<Message>,
+    /// The step the zoom keys of the composer's own window ask for.
+    composer_zoom: Option<settings::ZoomStep>,
+    /// Files dropped where the draft is.
+    dropped: Vec<std::path::PathBuf>,
+}
+
+/// The answers given in one pass to the prompts then open.
+struct PromptAnswers {
+    settings_exit: Option<settings::ExitDecision>,
+    discard: Option<Message>,
+    wait: Option<close::WaitDecision>,
+}
+
 impl DesktopApp {
     fn new(creation: &eframe::CreationContext<'_>, demo: bool, settings: Settings) -> Self {
         let mut app = Self::with_context(&creation.egui_ctx, demo, settings);
@@ -1078,6 +1095,120 @@ impl DesktopApp {
     fn activation_blocked(&self) -> bool {
         self.window_close_approved || self.prompt_open()
     }
+
+    /// Drops the settings draft, and the exit waiting on it, once the
+    /// settings pane is gone.
+    fn forget_hidden_settings_draft(&mut self) {
+        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
+            self.settings_draft = None;
+            self.pending_settings_exit = None;
+        }
+    }
+
+    /// Draws the screen the sign-in state calls for, and the composer's own
+    /// window, gathering what they ask for in this pass.
+    fn draw_screen(&mut self, ui: &mut egui::Ui, context: &egui::Context) -> ScreenPass {
+        let mut pass = ScreenPass::default();
+        email_link_notice(ui, &self.app, &mut pass.messages);
+        match self.app.auth_state() {
+            AuthState::CheckingSession if self.app.opening_saved_session() => {
+                mailbox::show_opening(ui, &self.app);
+            }
+            AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
+            AuthState::SignedOut
+            | AuthState::SigningIn(_)
+            | AuthState::NeedsTotp
+            | AuthState::NeedsMailboxPassword
+            | AuthState::NeedsHumanVerification { .. } => {
+                login::show(
+                    ui,
+                    &mut self.app,
+                    &mut self.ui.show_password,
+                    &mut pass.messages,
+                );
+            }
+            AuthState::Authenticated { .. } => {
+                if self.app.mailbox().is_some() {
+                    let draft = if self.app.showing_settings() {
+                        Some(
+                            self.settings_draft
+                                .get_or_insert_with(|| self.app.settings().clone()),
+                        )
+                    } else {
+                        None
+                    };
+                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut pass.messages);
+                } else {
+                    status_view(ui, "Opening mailbox…");
+                }
+
+                if self.app.settings().compose_placement == ComposePlacement::Window
+                    && let Some(writing) = self.app.compose()
+                {
+                    let window = compose::show_window(
+                        context,
+                        writing,
+                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
+                        std::mem::take(&mut self.composer_edits),
+                        &mut self.composer_title_bar,
+                    );
+                    pass.messages.extend(window.messages);
+                    pass.composer_zoom = window.zoom;
+                    pass.dropped = window.dropped;
+                } else if self.app.compose().is_some() && !self.app.showing_settings() {
+                    // The draft is in this window's reading pane.
+                    pass.dropped = dropped_paths(context);
+                }
+            }
+            AuthState::SigningOut => {
+                if self.app.mailbox().is_some() {
+                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut pass.messages);
+                } else {
+                    status_view(ui, "Signing out…");
+                }
+            }
+        }
+        pass
+    }
+
+    /// Draws the prompts open now and reads their answers.
+    fn ask_prompts(&self, context: &egui::Context) -> PromptAnswers {
+        PromptAnswers {
+            settings_exit: self
+                .pending_settings_exit
+                .as_ref()
+                .and_then(|_| settings::confirm_exit(context)),
+            discard: self
+                .pending_discard
+                .and_then(|leaving| close::confirm_discard(context, leaving)),
+            wait: self.deferred_leave.waiting().and_then(|leaving| {
+                let holding = self.holding(leaving)?;
+                close::confirm_wait(context, leaving, holding)
+            }),
+        }
+    }
+
+    fn apply_prompt_answers(&mut self, answers: PromptAnswers, context: &egui::Context) {
+        if let Some(decision) = answers.settings_exit {
+            self.resolve_settings_exit(decision, context);
+        }
+        if let Some(decision) = answers.discard {
+            self.resolve_discard(decision, context);
+        }
+        match answers.wait {
+            Some(close::WaitDecision::Stay) => {
+                self.deferred_leave.cancel();
+                self.pending_account = None;
+            }
+            // Asking again while it waits goes ahead at once.
+            Some(close::WaitDecision::GoNow) => {
+                if let Some(leaving) = self.deferred_leave.waiting() {
+                    self.leave(leaving, context);
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 impl eframe::App for DesktopApp {
@@ -1137,117 +1268,31 @@ impl eframe::App for DesktopApp {
             return;
         }
         let context = ui.ctx().clone();
-        let mut messages = Vec::new();
-        let mut composer_zoom = None;
-        let mut dropped = Vec::new();
         reader::forget_textures(&context, self.app.inline_images());
-        email_link_notice(ui, &self.app, &mut messages);
-        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
-            self.settings_draft = None;
-            self.pending_settings_exit = None;
-        }
-        match self.app.auth_state() {
-            AuthState::CheckingSession if self.app.opening_saved_session() => {
-                mailbox::show_opening(ui, &self.app);
-            }
-            AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
-            AuthState::SignedOut
-            | AuthState::SigningIn(_)
-            | AuthState::NeedsTotp
-            | AuthState::NeedsMailboxPassword
-            | AuthState::NeedsHumanVerification { .. } => {
-                login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
-            }
-            AuthState::Authenticated { .. } => {
-                if self.app.mailbox().is_some() {
-                    let draft = if self.app.showing_settings() {
-                        Some(
-                            self.settings_draft
-                                .get_or_insert_with(|| self.app.settings().clone()),
-                        )
-                    } else {
-                        None
-                    };
-                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut messages);
-                } else {
-                    status_view(ui, "Opening mailbox…");
-                }
-
-                if self.app.settings().compose_placement == ComposePlacement::Window
-                    && let Some(writing) = self.app.compose()
-                {
-                    let window = compose::show_window(
-                        &context,
-                        writing,
-                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
-                        std::mem::take(&mut self.composer_edits),
-                        &mut self.composer_title_bar,
-                    );
-                    messages.extend(window.messages);
-                    composer_zoom = window.zoom;
-                    dropped = window.dropped;
-                } else if self.app.compose().is_some() && !self.app.showing_settings() {
-                    // The draft is in this window's reading pane.
-                    dropped = dropped_paths(&context);
-                }
-            }
-            AuthState::SigningOut => {
-                if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut messages);
-                } else {
-                    status_view(ui, "Signing out…");
-                }
-            }
-        }
-
+        self.forget_hidden_settings_draft();
+        let mut pass = self.draw_screen(ui, &context);
         if let Some(link) = self.app.pending_link() {
-            messages.extend(reader::link_dialog(&context, link));
+            pass.messages.extend(reader::link_dialog(&context, link));
         }
         // The discard confirmation owns the decision even if input for the
         // same frame was already queued in a pane or the child composer.
         if self.pending_discard.is_some() {
-            messages.clear();
+            pass.messages.clear();
         }
-        let exit_decision = self
-            .pending_settings_exit
-            .as_ref()
-            .and_then(|_| settings::confirm_exit(&context));
-        let discard_decision = self
-            .pending_discard
-            .and_then(|leaving| close::confirm_discard(&context, leaving));
-        let wait_decision = self.deferred_leave.waiting().and_then(|leaving| {
-            let holding = self.holding(leaving)?;
-            close::confirm_wait(&context, leaving, holding)
-        });
+        // No test drives this pass, so mind its order: the prompts are
+        // answered before the messages are dispatched, and act after them.
+        let answers = self.ask_prompts(&context);
         theme::paint_focus_ring(&context);
         self.keep_secure_input(&context);
-        if let Some(step) = composer_zoom {
+        if let Some(step) = pass.composer_zoom {
             self.step_zoom(step, &context);
         }
-        self.attach_dropped(dropped, &context);
-        let has_messages = !messages.is_empty();
-        for message in messages {
+        self.attach_dropped(pass.dropped, &context);
+        let has_messages = !pass.messages.is_empty();
+        for message in pass.messages {
             self.dispatch(message, &context);
         }
-        if let Some(decision) = exit_decision {
-            self.resolve_settings_exit(decision, &context);
-        }
-        if let Some(decision) = discard_decision {
-            self.resolve_discard(decision, &context);
-        }
-        match wait_decision {
-            Some(close::WaitDecision::Stay) => {
-                self.deferred_leave.cancel();
-                self.pending_account = None;
-            }
-            // Asking again while it waits goes ahead at once.
-            Some(close::WaitDecision::GoNow) => {
-                if let Some(leaving) = self.deferred_leave.waiting() {
-                    self.leave(leaving, &context);
-                }
-            }
-            None => {}
-        }
+        self.apply_prompt_answers(answers, &context);
         if has_messages {
             context.request_repaint();
         }
