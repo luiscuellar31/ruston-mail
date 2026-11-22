@@ -563,6 +563,9 @@ Options:
 - `--skip-build`: Package the existing `target/release` binaries without rebuilding.
 - `--target <TRIPLE>`: Build for another architecture, such as `x86_64-apple-darwin`
   on Apple Silicon, after `rustup target add <TRIPLE>`.
+- `--binary <PATH>`: Package a `ruston` built elsewhere, with the `ruston-cli`
+  beside it; nothing is built.
+- `--dist <PATH>`: Write the bundle and disk image there instead of `dist/`.
 - `CODESIGN_IDENTITY="Developer ID Application: ..."`: Sign with a commercial certificate; defaults to ad-hoc signing (`-s -`).
 
 Artifacts are written to `dist/`:

@@ -7,11 +7,9 @@
 
 set -euo pipefail
 
-# Helper logging
 log()  { printf "\033[1;34m[INFO]\033[0m %s\n" "$*"; }
 die()  { printf "\033[1;31m[FAIL]\033[0m %s\n" "$*" >&2; exit 1; }
 
-# Paths and coordinates
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ASSETS_DIR="$REPO_ROOT/assets/macos"
@@ -22,7 +20,6 @@ EXECUTABLE="ruston"
 CLI_EXECUTABLE="ruston-cli"
 IDENTIFIER="com.luiscuellar.ruston-mail"
 
-# Usage instructions
 usage() {
     cat << EOF
 Usage: $(basename "$0") [OPTIONS]
@@ -79,7 +76,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# Check essential host tools
 for cmd in codesign hdiutil sips; do
     command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd"
 done
@@ -142,19 +138,16 @@ log "Assembling bundle at: $APP_DIR"
 rm -rf "$APP_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 
-# Copy binaries
 cp "$BINARY_PATH" "$APP_DIR/Contents/MacOS/$EXECUTABLE"
 cp "$CLI_PATH" "$APP_DIR/Contents/MacOS/$CLI_EXECUTABLE"
 chmod 755 "$APP_DIR/Contents/MacOS/$EXECUTABLE" "$APP_DIR/Contents/MacOS/$CLI_EXECUTABLE"
 
-# Copy icon
 cp "$ICNS_PATH" "$APP_DIR/Contents/Resources/ruston-mail.icns"
 
 # The licenses: Ruston Mail's and those of what it ships with it. Settings
 # finds the notices here (src/licenses.rs), so keep the two in step.
 cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" "$APP_DIR/Contents/Resources/"
 
-# Configure Info.plist
 PLIST_TEMPLATE="$ASSETS_DIR/Info.plist"
 [[ -f "$PLIST_TEMPLATE" ]] || die "Info.plist template missing at: $PLIST_TEMPLATE"
 sed \
