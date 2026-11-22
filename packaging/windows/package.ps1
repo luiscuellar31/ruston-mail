@@ -26,9 +26,7 @@ function Write-Step([string]$Message) { Write-Host "[package] $Message" }
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 if (-not $Dist) { $Dist = Join-Path $repository 'dist' }
 $target = @{ x86_64 = 'x86_64-pc-windows-msvc'; arm64 = 'aarch64-pc-windows-msvc' }[$Architecture]
-$versionLine = Get-Content -LiteralPath (Join-Path $repository 'Cargo.toml') |
-    Where-Object { $_ -match '^version = "' } | Select-Object -First 1
-$version = $versionLine.Split('"')[1]
+$version = & (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace-version.ps1')
 
 if (-not $InnoSetup) {
     $InnoSetup = @(

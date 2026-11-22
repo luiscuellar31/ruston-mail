@@ -5,7 +5,10 @@ version, edition, and minimum Rust version are set in the root
 [`Cargo.toml`](../Cargo.toml) under `[workspace.package]`, whose
 `resolver = "3"` prefers dependency versions that minimum can build. The
 release workflow and the macOS and Linux packaging scripts read that version
-with [`packaging/workspace-version.sh`](../packaging/workspace-version.sh).
+with [`packaging/workspace-version.sh`](../packaging/workspace-version.sh),
+and the Windows ones with
+[`packaging/workspace-version.ps1`](../packaging/workspace-version.ps1), which
+reads it the same way.
 [`rust-toolchain.toml`](../rust-toolchain.toml) names the Rust that builds
 them here, in CI and in releases, which rustup fetches on first use; it moves
 up only when that file does, so a new Rust release cannot fail a build on its
