@@ -1030,11 +1030,52 @@ impl Cache {
     /// of `query`, best match first, at most `limit` of them. Nothing typed
     /// finds nothing.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
+        self.matches(query, limit, limit, |_| true)
+    }
+
+    /// Like [`Self::search`], keeping only the messages `keep` accepts and
+    /// reading no further once `limit` of them are kept. The matches are read
+    /// one at a time, best first, so a search narrowed by what the index
+    /// cannot tell, such as a sender or a date, holds no more than it returns.
+    pub fn search_where(
+        &self,
+        query: &str,
+        limit: u32,
+        keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
+        // How many matches `keep` passes over is unknown: all are ranked.
+        self.matches(query, u32::MAX, limit, keep)
+    }
+
+    /// The first `limit` of the `ranked` best matches of `query` that `keep`
+    /// accepts. One whose metadata no longer reads is left out, as
+    /// [`Self::list`] leaves it.
+    fn matches(
+        &self,
+        query: &str,
+        ranked: u32,
+        limit: u32,
+        mut keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
         let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
         };
         let mut statement = self.conn.prepare_cached(SEARCH_SQL).map_err(cache_error)?;
-        read_metadata(&mut statement, rusqlite::params![expression, limit])
+        let mut rows = statement
+            .query(rusqlite::params![expression, ranked])
+            .map_err(cache_error)?;
+        let mut found = Vec::new();
+        while found.len() < limit as usize
+            && let Some(row) = rows.next().map_err(cache_error)?
+        {
+            let json: String = row.get(0).map_err(cache_error)?;
+            if let Ok(message) = serde_json::from_str::<MessageMetadata>(&json)
+                && keep(&message)
+            {
+                found.push(message);
+            }
+        }
+        Ok(found)
     }
 }
 

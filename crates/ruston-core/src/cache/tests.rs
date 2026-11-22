@@ -1847,3 +1847,44 @@ fn a_label_is_counted_on_its_index_and_agrees_with_the_full_count() {
         "{plan:?}"
     );
 }
+
+#[test]
+fn a_narrowed_search_reads_matches_only_until_it_has_enough() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for n in 0..50 {
+        let message = MessageMetadata {
+            sender: Recipient::new(if n % 2 == 0 {
+                "even@example.test"
+            } else {
+                "odd@example.test"
+            }),
+            ..mail(&format!("m{n}"), label_ids::INBOX, n)
+        };
+        cache.index_message(&message, "quarterly figures").unwrap();
+    }
+    let mut asked = 0;
+    let found = cache
+        .search_where("quarterly", 5, |message| {
+            asked += 1;
+            message.sender.address == "even@example.test"
+        })
+        .unwrap();
+    assert_eq!(found.len(), 5);
+    assert!(
+        found
+            .iter()
+            .all(|message| message.sender.address == "even@example.test")
+    );
+    // Asked about the matches until five were kept, not about all fifty,
+    // and holding only those it returns.
+    assert!(asked < 20, "{asked}");
+    // Unnarrowed, it is the search it always was.
+    let ids = |found: Vec<MessageMetadata>| -> Vec<String> {
+        found.into_iter().map(|message| message.id).collect()
+    };
+    assert_eq!(
+        ids(cache.search_where("quarterly", 7, |_| true).unwrap()),
+        ids(cache.search("quarterly", 7).unwrap())
+    );
+    assert!(cache.search_where("", 5, |_| true).unwrap().is_empty());
+}

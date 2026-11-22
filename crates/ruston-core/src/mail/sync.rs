@@ -518,9 +518,15 @@ impl Client {
 
     /// Searches the full-text index on this device, which holds the decrypted
     /// bodies, so the query never reaches Proton: up to `limit` messages
-    /// holding every word of `query`, best match first.
-    pub fn search_local(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
-        self.open_cache()?.search(query, limit)
+    /// holding every word of `query` that `keep` accepts, best match first.
+    /// See [`Cache::search_where`].
+    pub fn search_local(
+        &self,
+        query: &str,
+        limit: u32,
+        keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
+        self.open_cache()?.search_where(query, limit, keep)
     }
 
     /// Full-text search of the local index without changing it, for a

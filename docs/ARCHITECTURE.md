@@ -955,10 +955,12 @@ instead of an unknown outcome.
   finds belong to; it needs no connection, though opening a result does.
   Its line is read as `:search`'s is, by the same function, its folder found
   the same way; core's index finds by words alone, so `search_local` narrows
-  all it finds, rather than only the best matches a list holds, by each
+  what it finds, rather than only the best matches a list holds, by each
   message's sender, recipients, time and labels, matching people and days
   as the demo's searches do, and a line of filters alone is refused, saying
-  so.
+  so. Core's `Cache::search_where` reads the matches one at a time, best
+  first, and stops once a list of them passes the filters, so the search
+  holds no more than it shows.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with

@@ -10,8 +10,8 @@ use ruston_core::mail::read::search_window;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount, Quote,
-    Recipient, RecipientProtection, Result, SearchOpts, SendOptions,
+    AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount,
+    MessageMetadata, Quote, Recipient, RecipientProtection, Result, SearchOpts, SendOptions,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -251,37 +251,32 @@ impl Mailbox {
             .folder
             .as_deref()
             .filter(|label| *label != label_ids::ALL_MAIL);
-        let filtered = opts.from.is_some()
-            || opts.to.is_some()
-            || opts.after.is_some()
-            || opts.before.is_some()
-            || label.is_some();
-        // What the filters keep may rank below the best matches a list holds.
-        let limit = if filtered { u32::MAX } else { LOCAL_LIMIT };
+        let narrowing = Narrowing {
+            from: opts.from.clone(),
+            to: opts.to.clone(),
+            window,
+            label: label.map(str::to_owned),
+        };
         let words = opts.keyword.clone().unwrap_or_default();
-        let mut messages = match self {
+        // What the filters keep may rank below the best matches a list
+        // holds, so the index is read on until it has a list of them.
+        let messages = match self {
             Self::Proton(client) => {
                 // SQLite, which may first bring an older index up to date.
                 let client = Arc::clone(client);
-                tokio::task::spawn_blocking(move || client.search_local(&words, limit))
-                    .await
-                    .map_err(|error| Error::Other(format!("local search stopped: {error}")))??
+                tokio::task::spawn_blocking(move || {
+                    client.search_local(&words, LOCAL_LIMIT, |message| narrowing.keeps(message))
+                })
+                .await
+                .map_err(|error| Error::Other(format!("local search stopped: {error}")))??
             }
-            Self::Demo(_) => demo::search_local(&words, limit),
+            Self::Demo(_) => {
+                let mut found = demo::search_local(&words, u32::MAX);
+                found.retain(|message| narrowing.keeps(message));
+                found.truncate(LOCAL_LIMIT as usize);
+                found
+            }
         };
-        messages.retain(|message| {
-            let recipients = message.to_list.iter().chain(&message.cc_list);
-            opts.from
-                .as_deref()
-                .is_none_or(|from| someone_matches([&message.sender], from))
-                && opts
-                    .to
-                    .as_deref()
-                    .is_none_or(|to| someone_matches(recipients.chain(&message.bcc_list), to))
-                && within(window, message.time)
-                && label.is_none_or(|label| message.label_ids.iter().any(|id| id == label))
-        });
-        messages.truncate(LOCAL_LIMIT as usize);
         let conversations = conversations_of(messages);
         Ok((conversations.len() as u32, conversations))
     }
@@ -484,6 +479,34 @@ pub(crate) fn someone_matches<'a>(
 /// gives them.
 pub(crate) fn within((begin, end): (Option<i64>, Option<i64>), time: i64) -> bool {
     begin.is_none_or(|begin| time >= begin) && end.is_none_or(|end| time <= end)
+}
+
+/// What a local search keeps of what its words find: the filters of its
+/// options that the index cannot apply, by each message's sender,
+/// recipients, time and labels.
+struct Narrowing {
+    from: Option<String>,
+    to: Option<String>,
+    window: (Option<i64>, Option<i64>),
+    label: Option<String>,
+}
+
+impl Narrowing {
+    fn keeps(&self, message: &MessageMetadata) -> bool {
+        let recipients = message.to_list.iter().chain(&message.cc_list);
+        self.from
+            .as_deref()
+            .is_none_or(|from| someone_matches([&message.sender], from))
+            && self
+                .to
+                .as_deref()
+                .is_none_or(|to| someone_matches(recipients.chain(&message.bcc_list), to))
+            && within(self.window, message.time)
+            && self
+                .label
+                .as_deref()
+                .is_none_or(|label| message.label_ids.iter().any(|id| id == label))
+    }
 }
 
 /// The places to list: the system folders, then the account's folders in
