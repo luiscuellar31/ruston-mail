@@ -846,6 +846,8 @@ impl DesktopApp {
         let presses = context.input(|input| {
             let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
+            // Shift and an arrow choose rows along the list.
+            let shift_only = !command && !input.modifiers.alt && input.modifiers.shift;
             let mut presses = Vec::new();
             if command && input.key_pressed(egui::Key::R) {
                 presses.push(KeyPress::with_command(Key::Character('r')));
@@ -862,6 +864,21 @@ impl DesktopApp {
             if command && input.key_pressed(egui::Key::Enter) {
                 presses.push(KeyPress::with_command(Key::Enter));
             }
+            // Outside a text field, which takes it for its text, Command and A
+            // choose every conversation. Read from the key's own event: the
+            // macOS Edit menu's Select All sends it when clicked, with no key
+            // held.
+            let select_all = input.events.iter().any(|event| {
+                matches!(event, egui::Event::Key {
+                    key: egui::Key::A,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command && !modifiers.alt && !modifiers.shift)
+            });
+            if select_all && !typing {
+                presses.push(KeyPress::with_command(Key::Character('a')));
+            }
             if !menu_open && input.key_pressed(egui::Key::Escape) {
                 presses.push(KeyPress::plain(Key::Escape));
             }
@@ -876,6 +893,10 @@ impl DesktopApp {
                 presses.push(KeyPress::plain(Key::Enter));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Delete) {
                 presses.push(KeyPress::plain(Key::Delete));
+            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
+                presses.push(KeyPress::with_shift(Key::ArrowDown));
+            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
+                presses.push(KeyPress::with_shift(Key::ArrowUp));
             } else if plain && !typing {
                 let letter = input.events.iter().find_map(|event| match event {
                     egui::Event::Text(text) => text

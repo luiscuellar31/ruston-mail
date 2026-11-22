@@ -8,6 +8,7 @@ mod ordering;
 mod reader;
 mod reads;
 mod search;
+mod selection;
 mod splits;
 
 use super::*;

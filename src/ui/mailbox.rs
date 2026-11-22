@@ -188,7 +188,8 @@ fn show_compact(
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
         && app.compose().is_some_and(|draft| !draft.folded());
-    let reader_available = writing || mailbox.selected_conversation().is_some();
+    let reader_available =
+        writing || mailbox.selected_conversation().is_some() || !mailbox.selected_rows().is_empty();
     if state.compact_view == CompactView::Reader && !reader_available {
         state.compact_view = CompactView::Mail;
     }
@@ -959,7 +960,10 @@ fn notice_content(
 ) {
     match notice {
         BottomNotice::Undo(offer) => {
-            ui.label(format!("Moved to {}.", offer.to.name()));
+            ui.label(match offer.rows.len() {
+                1 => format!("Moved to {}.", offer.to.name()),
+                moved => format!("Moved {moved} conversations to {}.", offer.to.name()),
+            });
             // The move back waits while the list loads or loads more.
             let ready = mailbox.takes_actions();
             if ui
@@ -1117,7 +1121,6 @@ fn conversation_list(
     messages: &mut Vec<Message>,
 ) {
     let now = ZonedDateTime::now();
-    let selected = mailbox.selected_conversation();
     let visible_count = mailbox.visible_count();
     let total = visible_count + usize::from(ends_with_load_more(mailbox));
 
@@ -1168,7 +1171,7 @@ fn conversation_list(
                         load_more(ui, mailbox, messages);
                         continue;
                     };
-                    let chosen = selected == Some(conversation.id.as_str());
+                    let chosen = mailbox.is_chosen(&conversation.id);
                     list_row(ui, mailbox, conversation, chosen, &now, messages);
                 }
             });
@@ -1198,8 +1201,10 @@ fn scroll_row_into_view(ui: &mut egui::Ui, first: usize, index: usize) {
 }
 
 /// One conversation of the list: its row, the selection a click asks for,
-/// and its menu. As native lists do, the row a menu belongs to is outlined
-/// while the menu is open.
+/// and its menu. As native lists do, Command (Ctrl elsewhere) adds a row to
+/// those chosen or takes it out, Shift chooses the rows from the last one
+/// clicked, the menu of a row chosen with others acts on all of them, and the
+/// row a menu belongs to is outlined while the menu is open.
 fn list_row(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
@@ -1214,10 +1219,22 @@ fn list_row(
         })
         .inner;
     if response.clicked() {
-        messages.push(Message::SelectConversation(conversation.id.clone()));
+        let held = click_modifiers(ui);
+        let id = conversation.id.clone();
+        messages.push(if held.shift {
+            Message::SelectThrough(id)
+        } else if held.command {
+            Message::ToggleSelected(id)
+        } else {
+            Message::SelectConversation(id)
+        });
     }
     let menu = response.context_menu(|ui| {
-        reader::conversation_menu(ui, mailbox, conversation, messages);
+        if mailbox.selected_together(&conversation.id) {
+            reader::selection_menu(ui, mailbox, messages);
+        } else {
+            reader::conversation_menu(ui, mailbox, conversation, messages);
+        }
     });
     if menu.is_some() {
         ui.painter().rect_stroke(
@@ -1227,6 +1244,28 @@ fn list_row(
             egui::StrokeKind::Inside,
         );
     }
+}
+
+/// The keys held as this pass's click was made: those the main button went up
+/// with, since a key let go in the same pass is no longer held at its end. A
+/// click from the keyboard has only what is held now.
+fn click_modifiers(ui: &egui::Ui) -> egui::Modifiers {
+    ui.input(|input| {
+        input
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or(input.modifiers)
+    })
 }
 
 /// Whether the virtualized list needs a trailing load-more row.

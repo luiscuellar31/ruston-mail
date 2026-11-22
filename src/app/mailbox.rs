@@ -10,6 +10,9 @@ use crate::mail::{
 /// request currently in flight is applied; anything else is stale.
 pub type RequestId = u64;
 
+/// The most rows one request to Proton acts on: a page of the list.
+const ACTION_GROUP_LIMIT: usize = 50;
+
 /// Recent readers are kept only for quick backtracking within this session.
 const READER_CACHE_CAPACITY: usize = 8;
 /// Folders left most recently keep their loaded listing in memory, besides
@@ -82,15 +85,22 @@ pub struct ActionFinish {
     pub opened: Option<String>,
 }
 
-/// A move the user can take back: the row, and where it came from.
+/// A move the user can take back: the rows it took, together, and where.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UndoMove {
+    /// The rows moved, in the order of the list, which Undo puts back.
+    pub rows: Vec<MovedRow>,
+    /// Where they were moved, which is what the offer says.
+    pub to: Folder,
+}
+
+/// One row a move took out of a folder, and how to put it back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedRow {
     pub row_id: String,
     pub kind: SummaryKind,
     /// The folder the row was moved out of, and goes back to.
     pub from: Folder,
-    /// Where it was moved, which is what the offer says.
-    pub to: Folder,
     /// The row as it was listed, so taking the move back can list it again
     /// even when it came from a page a reload does not read.
     pub row: Option<ConversationSummary>,
@@ -407,10 +417,16 @@ pub struct Mailbox {
     /// The action on its way to Proton, or waiting for an automatic read of
     /// the same row.
     action_in_flight: Option<ActionRequest>,
+    /// The actions sent in the same request as the one in flight, which Proton
+    /// answers together with it; each settles in turn after it.
+    sent_with: Vec<ActionRequest>,
     /// Actions asked for while another was on its way, in the order asked.
-    /// Each already shows; they are sent one at a time, so taking a move back
-    /// always follows the move.
+    /// Each already shows; they are sent one request at a time, so taking a
+    /// move back always follows the move.
     waiting_actions: VecDeque<ActionRequest>,
+    /// Actions started together with the one before them in the queue, as for
+    /// rows chosen together, which go in the same request as it when they can.
+    rides_with_previous: HashSet<RequestId>,
     /// The flag each action shown early replaced, by request, to put back if
     /// Proton refuses it.
     shown_flags: HashMap<RequestId, MailAction>,
@@ -431,6 +447,13 @@ pub struct Mailbox {
     /// asked for. It may have read the page before applying them, so the
     /// page shows them again.
     confirmed_while_loading: Vec<ActionRequest>,
+    /// The rows chosen together with Command or Shift, while there are two
+    /// or more: the reader is closed then, and an action acts on all of them.
+    selection: HashSet<String>,
+    /// Where a Shift range starts: the row opened or Command-clicked last.
+    selection_anchor: Option<String>,
+    /// Where a Shift range ends, which Shift and an arrow move on.
+    selection_end: Option<String>,
 }
 
 impl Mailbox {
@@ -471,7 +494,9 @@ impl Mailbox {
             search_request: None,
             search_deferred: false,
             action_in_flight: None,
+            sent_with: Vec::new(),
             waiting_actions: VecDeque::new(),
+            rides_with_previous: HashSet::new(),
             shown_flags: HashMap::new(),
             action_error: None,
             undo: None,
@@ -479,6 +504,9 @@ impl Mailbox {
             relocated: HashMap::new(),
             listed_again: HashSet::new(),
             confirmed_while_loading: Vec::new(),
+            selection: HashSet::new(),
+            selection_anchor: None,
+            selection_end: None,
         };
         let page = mailbox.page_request(page_request, 0);
 
@@ -537,6 +565,25 @@ impl Mailbox {
             }
             None => self.append_visible(0),
         }
+        self.keep_chosen_rows_listed();
+    }
+
+    /// Keeps the rows chosen together that the list still shows; one left on
+    /// its own is no longer a choice of several.
+    fn keep_chosen_rows_listed(&mut self) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let listed: HashSet<String> = self
+            .visible_conversations()
+            .filter(|row| self.selection.contains(&row.id))
+            .map(|row| row.id.clone())
+            .collect();
+        self.selection = if listed.len() < 2 {
+            HashSet::new()
+        } else {
+            listed
+        };
     }
 
     /// Extends visible indices when a page was appended without moving old rows.
@@ -924,10 +971,14 @@ impl Mailbox {
     /// The visible row one step away from the selected one, or the first
     /// visible row when nothing is open yet. `None` at either end of the list.
     pub fn neighbour(&self, step: Step) -> Option<String> {
-        let current = self.selected_conversation().and_then(|selected| {
-            self.visible_conversations()
-                .position(|row| row.id == selected)
+        // After several rows are chosen, the keys go on from the far end.
+        let from = self.selected_conversation().or_else(|| {
+            self.selection_end
+                .as_deref()
+                .filter(|_| !self.selection.is_empty())
         });
+        let current =
+            from.and_then(|from| self.visible_conversations().position(|row| row.id == from));
 
         let index = match (current, step) {
             (None, _) => 0,
@@ -942,6 +993,163 @@ impl Mailbox {
     /// Closes the reader without touching the list, as Escape does.
     pub fn close_reader(&mut self) {
         self.set_reader(ReaderState::Empty);
+    }
+
+    /// Whether a row is chosen: the open one, or one of several selected.
+    pub fn is_chosen(&self, row_id: &str) -> bool {
+        self.selection.contains(row_id) || self.selected_conversation() == Some(row_id)
+    }
+
+    /// Whether a row is one of several chosen together.
+    pub fn selected_together(&self, row_id: &str) -> bool {
+        self.selection.contains(row_id)
+    }
+
+    /// Where every row chosen together is known to be, when it is the same
+    /// place, so none is offered a move into the folder it is already in.
+    pub fn selection_location(&self) -> Option<&Folder> {
+        let mut places = self.selection.iter().map(|row_id| self.location_of(row_id));
+        let first = places.next()??;
+        places.all(|place| place == Some(first)).then_some(first)
+    }
+
+    /// The rows chosen together, in the order of the list; none unless two or
+    /// more are.
+    pub fn selected_rows(&self) -> Vec<&ConversationSummary> {
+        if self.selection.is_empty() {
+            return Vec::new();
+        }
+        self.visible_conversations()
+            .filter(|row| self.selection.contains(&row.id))
+            .collect()
+    }
+
+    /// The rows an action acts on: those chosen together, in the order of the
+    /// list, or else the open one.
+    pub fn rows_acted_on(&self) -> Vec<String> {
+        let chosen = self.selected_rows();
+        if chosen.is_empty() {
+            return self
+                .selected_summary()
+                .map(|row| row.id.clone())
+                .into_iter()
+                .collect();
+        }
+        chosen.into_iter().map(|row| row.id.clone()).collect()
+    }
+
+    /// Adds a row to those chosen, the open one counted among them, or takes
+    /// it out, as a Command click does. Returns the row left alone, for the
+    /// app to open.
+    pub fn toggle_selected(&mut self, row_id: &str) -> Option<String> {
+        let mut chosen = self.chosen_ids();
+        if !chosen.remove(row_id) {
+            chosen.insert(row_id.to_owned());
+        }
+        self.selection_anchor = Some(row_id.to_owned());
+        self.selection_end = Some(row_id.to_owned());
+        self.choose(chosen)
+    }
+
+    /// Chooses every row from where the range starts through `row_id`, as a
+    /// Shift click does. Returns the row left alone, for the app to open.
+    pub fn select_through(&mut self, row_id: &str) -> Option<String> {
+        let anchor = self
+            .selection_anchor
+            .clone()
+            .filter(|anchor| self.visible_index(anchor).is_some())
+            .unwrap_or_else(|| row_id.to_owned());
+        let range = match (self.visible_index(&anchor), self.visible_index(row_id)) {
+            (Some(from), Some(to)) => self
+                .visible_conversations()
+                .skip(from.min(to))
+                .take(from.abs_diff(to) + 1)
+                .map(|row| row.id.clone())
+                .collect(),
+            _ => HashSet::from([row_id.to_owned()]),
+        };
+        self.selection_anchor = Some(anchor);
+        self.selection_end = Some(row_id.to_owned());
+        self.choose(range)
+    }
+
+    /// Moves the far end of the rows chosen one row on, as Shift and an arrow
+    /// do, stopping at the ends of the list. With nothing chosen it opens the
+    /// first row, as a plain arrow would. Returns the row left alone, for the
+    /// app to open.
+    pub fn extend_selection(&mut self, step: Step) -> Option<String> {
+        if self.chosen_ids().is_empty() {
+            return self.neighbour(step);
+        }
+        let end = self.visible_index(self.selection_end.as_deref()?)?;
+        let next = match step {
+            Step::Next => end + 1,
+            Step::Previous => end.checked_sub(1)?,
+        };
+        let next = self.visible_row(next)?.id.clone();
+        self.select_through(&next)
+    }
+
+    /// Chooses every row listed, as Command and A do. Returns the row left
+    /// alone, for the app to open.
+    pub fn select_all(&mut self) -> Option<String> {
+        let all: Vec<String> = self
+            .visible_conversations()
+            .map(|row| row.id.clone())
+            .collect();
+        if all.is_empty() {
+            return None;
+        }
+        self.selection_anchor = all.first().cloned();
+        self.selection_end = all.last().cloned();
+        self.choose(all.into_iter().collect())
+    }
+
+    /// The far end of the rows chosen together, which Shift and an arrow
+    /// move on.
+    pub fn selection_end(&self) -> Option<&str> {
+        self.selection_end
+            .as_deref()
+            .filter(|_| !self.selection.is_empty())
+    }
+
+    /// Lets go of the rows chosen together, as Escape does, leaving the reader
+    /// closed. Whether there were any.
+    pub fn clear_selection(&mut self) -> bool {
+        !std::mem::take(&mut self.selection).is_empty()
+    }
+
+    /// The rows chosen now: those selected together, or the open one.
+    fn chosen_ids(&self) -> HashSet<String> {
+        if !self.selection.is_empty() {
+            return self.selection.clone();
+        }
+        self.selected_conversation()
+            .map(str::to_owned)
+            .into_iter()
+            .collect()
+    }
+
+    /// Settles what is chosen: two rows or more are selected together and
+    /// close the reader; a single one is returned for the app to open; none
+    /// closes the reader.
+    fn choose(&mut self, chosen: HashSet<String>) -> Option<String> {
+        if chosen.len() >= 2 {
+            self.selection = chosen;
+            self.close_reader();
+            return None;
+        }
+        self.selection.clear();
+        let only = chosen.into_iter().next();
+        if only.is_none() {
+            self.close_reader();
+        }
+        only
+    }
+
+    fn visible_index(&self, row_id: &str) -> Option<usize> {
+        self.visible_conversations()
+            .position(|row| row.id == row_id)
     }
 
     /// Where a row sits among the visible ones, as a fraction from 0 to 1.
@@ -1086,6 +1294,7 @@ impl Mailbox {
     /// way, those waiting behind it, and automatic reads.
     pub fn unsent_changes(&self) -> usize {
         usize::from(self.action_in_flight.is_some())
+            + self.sent_with.len()
             + self.waiting_actions.len()
             + self.automatic_reads.len()
     }
@@ -1109,6 +1318,10 @@ impl Mailbox {
             .find(|conversation| conversation.id == conversation_id)?;
         let stamp = ReaderStamp::of(summary);
         self.action_error = None;
+        // Opening a row ends a choice of several, and a Shift range starts here.
+        self.selection.clear();
+        self.selection_anchor = Some(conversation_id.clone());
+        self.selection_end = Some(conversation_id.clone());
 
         if let Some(reader) = self.take_cached_reader(&conversation_id, stamp) {
             self.set_reader(ReaderState::Loaded(reader));
@@ -1402,7 +1615,49 @@ impl Mailbox {
     /// The action on its way to Proton, then those waiting behind it, in
     /// the order they go.
     fn queued_actions(&self) -> impl Iterator<Item = &ActionRequest> {
-        self.action_in_flight.iter().chain(&self.waiting_actions)
+        self.action_in_flight
+            .iter()
+            .chain(&self.sent_with)
+            .chain(&self.waiting_actions)
+    }
+
+    /// The actions that go to Proton in one request with `head`, head first:
+    /// those started together with it, when it is the one in flight.
+    pub fn request_group(&self, head: &ActionRequest) -> Vec<ActionRequest> {
+        let riders = if self.action_in_flight.as_ref() == Some(head) {
+            self.sent_with.as_slice()
+        } else {
+            &[]
+        };
+        std::iter::once(head).chain(riders).cloned().collect()
+    }
+
+    /// Takes into the request in flight the actions started together with it
+    /// and waiting right behind it: the same action on rows of the same kind,
+    /// read in the same folder, that can go now, up to a request's limit.
+    fn join_in_flight(&mut self) {
+        while self.sent_with.len() + 1 < ACTION_GROUP_LIMIT {
+            let (Some(head), Some(next)) = (&self.action_in_flight, self.waiting_actions.front())
+            else {
+                return;
+            };
+            let joins = self.rides_with_previous.contains(&next.id)
+                && (next.kind, &next.action, &next.context, &next.folder)
+                    == (head.kind, &head.action, &head.context, &head.folder)
+                && self.ready_to_send(next)
+                && !std::iter::once(head)
+                    .chain(&self.sent_with)
+                    .any(|sent| sent.row_id == next.row_id);
+            if !joins {
+                return;
+            }
+            let next = self
+                .waiting_actions
+                .pop_front()
+                .expect("the front was just read");
+            self.rides_with_previous.remove(&next.id);
+            self.sent_with.push(next);
+        }
     }
 
     /// Whether an explicit read or unread of `row_id` is on its way or waits.
@@ -1468,6 +1723,9 @@ impl Mailbox {
             }
         }
 
+        if waiting.is_some() {
+            self.join_in_flight();
+        }
         ReadCompletion {
             read_confirmed: true,
             next_action: waiting,
@@ -1480,19 +1738,34 @@ impl Mailbox {
         self.undo.as_ref()
     }
 
-    /// Replaces the undo offer for moves out of a known physical folder.
-    /// Label, origin and global-search views cannot identify that folder.
-    pub fn offer_undo(&mut self, row_id: &str, kind: SummaryKind, action: MailAction) {
-        self.undo = match (self.location_of(row_id), action.destination()) {
-            (Some(from), Some(to)) if to != from => Some(UndoMove {
-                row_id: row_id.to_owned(),
-                kind,
-                from: from.clone(),
-                to: to.clone(),
-                row: self.row(row_id).cloned(),
-            }),
-            _ => None,
-        };
+    /// Replaces the undo offer with one for `action` on `rows`, moved
+    /// together.
+    pub fn offer_undo(&mut self, rows: &[(&str, SummaryKind)], action: &MailAction) {
+        self.undo = self.undo_offer(rows, action);
+    }
+
+    /// The offer to take back a move of `rows`, each out of the physical
+    /// folder it is known to be in; asked before they leave the list, which
+    /// tells where they were. Label, origin and global-search views cannot
+    /// identify that folder.
+    fn undo_offer(&self, rows: &[(&str, SummaryKind)], action: &MailAction) -> Option<UndoMove> {
+        let to = action.destination()?;
+        let rows: Vec<MovedRow> = rows
+            .iter()
+            .filter_map(|&(row_id, kind)| {
+                let from = self.location_of(row_id).filter(|from| *from != to)?;
+                Some(MovedRow {
+                    row_id: row_id.to_owned(),
+                    kind,
+                    from: from.clone(),
+                    row: self.row(row_id).cloned(),
+                })
+            })
+            .collect();
+        (!rows.is_empty()).then(|| UndoMove {
+            rows,
+            to: to.clone(),
+        })
     }
 
     /// Claims the offer, so it is made only once. While the move back could
@@ -1553,14 +1826,56 @@ impl Mailbox {
         })
     }
 
-    /// Takes a move back, as `start_action_on` starts it, and lists the row
-    /// again at once when the open view keeps it: a reload reads only the
+    /// Starts `action` on each of `rows`, as `start_action_on` does: all of
+    /// them show at once, and they are sent one after another. A move that
+    /// takes them out of the view offers to take all of them back together.
+    pub fn start_actions_on(
+        &mut self,
+        rows: &[String],
+        action: MailAction,
+        requests: &[RequestId],
+    ) -> Vec<ActionStart> {
+        let rows: Vec<(&str, SummaryKind)> = rows
+            .iter()
+            .filter_map(|row_id| Some((row_id.as_str(), self.row(row_id)?.kind)))
+            .collect();
+        // Asked while every row is still listed; each start then replaces the
+        // offer with its own.
+        let offer = self
+            .leaves_view(&self.folder, &action)
+            .then(|| self.undo_offer(&rows, &action))
+            .flatten();
+        let mut started = Vec::new();
+        let starts: Vec<ActionStart> = rows
+            .iter()
+            .zip(requests)
+            .filter_map(|(&(row_id, kind), &request)| {
+                let start =
+                    self.start_action_on(row_id.to_owned(), kind, action.clone(), request)?;
+                started.push(request);
+                Some(start)
+            })
+            .collect();
+        if !starts.is_empty() && offer.is_some() {
+            self.undo = offer;
+        }
+        // Each goes in the same request as the one before it, when it can.
+        self.rides_with_previous
+            .extend(started.iter().skip(1).copied());
+        if starts.first().is_some_and(|start| start.send.is_some()) {
+            self.join_in_flight();
+        }
+        starts
+    }
+
+    /// Takes a moved row back, as `start_action_on` starts it, and lists the
+    /// row again at once when the open view keeps it: a reload reads only the
     /// first page, so a row from a deeper one would not come back with it.
     /// If Proton refuses the move back, the row leaves again.
-    pub fn start_move_back(&mut self, undo: UndoMove, request: RequestId) -> Option<ActionStart> {
-        let action = MailAction::MoveTo(undo.from);
-        let start = self.start_action_on(undo.row_id, undo.kind, action.clone(), request)?;
-        if let Some(row) = undo.row
+    pub fn start_move_back(&mut self, moved: MovedRow, request: RequestId) -> Option<ActionStart> {
+        let action = MailAction::MoveTo(moved.from);
+        let start = self.start_action_on(moved.row_id, moved.kind, action.clone(), request)?;
+        if let Some(row) = moved.row
             && !self.leaves_view(&self.folder, &action)
             && !self.has_row(&row.id)
         {
@@ -1601,7 +1916,7 @@ impl Mailbox {
     fn show_action(&mut self, request: &ActionRequest) -> Option<String> {
         if self.leaves_view(&self.folder, &request.action) {
             // Offered while the row is still listed, which tells where it was.
-            self.offer_undo(&request.row_id, request.kind, request.action.clone());
+            self.offer_undo(&[(&request.row_id, request.kind)], &request.action);
             if self.row_ids.contains(&request.row_id) {
                 self.moving_out.insert(request.row_id.clone());
             }
@@ -1642,11 +1957,24 @@ impl Mailbox {
                 opened: None,
             };
         }
-        self.action_in_flight = self.waiting_actions.pop_front();
-        let next_action = self
-            .action_in_flight
-            .clone()
-            .filter(|next| self.ready_to_send(next));
+        let next_action = if self.sent_with.is_empty() {
+            self.action_in_flight = self.waiting_actions.pop_front();
+            if let Some(head) = &self.action_in_flight {
+                self.rides_with_previous.remove(&head.id);
+            }
+            let next = self
+                .action_in_flight
+                .clone()
+                .filter(|next| self.ready_to_send(next));
+            if next.is_some() {
+                self.join_in_flight();
+            }
+            next
+        } else {
+            // The next one sent with it is already on its way.
+            self.action_in_flight = Some(self.sent_with.remove(0));
+            None
+        };
         let before = self.shown_flags.remove(&request.id);
         self.invalidate_listings();
         if let Err(error) = result {
@@ -1721,13 +2049,13 @@ impl Mailbox {
         if self.listed_again.remove(&request.row_id) {
             let _ = self.remove_row(&request.row_id);
         }
-        // The move did not happen, so there is nothing to take back.
-        if self
-            .undo
-            .as_ref()
-            .is_some_and(|offer| offer.row_id == request.row_id)
-        {
-            self.undo = None;
+        // The move did not happen, so there is nothing to take back for this
+        // row; the rows moved with it still go back together.
+        if let Some(offer) = &mut self.undo {
+            offer.rows.retain(|moved| moved.row_id != request.row_id);
+            if offer.rows.is_empty() {
+                self.undo = None;
+            }
         }
         if let Some(before) =
             before.filter(|_| self.shows(&request.folder) && !self.superseded(request))

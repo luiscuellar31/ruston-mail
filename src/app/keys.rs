@@ -1,6 +1,6 @@
 //! Mailbox keyboard shortcuts. The UI only reports raw key presses.
 
-use super::{App, Effects, Step, UiEffect};
+use super::{App, Effects, Mailbox, Step, UiEffect};
 use crate::settings::ComposePlacement;
 
 /// What a key press means to the mailbox.
@@ -8,6 +8,10 @@ use crate::settings::ComposePlacement;
 enum Shortcut {
     /// Open the conversation one step away in the list.
     Move(Step),
+    /// Move the far end of the rows chosen one step, as Shift and an arrow do.
+    Extend(Step),
+    /// Choose every conversation listed.
+    SelectAll,
     /// Open the selected conversation, which also retries a failed one.
     Open,
     /// Back out of the topmost thing on screen.
@@ -29,8 +33,16 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
             Key::Character('f') => Some(Shortcut::Search),
             Key::Character(',') => Some(Shortcut::ToggleSettings),
             Key::Character('n') => Some(Shortcut::Compose),
+            Key::Character('a') => Some(Shortcut::SelectAll),
             Key::Enter => Some(Shortcut::Send),
             Key::Backspace | Key::Delete => Some(Shortcut::Trash),
+            _ => None,
+        };
+    }
+    if press.shift {
+        return match press.key {
+            Key::ArrowDown => Some(Shortcut::Extend(Step::Next)),
+            Key::ArrowUp => Some(Shortcut::Extend(Step::Previous)),
             _ => None,
         };
     }
@@ -63,6 +75,8 @@ pub enum Key {
 pub struct KeyPress {
     pub key: Key,
     pub command: bool,
+    /// Shift held alone, which chooses rows along the list.
+    pub shift: bool,
     pub other_modifier: bool,
 }
 
@@ -72,16 +86,24 @@ impl KeyPress {
         Self {
             key,
             command: false,
+            shift: false,
             other_modifier: false,
+        }
+    }
+
+    /// A key pressed with Shift alone.
+    pub fn with_shift(key: Key) -> Self {
+        Self {
+            shift: true,
+            ..Self::plain(key)
         }
     }
 
     /// A key pressed with Command on macOS, or Ctrl elsewhere.
     pub fn with_command(key: Key) -> Self {
         Self {
-            key,
             command: true,
-            other_modifier: false,
+            ..Self::plain(key)
         }
     }
 
@@ -131,8 +153,12 @@ impl App {
         }
 
         // The draft covers the reader, so a step through the list would open
-        // a conversation nobody sees.
-        if matches!(shortcut, Shortcut::Move(_) | Shortcut::Open) && self.draft_covers_reader() {
+        // a conversation, or choose rows, nobody sees.
+        if matches!(
+            shortcut,
+            Shortcut::Move(_) | Shortcut::Extend(_) | Shortcut::SelectAll | Shortcut::Open
+        ) && self.draft_covers_reader()
+        {
             return Effects::none();
         }
 
@@ -147,6 +173,21 @@ impl App {
 
                 self.open_row(next)
             }
+            Shortcut::Extend(step) => {
+                let Some(mailbox) = self.active_mailbox() else {
+                    return Effects::none();
+                };
+                if let Some(alone) = mailbox.extend_selection(step) {
+                    return self.open_row(alone);
+                }
+                // The far end can move past the rows on screen.
+                let end = mailbox.selection_end().map(str::to_owned);
+                end.map_or_else(Effects::none, |end| self.reveal_in_list(&end))
+            }
+            Shortcut::SelectAll => match self.active_mailbox().and_then(Mailbox::select_all) {
+                Some(alone) => self.select_conversation(alone),
+                None => Effects::none(),
+            },
             Shortcut::Open => {
                 let Some(selected) = self
                     .mailbox
@@ -183,6 +224,9 @@ impl App {
                     return Effects::none();
                 }
                 if let Some(mailbox) = self.active_mailbox() {
+                    if mailbox.clear_selection() {
+                        return Effects::none();
+                    }
                     if mailbox.has_search_text() {
                         mailbox.set_search_query(String::new());
                     } else {
@@ -275,6 +319,26 @@ mod tests {
         );
         assert_eq!(shortcut(plain(Key::Enter)), Some(Shortcut::Open));
         assert_eq!(shortcut(plain(Key::Escape)), Some(Shortcut::Dismiss));
+        // Shift and an arrow choose rows along the list; with other keys,
+        // Shift means nothing to the mailbox.
+        let shift = KeyPress::with_shift;
+        assert_eq!(
+            shortcut(shift(Key::ArrowDown)),
+            Some(Shortcut::Extend(Step::Next))
+        );
+        assert_eq!(
+            shortcut(shift(Key::ArrowUp)),
+            Some(Shortcut::Extend(Step::Previous))
+        );
+        for key in [Key::Character('j'), Key::Enter, Key::Escape, Key::Delete] {
+            assert_eq!(shortcut(shift(key)), None, "{key:?}");
+        }
+        // Command and A choose every conversation listed; A alone is nothing.
+        assert_eq!(
+            shortcut(command(Key::Character('a'))),
+            Some(Shortcut::SelectAll)
+        );
+        assert_eq!(shortcut(plain(Key::Character('a'))), None);
         assert_eq!(
             shortcut(command(Key::Character('r'))),
             Some(Shortcut::Refresh)

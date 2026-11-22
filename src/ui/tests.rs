@@ -954,6 +954,62 @@ fn j_moves_the_list_past_a_focused_button_but_types_into_a_focused_field() {
 }
 
 #[test]
+fn command_a_chooses_every_conversation_but_not_from_a_text_field() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    let page = crate::mail::demo::DemoMailbox::new().list_conversations(
+        &Folder::INBOX,
+        0,
+        crate::mail::demo::PAGE_SIZE,
+        crate::mail::demo::now(),
+    );
+    desktop.dispatch(Message::ConversationsLoaded(1, page), &context);
+    let listed = desktop.app.mailbox().unwrap().visible_count();
+    let mut text = String::new();
+    // Focus is taken in one frame, and Command and A pressed in the next; the
+    // keys held are whatever `held` says, as for the Edit menu's Select All,
+    // clicked with none.
+    let mut press = |desktop: &mut DesktopApp, field: bool, held: egui::Modifiers| {
+        let command_a = egui::Event::Key {
+            key: egui::Key::A,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        let events = [
+            Vec::new(),
+            vec![egui::Event::ModifiersChanged(held), command_a],
+        ];
+        for events in events {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            context
+                .run_ui(input, |ui| {
+                    // An id each, so focus cannot carry from one to the other.
+                    let widget = if field {
+                        ui.push_id("field", |ui| ui.add(egui::TextEdit::singleline(&mut text)))
+                            .inner
+                    } else {
+                        ui.push_id("button", |ui| ui.button("Archive")).inner
+                    };
+                    if !field || ui.ctx().memory(|memory| memory.focused()).is_none() {
+                        widget.request_focus();
+                    }
+                    desktop.keyboard_shortcuts(ui.ctx());
+                })
+                .drop_without_applying_deltas();
+        }
+        desktop.app.mailbox().unwrap().selected_rows().len()
+    };
+
+    assert_eq!(press(&mut desktop, true, egui::Modifiers::COMMAND), 0);
+    assert_eq!(press(&mut desktop, false, egui::Modifiers::NONE), listed);
+}
+
+#[test]
 fn escape_closes_an_open_menu_and_nothing_behind_it() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());

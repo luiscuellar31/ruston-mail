@@ -368,7 +368,7 @@ fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
     archive_confirmed(&mut mailbox, &["p20"], 4);
     let undo = mailbox.take_undo().unwrap();
     let back = mailbox
-        .start_move_back(undo, 5)
+        .start_move_back(undo.rows.into_iter().next().unwrap(), 5)
         .and_then(|start| start.send)
         .unwrap();
     let _ = mailbox.finish_action(&back, Ok(()));

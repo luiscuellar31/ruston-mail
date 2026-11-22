@@ -31,7 +31,10 @@ impl App {
         else {
             return Effects::none();
         };
-        run_action(service, request, Message::MarkReadFinished)
+        // An automatic read goes on its own.
+        run_action(service, vec![request], |mut sent, result| {
+            Message::MarkReadFinished(sent.remove(0), result)
+        })
     }
 
     /// Whether a draft covers the reader, so the conversation `id` opens

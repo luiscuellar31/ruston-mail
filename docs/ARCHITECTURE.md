@@ -290,14 +290,28 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   last one was left at. Explicit reveal
   requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
-  The reader's buttons act on the open row (`Message::ApplyAction`); a row's
+  The reader's buttons act on the rows chosen (`Message::ApplyAction`); a row's
   context menu names its row (`Message::ApplyRowAction`) and offers the same
   moves and flags, built by `reader::moves` and `reader::flags`. Both reach
-  `App::apply_row_action`, which acts through the demo service or
-  `Mailbox::start_action_on`, so a row acted on from its menu is never opened
-  or read automatically. A message header's context menu copies its sender's
-  or its recipients' addresses through `Message::CopyAddresses`, which `App`
-  joins with commas for the clipboard.
+  `App::apply_to_rows`, which acts through the demo service or
+  `Mailbox::start_actions_on`, so a row acted on from its menu is never opened
+  or read automatically. The mailbox also keeps the rows chosen together with
+  Command or Shift (`ToggleSelected`, `SelectThrough`, and Shift with an arrow
+  through `Mailbox::extend_selection`), with the row a Shift range starts from
+  and its far end. Two or more close the reader, which shows how many and
+  their moves and flags, and `Mailbox::rows_acted_on` names them, in list
+  order, instead of the open row; the menu of a row among them acts on all.
+  A change that leaves one row opens it, opening a row or `Esc` lets go of the
+  rest, and rows the list no longer shows drop out of the choice; Command and
+  A choose every row listed (`Mailbox::select_all`). Each row chosen keeps an
+  action of its own in the queue below, but those started together go to
+  Proton in one request of up to 50 (`Mailbox::request_group`), when they are
+  the same action on rows of one kind read in one folder and none waits for an
+  automatic read; Proton's answer settles each in turn, and a refused request
+  takes all of them back and reloads the list. A move of several offers one
+  undo for all of them, from which a refused row drops. A message header's
+  context menu copies its sender's or its recipients' addresses through
+  `Message::CopyAddresses`, which `App` joins with commas for the clipboard.
   An action shows as soon as it is asked for. A move out of the view takes the
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row
@@ -306,7 +320,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   list carries the undo offer or, with none, `App`'s `Notice` of a message sent
   or a file saved; [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
-  `DismissNotice`, which drop it only if it is still current. The undo offer keeps the row as
+  `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its
   date puts it, even from a page a reload would not read; a refused move back
   takes it away again. When a confirmed move belongs in the view but its row is

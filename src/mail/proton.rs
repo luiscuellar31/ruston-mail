@@ -410,51 +410,51 @@ impl ProtonMailService {
         .await
     }
 
-    /// Applies a user action to one row: its whole conversation, or the single
-    /// message the list shows on its own. Moves relabel; nothing is deleted.
+    /// Applies a user action to rows of one kind, in one request: whole
+    /// conversations, or single messages the list shows on their own. Moves
+    /// relabel; nothing is deleted.
     pub async fn apply_action(
         &self,
         kind: SummaryKind,
-        id: &str,
+        ids: &[String],
         context: Option<&Folder>,
         action: MailAction,
     ) -> Result<(), MailboxError> {
-        let ids = [id.to_owned()];
         let client = &self.client;
         let call = async {
             match (kind, action_call(&action)) {
                 (SummaryKind::Conversation, ActionCall::Move(label)) => {
-                    client.move_conversations(&ids, label).await
+                    client.move_conversations(ids, label).await
                 }
                 (SummaryKind::Conversation, ActionCall::MarkRead(read)) => {
                     client
-                        .mark_conversations_read(&ids, read, context_label(context))
+                        .mark_conversations_read(ids, read, context_label(context))
                         .await
                 }
                 (SummaryKind::Conversation, ActionCall::Star(starred)) => {
-                    client.star_conversations(&ids, starred).await
+                    client.star_conversations(ids, starred).await
                 }
                 (SummaryKind::Message, ActionCall::Move(label)) => {
-                    client.move_messages(&ids, label).await
+                    client.move_messages(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::MarkRead(read)) => {
-                    client.mark_messages_read(&ids, read).await
+                    client.mark_messages_read(ids, read).await
                 }
                 (SummaryKind::Message, ActionCall::Star(starred)) => {
-                    client.star_messages(&ids, starred).await
+                    client.star_messages(ids, starred).await
                 }
                 // Proton puts a conversation's label on every message in it.
                 (SummaryKind::Conversation, ActionCall::AddLabel(label)) => {
-                    client.label_conversations(&ids, label).await
+                    client.label_conversations(ids, label).await
                 }
                 (SummaryKind::Conversation, ActionCall::RemoveLabel(label)) => {
-                    client.unlabel_conversations(&ids, label).await
+                    client.unlabel_conversations(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::AddLabel(label)) => {
-                    client.apply_label(&ids, label).await
+                    client.apply_label(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::RemoveLabel(label)) => {
-                    client.remove_label(&ids, label).await
+                    client.remove_label(ids, label).await
                 }
             }
         };

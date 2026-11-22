@@ -76,6 +76,10 @@ pub(super) fn show(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
+    let chosen = view.mailbox.selected_rows();
+    if !chosen.is_empty() {
+        return rows_chosen(ui, &chosen, view, state, messages);
+    }
     match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
@@ -116,6 +120,50 @@ pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option
         ],
         Message::DismissLink,
     )
+}
+
+/// What the reader shows for rows chosen together: how many, and what can be
+/// done to all of them at once.
+fn rows_chosen(
+    ui: &mut egui::Ui,
+    rows: &[&ConversationSummary],
+    view: &ReaderView<'_>,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let mailbox = view.mailbox;
+    reader_scroll(ui, state, |ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("{} conversations selected", rows.len()))
+                    .size(SUBJECT_SIZE)
+                    .strong(),
+            )
+            .wrap(),
+        );
+        detail(ui, "Press Escape to clear the selection.");
+        ui.add_space(8.0);
+        if view.actions_available {
+            ui.horizontal_wrapped(|ui| {
+                move_and_flag_buttons(
+                    ui,
+                    mailbox.selection_location(),
+                    mailbox.folder(),
+                    view.places,
+                    group_flags(rows),
+                    // An action asked for while another is on its way waits
+                    // its turn.
+                    mailbox.takes_actions(),
+                    messages,
+                );
+            });
+            if let Some(error) = mailbox.action_error() {
+                ui.label(
+                    egui::RichText::new(error.action_message()).color(theme::colors(ui).danger),
+                );
+            }
+        }
+    });
 }
 
 fn conversation(
@@ -433,49 +481,69 @@ fn action_toolbar(
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
-    let location = mailbox.selected_location();
     ui.horizontal_wrapped(|ui| {
-        for MoveButton {
-            icon,
-            label,
-            destination,
-            risky,
-        } in moves(location)
-        {
-            let mut button = theme::IconButton::new(icon, label);
-            if risky {
-                button = button.danger();
-            }
-            let response = ui.add_enabled(enabled, button);
-            if response.clicked() {
-                messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
-            }
-        }
-        move_menu(
+        move_and_flag_buttons(
             ui,
-            &move_destinations(location, mailbox.folder(), places),
+            mailbox.selected_location(),
+            mailbox.folder(),
+            places,
+            flags(summary.unread, summary.starred),
             enabled,
             messages,
         );
-
-        ui.separator();
-        for FlagButton {
-            icon,
-            label,
-            on,
-            action,
-        } in flags(summary)
-        {
-            if ui
-                .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
-                .clicked()
-            {
-                messages.push(Message::ApplyAction(action));
-            }
-        }
-
         label_menu(ui, carried_labels, places, enabled, messages);
     });
+}
+
+/// The moves out of `location` and the flags a toolbar offers, for the rows
+/// it acts on, listed in `view`.
+fn move_and_flag_buttons(
+    ui: &mut egui::Ui,
+    location: Option<&Folder>,
+    view: &Folder,
+    places: &[Folder],
+    flags: [FlagButton; 2],
+    enabled: bool,
+    messages: &mut Vec<Message>,
+) {
+    for MoveButton {
+        icon,
+        label,
+        destination,
+        risky,
+    } in moves(location)
+    {
+        let mut button = theme::IconButton::new(icon, label);
+        if risky {
+            button = button.danger();
+        }
+        let response = ui.add_enabled(enabled, button);
+        if response.clicked() {
+            messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
+        }
+    }
+    move_menu(
+        ui,
+        &move_destinations(location, view, places),
+        enabled,
+        messages,
+    );
+
+    ui.separator();
+    for FlagButton {
+        icon,
+        label,
+        on,
+        action,
+    } in flags
+    {
+        if ui
+            .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
+            .clicked()
+        {
+            messages.push(Message::ApplyAction(action));
+        }
+    }
 }
 
 /// A move out of where a conversation is, as a button and a menu item.
@@ -533,30 +601,36 @@ fn moves(location: Option<&Folder>) -> Vec<MoveButton> {
         .collect()
 }
 
-/// The read and star flags a conversation can be switched to.
-fn flags(summary: &ConversationSummary) -> [FlagButton; 2] {
+/// The read and star flags a conversation can be switched to, from `unread`
+/// and `starred`.
+fn flags(unread: bool, starred: bool) -> [FlagButton; 2] {
     [
         FlagButton {
             icon: theme::Icon::Mail,
-            label: if summary.unread {
+            label: if unread {
                 "Mark as read"
             } else {
                 "Mark as unread"
             },
-            on: summary.unread,
-            action: MailAction::SetUnread(!summary.unread),
+            on: unread,
+            action: MailAction::SetUnread(!unread),
         },
         FlagButton {
             icon: theme::Icon::Star,
-            label: if summary.starred {
-                "Remove star"
-            } else {
-                "Add star"
-            },
-            on: summary.starred,
-            action: MailAction::SetStarred(!summary.starred),
+            label: if starred { "Remove star" } else { "Add star" },
+            on: starred,
+            action: MailAction::SetStarred(!starred),
         },
     ]
+}
+
+/// The flags rows chosen together can be switched to: all read while any is
+/// unread, and all starred unless every one is.
+fn group_flags(rows: &[&ConversationSummary]) -> [FlagButton; 2] {
+    flags(
+        rows.iter().any(|row| row.unread),
+        rows.iter().all(|row| row.starred),
+    )
 }
 
 /// The menu a right click opens on a conversation in the list: the moves and
@@ -565,6 +639,39 @@ pub(super) fn conversation_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     row: &ConversationSummary,
+    messages: &mut Vec<Message>,
+) {
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.location_of(&row.id),
+        flags(row.unread, row.starred),
+        |action| Message::ApplyRowAction(row.id.clone(), action),
+        messages,
+    );
+}
+
+/// The menu a right click opens on a row chosen with others: what the reader
+/// offers for all of them.
+pub(super) fn selection_menu(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.selection_location(),
+        group_flags(&mailbox.selected_rows()),
+        Message::ApplyAction,
+        messages,
+    );
+}
+
+/// A list menu of the moves out of `location` and of `flags`, each asking
+/// for the message `act` makes of its action.
+fn action_menu(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    location: Option<&Folder>,
+    flags: [FlagButton; 2],
+    act: impl Fn(MailAction) -> Message,
     messages: &mut Vec<Message>,
 ) {
     ui.set_min_width(200.0);
@@ -576,7 +683,7 @@ pub(super) fn conversation_menu(
             .inner
             .clicked()
         {
-            messages.push(Message::ApplyRowAction(row.id.clone(), action));
+            messages.push(act(action));
             ui.close();
         }
     };
@@ -585,7 +692,7 @@ pub(super) fn conversation_menu(
         label,
         destination,
         ..
-    } in moves(mailbox.location_of(&row.id))
+    } in moves(location)
     {
         item(ui, icon, label, MailAction::MoveTo(destination));
     }
@@ -595,7 +702,7 @@ pub(super) fn conversation_menu(
         label,
         action,
         ..
-    } in flags(row)
+    } in flags
     {
         item(ui, icon, label, action);
     }

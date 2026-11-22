@@ -32,7 +32,7 @@ use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
     IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces, PlaceLook,
     ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt,
-    demo::DemoMailbox,
+    SummaryKind, demo::DemoMailbox,
 };
 
 use attachments::AttachmentSave;
@@ -48,6 +48,8 @@ pub use layout::{
 };
 pub use links::PendingLink;
 use mailbox::ActionStart;
+#[cfg(test)]
+pub use mailbox::MovedRow;
 use mailbox::PageRequest;
 pub(crate) use mailbox::RequestId;
 pub use mailbox::{
@@ -95,6 +97,12 @@ pub enum Message {
     DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
     SelectConversation(String),
+    /// Adds a row to the rows chosen, or takes it out, as a Command click
+    /// (Ctrl on Windows and Linux) does.
+    ToggleSelected(String),
+    /// Chooses the rows from the last one clicked through this one, as a
+    /// Shift click does.
+    SelectThrough(String),
     RetryConversation,
     SearchChanged(String),
     /// Asks the server for the first page matching what was typed, across folders.
@@ -108,8 +116,9 @@ pub enum Message {
     ToggleMessageExpanded(String),
     /// Folds or unfolds one quoted passage of a message.
     ToggleQuoteExpanded(String, usize),
-    /// Applies one action to the selected row. Adding an action is a line in
-    /// the toolbar rather than a message and an arm of its own.
+    /// Applies one action to the rows chosen: those selected together, or
+    /// the open one. Adding an action is a line in the toolbar rather than a
+    /// message and an arm of its own.
     ApplyAction(MailAction),
     /// Applies one action to a listed row without opening it, as the row's
     /// menu does.
@@ -146,7 +155,8 @@ pub enum Message {
     /// The folders the account made, fetched when the mailbox opens and, if
     /// that fails, again with the next refresh.
     FoldersLoaded(SessionEpoch, Result<OwnPlaces, MailboxError>),
-    ActionFinished(ActionRequest, Result<(), MailboxError>),
+    /// Proton's answer to one request: the actions sent in it, in order.
+    ActionFinished(Vec<ActionRequest>, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
     /// A settings write finished: the revision it wrote, and whether the file
@@ -691,6 +701,16 @@ impl App {
                 self.fold_compose();
                 return self.select_conversation(id);
             }
+            // Rows chosen while writing show what can be done to them, with
+            // the draft folded above.
+            Message::ToggleSelected(id) => {
+                self.fold_compose();
+                return self.change_selection(|mailbox| mailbox.toggle_selected(&id));
+            }
+            Message::SelectThrough(id) => {
+                self.fold_compose();
+                return self.change_selection(|mailbox| mailbox.select_through(&id));
+            }
             Message::RetryConversation => return self.retry_conversation(),
             Message::SearchChanged(query) => {
                 if let Some(mailbox) = self.active_mailbox() {
@@ -779,8 +799,8 @@ impl App {
             Message::NewMailLoaded(epoch, request, result) => {
                 return self.finish_new_mail(epoch, request, result);
             }
-            Message::ActionFinished(request, result) => {
-                return self.finish_mail_action(request, result);
+            Message::ActionFinished(requests, result) => {
+                return self.finish_mail_action(requests, result);
             }
             Message::MarkReadFinished(request, result) => {
                 return self.finish_mark_read(request, result);
@@ -1046,26 +1066,35 @@ impl App {
     }
 
     fn apply_action(&mut self, action: MailAction) -> Effects {
-        let Some(selected) = self
+        let rows = self
             .mailbox
             .as_ref()
-            .and_then(Mailbox::selected_summary)
-            .map(|summary| summary.id.clone())
-        else {
-            return Effects::none();
-        };
-        self.apply_row_action(selected, action)
+            .map(Mailbox::rows_acted_on)
+            .unwrap_or_default();
+        self.apply_to_rows(rows, action)
     }
 
     /// Acts on one listed row, open or not. Only the open one, when it leaves
     /// the view, gives its place in the reader to the row after it.
     fn apply_row_action(&mut self, row_id: String, action: MailAction) -> Effects {
-        if !self.auth_state.is_authenticated() {
+        self.apply_to_rows(vec![row_id], action)
+    }
+
+    fn apply_to_rows(&mut self, rows: Vec<String>, action: MailAction) -> Effects {
+        if !self.auth_state.is_authenticated() || rows.is_empty() {
             return Effects::none();
         }
         match self.backend.clone() {
-            Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, &row_id, action),
-            Some(MailBackend::Proton(service)) => self.start_proton_action(service, row_id, action),
+            Some(MailBackend::Demo(service)) => self.apply_demo_action(&service, &rows, action),
+            Some(MailBackend::Proton(service)) => self.start_proton_action(service, &rows, action),
+            None => Effects::none(),
+        }
+    }
+
+    /// Opens the row a change of the rows chosen left alone, if any.
+    fn change_selection(&mut self, change: impl FnOnce(&mut Mailbox) -> Option<String>) -> Effects {
+        match self.active_mailbox().and_then(change) {
+            Some(alone) => self.select_conversation(alone),
             None => Effects::none(),
         }
     }
@@ -1074,7 +1103,7 @@ impl App {
     fn apply_demo_action(
         &mut self,
         service: &DemoMailbox,
-        id: &str,
+        rows: &[String],
         action: MailAction,
     ) -> Effects {
         let Some(mailbox) = self.mailbox.as_ref() else {
@@ -1083,55 +1112,72 @@ impl App {
         if !mailbox.takes_actions() {
             return Effects::none();
         }
-        let Some(kind) = mailbox.row(id).map(|row| row.kind) else {
-            return Effects::none();
-        };
+        let listed: Vec<(&str, SummaryKind)> = rows
+            .iter()
+            .filter_map(|id| Some((id.as_str(), mailbox.row(id)?.kind)))
+            .collect();
 
-        let applied = match &action {
-            MailAction::MoveTo(folder) => service.move_to(id, folder),
-            MailAction::SetUnread(unread) => service.set_unread(id, *unread),
-            MailAction::SetStarred(starred) => service.set_starred(id, *starred),
-            // The demo account owns no labels, so the reader offers none.
-            MailAction::SetLabel { .. } => false,
-        };
-        if applied {
-            // Demo actions never reach `finish_action`, so the offer to take
-            // the move back, and the change itself, are recorded here instead.
-            if let Some(mailbox) = self.active_mailbox() {
+        let applied: Vec<(&str, SummaryKind)> = listed
+            .into_iter()
+            .filter(|&(id, _)| match &action {
+                MailAction::MoveTo(folder) => service.move_to(id, folder),
+                MailAction::SetUnread(unread) => service.set_unread(id, *unread),
+                MailAction::SetStarred(starred) => service.set_starred(id, *starred),
+                // The demo account owns no labels, so the reader offers none.
+                MailAction::SetLabel { .. } => false,
+            })
+            .collect();
+        if applied.is_empty() {
+            return Effects::none();
+        }
+        // Demo actions never reach `finish_action`, so the offer to take the
+        // move back, and the change itself, are recorded here instead.
+        if let Some(mailbox) = self.active_mailbox() {
+            for (id, _) in &applied {
                 mailbox.record_action(id, &action);
-                mailbox.offer_undo(id, kind, action);
             }
-            if let Some(next) = self.apply_demo_snapshot(service) {
-                return self.select_conversation(next);
-            }
+            mailbox.offer_undo(&applied, &action);
+        }
+        if let Some(next) = self.apply_demo_snapshot(service) {
+            return self.select_conversation(next);
         }
 
         Effects::none()
     }
 
-    /// Puts the last moved conversation back. The row has left the list, so
-    /// the action names it directly instead of going through the selection.
+    /// Puts the rows of the last move back. They have left the list, so the
+    /// action names them directly instead of going through the selection.
     fn undo_move(&mut self) -> Effects {
         let Some(undo) = self.active_mailbox().and_then(Mailbox::take_undo) else {
             return Effects::none();
         };
         match self.backend.clone() {
             Some(MailBackend::Demo(service)) => {
-                if service.move_to(&undo.row_id, &undo.from) {
+                let mut moved = false;
+                for row in &undo.rows {
+                    moved |= service.move_to(&row.row_id, &row.from);
+                }
+                if moved {
                     self.apply_demo_snapshot(&service);
                 }
 
                 Effects::none()
             }
             Some(MailBackend::Proton(service)) => {
-                let request = self.next_request();
-                let Some(start) = self
-                    .active_mailbox()
-                    .and_then(|mailbox| mailbox.start_move_back(undo, request))
-                else {
-                    return Effects::none();
-                };
-                self.show_started_action(&service, start)
+                let starts: Vec<ActionStart> = undo
+                    .rows
+                    .into_iter()
+                    .filter_map(|row| {
+                        let request = self.next_request();
+                        self.active_mailbox()?.start_move_back(row, request)
+                    })
+                    .collect();
+                Effects::batch(
+                    starts
+                        .into_iter()
+                        .map(|start| self.show_started_action(&service, start))
+                        .collect::<Vec<_>>(),
+                )
             }
             None => Effects::none(),
         }
@@ -1142,17 +1188,20 @@ impl App {
     fn start_proton_action(
         &mut self,
         service: Arc<ProtonMailService>,
-        row_id: String,
+        rows: &[String],
         action: MailAction,
     ) -> Effects {
-        let request = self.next_request();
-        let Some(start) = self.active_mailbox().and_then(|mailbox| {
-            let kind = mailbox.row(&row_id)?.kind;
-            mailbox.start_action_on(row_id, kind, action, request)
-        }) else {
-            return Effects::none();
-        };
-        self.show_started_action(&service, start)
+        let requests: Vec<RequestId> = rows.iter().map(|_| self.next_request()).collect();
+        let starts = self
+            .active_mailbox()
+            .map(|mailbox| mailbox.start_actions_on(rows, action, &requests))
+            .unwrap_or_default();
+        Effects::batch(
+            starts
+                .into_iter()
+                .map(|start| self.show_started_action(&service, start))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Sends what is ready, and opens the row that took the place of one the
@@ -1163,7 +1212,8 @@ impl App {
         start: ActionStart,
     ) -> Effects {
         let send = start.send.map_or_else(Effects::none, |request| {
-            run_action(Arc::clone(service), request, Message::ActionFinished)
+            let group = self.request_group(&request);
+            run_action(Arc::clone(service), group, Message::ActionFinished)
         });
         let open = start
             .opened
@@ -1171,35 +1221,59 @@ impl App {
         Effects::batch([send, open])
     }
 
-    /// Sends the next action in line, once the one before it has answered.
+    /// Sends the next action in line, once the one before it has answered,
+    /// with those that go in the same request.
     fn send_action(&self, request: Option<ActionRequest>) -> Effects {
         match (request, self.backend.clone()) {
-            (Some(request), Some(MailBackend::Proton(service))) => {
-                run_action(service, request, Message::ActionFinished)
-            }
+            (Some(request), Some(MailBackend::Proton(service))) => run_action(
+                service,
+                self.request_group(&request),
+                Message::ActionFinished,
+            ),
             _ => Effects::none(),
         }
     }
 
+    /// The actions that go to Proton in one request with `head`.
+    fn request_group(&self, head: &ActionRequest) -> Vec<ActionRequest> {
+        self.mailbox
+            .as_ref()
+            .map_or_else(|| vec![head.clone()], |mailbox| mailbox.request_group(head))
+    }
+
+    /// Settles each action of a request Proton answered, in order, then does
+    /// once what they need: the next request, the counts, or a reload.
     fn finish_mail_action(
         &mut self,
-        request: ActionRequest,
+        requests: Vec<ActionRequest>,
         result: Result<(), MailboxError>,
     ) -> Effects {
-        let Some(finish) = self
-            .mailbox
-            .as_mut()
-            .map(|mailbox| mailbox.finish_action(&request, result))
-        else {
-            return Effects::none();
-        };
-        if let Err(error) = finish.result {
-            // Proton is where the row really is: a row a refused move took
-            // out of the view comes back with the list.
-            let restore = self
-                .mailbox
-                .as_ref()
-                .is_some_and(|mailbox| mailbox.took_out(&request));
+        let mut next = None;
+        let mut failed = None;
+        // Proton is where a row really is: one a refused move took out of the
+        // view comes back with the list.
+        let mut restore = false;
+        // Undo can return a row to the visible folder only a reload lists.
+        let mut arrived = false;
+        let mut opened = None;
+        for request in &requests {
+            let Some(mailbox) = self.mailbox.as_mut() else {
+                return Effects::none();
+            };
+            let finish = mailbox.finish_action(request, result);
+            next = finish.next_action.or(next);
+            match finish.result {
+                Err(error) => {
+                    failed = Some(error);
+                    restore |= mailbox.took_out(request);
+                }
+                Ok(()) => {
+                    arrived |= mailbox.brought_back(request);
+                    opened = finish.opened.or(opened);
+                }
+            }
+        }
+        if let Some(error) = failed {
             // An expired session closes the mailbox, and nothing is sent.
             if self.end_session_if_expired(Some(error)) {
                 return Effects::none();
@@ -1209,23 +1283,15 @@ impl App {
             } else {
                 Effects::none()
             };
-            return Effects::batch([self.send_action(finish.next_action), reload]);
+            return Effects::batch([self.send_action(next), reload]);
         }
-        let send_next = self.send_action(finish.next_action);
-
-        // Reload only when undo returns a missing row to the visible folder.
-        let arrived = self
-            .mailbox
-            .as_ref()
-            .is_some_and(|mailbox| mailbox.brought_back(&request));
+        let send_next = self.send_action(next);
         if arrived {
             return Effects::batch([send_next, self.refresh_mailbox()]);
         }
 
         let counts = self.reload_counts();
-        let open_next = finish
-            .opened
-            .map_or_else(Effects::none, |id| self.open_row(id));
+        let open_next = opened.map_or_else(Effects::none, |id| self.open_row(id));
 
         Effects::batch([send_next, counts, open_next])
     }
@@ -1421,25 +1487,28 @@ impl App {
 
 /// Runs one mailbox action on Proton and reports the outcome under
 /// `finished`, which is what tells an automatic read from a deliberate one.
+/// Sends `requests`, the same action on rows of one kind read in one folder,
+/// in one request.
 fn run_action(
     service: Arc<ProtonMailService>,
-    request: ActionRequest,
-    finished: fn(ActionRequest, Result<(), MailboxError>) -> Message,
+    requests: Vec<ActionRequest>,
+    finished: fn(Vec<ActionRequest>, Result<(), MailboxError>) -> Message,
 ) -> Effects {
-    let pending = request.clone();
+    let Some(first) = requests.first().cloned() else {
+        return Effects::none();
+    };
+    let ids: Vec<String> = requests
+        .iter()
+        .map(|request| request.row_id.clone())
+        .collect();
 
     Effects::perform(
         async move {
             service
-                .apply_action(
-                    pending.kind,
-                    &pending.row_id,
-                    pending.context.as_ref(),
-                    pending.action,
-                )
+                .apply_action(first.kind, &ids, first.context.as_ref(), first.action)
                 .await
         },
-        move |result| finished(request.clone(), result),
+        move |result| finished(requests.clone(), result),
     )
 }
 

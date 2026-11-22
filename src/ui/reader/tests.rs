@@ -1918,7 +1918,7 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
         message_count: 1,
         has_attachments: false,
     };
-    let row_flags: Vec<(&str, bool, MailAction)> = flags(&row)
+    let row_flags: Vec<(&str, bool, MailAction)> = flags(row.unread, row.starred)
         .into_iter()
         .map(|button| (button.label, button.on, button.action))
         .collect();
@@ -2982,4 +2982,146 @@ fn a_long_table_lays_out_only_the_rows_near_sight_and_keeps_its_shape() {
         // Nothing keeps asking for another frame once it has settled.
         assert!(!again, "{reading:?}");
     }
+}
+
+/// A row of the Inbox, starred, and unread or not.
+fn starred_row(id: &str, unread: bool) -> ConversationSummary {
+    ConversationSummary {
+        id: id.into(),
+        kind: crate::mail::SummaryKind::Conversation,
+        subject: Some(id.into()),
+        correspondents: None,
+        participants: Vec::new(),
+        preview: None,
+        time: None,
+        unread,
+        starred: true,
+        message_count: 1,
+        has_attachments: false,
+    }
+}
+
+/// The Inbox listing "a", "b" and "c", with "a" and "b" chosen together.
+fn two_chosen() -> Mailbox {
+    let (mut mailbox, page) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    mailbox.finish_page(
+        page.id,
+        Ok(crate::mail::ConversationPage {
+            conversations: vec![
+                starred_row("a", true),
+                starred_row("b", false),
+                starred_row("c", false),
+            ],
+            total: 3,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+    assert_eq!(mailbox.select_through("a"), Some("a".to_owned()));
+    let _ = mailbox.start_conversation_load("a".into(), 3);
+    assert_eq!(mailbox.select_through("b"), None);
+    mailbox
+}
+
+#[test]
+fn rows_chosen_together_show_how_many_and_what_can_be_done_to_all() {
+    let mailbox = two_chosen();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(540.0, 950.0),
+        )),
+        ..Default::default()
+    };
+    let (shapes, _) = reader_frame(
+        &context,
+        &mailbox,
+        &[],
+        Reading::default(),
+        &mut state,
+        input.clone(),
+    );
+
+    assert!(visible_text_rect(&shapes, "2 conversations selected").is_some());
+    // Archive, Spam and Trash, then read and star, as for one conversation;
+    // the labels menu shows only for one.
+    let toolbar = buttons(&shapes);
+    assert_eq!(toolbar.len(), 5, "{toolbar:?}");
+    let (_, messages) = reader_frame(
+        &context,
+        &mailbox,
+        &[],
+        Reading::default(),
+        &mut state,
+        click_at(&input, toolbar[0].center()),
+    );
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::ApplyAction(MailAction::MoveTo(to))]
+            if *to == Folder::System(MailFolder::Archive)
+    ));
+}
+
+#[test]
+fn rows_chosen_together_are_read_while_any_is_unread_and_starred_unless_all_are() {
+    let switches = |rows: &[ConversationSummary]| -> Vec<(&'static str, bool, MailAction)> {
+        let rows: Vec<&ConversationSummary> = rows.iter().collect();
+        group_flags(&rows)
+            .into_iter()
+            .map(|button| (button.label, button.on, button.action))
+            .collect()
+    };
+
+    assert_eq!(
+        switches(&[starred_row("a", false), starred_row("b", true)]),
+        [
+            ("Mark as read", true, MailAction::SetUnread(false)),
+            ("Remove star", true, MailAction::SetStarred(false)),
+        ]
+    );
+    let mut plain = starred_row("b", false);
+    plain.starred = false;
+    assert_eq!(
+        switches(&[starred_row("a", false), plain]),
+        [
+            ("Mark as unread", false, MailAction::SetUnread(true)),
+            ("Add star", false, MailAction::SetStarred(true)),
+        ]
+    );
+}
+
+#[test]
+fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
+    let mailbox = two_chosen();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(540.0, 950.0),
+        )),
+        ..Default::default()
+    };
+    let frame = |input: egui::RawInput| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(input, |ui| {
+            selection_menu(ui, &mailbox, &mut messages);
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(input.clone());
+    // Both are starred, so the menu takes the star away from both.
+    assert!(visible_text_rect(&shapes, "Remove star").is_some());
+    let (_, messages) = frame(click_at(&input, text_rect(&shapes, "Archive").center()));
+
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::ApplyAction(MailAction::MoveTo(to))]
+            if *to == Folder::System(MailFolder::Archive)
+    ));
 }
