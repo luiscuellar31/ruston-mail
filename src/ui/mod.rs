@@ -648,11 +648,15 @@ impl DesktopApp {
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
                     let parent = self.main_window.clone();
-                    let task = dialogs::open(
-                        parent.as_ref(),
-                        self.app.settings().compose_placement == ComposePlacement::Window,
-                        |dialog| dialog.set_title("Attach files").pick_files(),
-                    );
+                    let owner = if self.app.settings().compose_placement == ComposePlacement::Window
+                    {
+                        dialogs::DialogOwner::ActiveWindow
+                    } else {
+                        dialogs::DialogOwner::Root
+                    };
+                    let task = dialogs::open(parent.as_ref(), owner, |dialog| {
+                        dialog.set_title("Attach files").pick_files()
+                    });
                     self.runtime.spawn_message(async move {
                         let _keep_parent_alive = parent;
                         let files = task.await;
@@ -670,12 +674,13 @@ impl DesktopApp {
                 } => {
                     self.file_dialog_open = true;
                     let parent = self.main_window.clone();
-                    let task = dialogs::open(parent.as_ref(), false, |dialog| {
-                        dialog
-                            .set_title("Save attachment as (choose a new filename)")
-                            .set_file_name(suggested_name)
-                            .save_file()
-                    });
+                    let task =
+                        dialogs::open(parent.as_ref(), dialogs::DialogOwner::Root, |dialog| {
+                            dialog
+                                .set_title("Save attachment as (choose a new filename)")
+                                .set_file_name(suggested_name)
+                                .save_file()
+                        });
                     self.runtime.spawn_message(async move {
                         let _keep_parent_alive = parent;
                         let destination = task.await.map(|file| file.path().to_path_buf());

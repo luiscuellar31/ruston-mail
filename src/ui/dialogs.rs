@@ -5,21 +5,33 @@ use std::sync::Arc;
 use rfd::AsyncFileDialog;
 use winit::window::Window;
 
+/// The window a dialog belongs to.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum DialogOwner {
+    /// The main window.
+    Root,
+    /// The window that has the focus, such as the composer's own, where the
+    /// system can tell; the main window elsewhere.
+    ActiveWindow,
+}
+
 pub(super) fn open<T>(
     root: Option<&Arc<Window>>,
-    composer_window: bool,
+    owner: DialogOwner,
     start: impl FnOnce(AsyncFileDialog) -> T,
 ) -> T {
     // Configure and start together while the native owner is retained. rfd
     // copies handles and macOS creates its panel synchronously on this thread.
     let dialog = AsyncFileDialog::new();
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    if composer_window && let Some(parent) = active::Parent::new() {
+    if owner == DialogOwner::ActiveWindow
+        && let Some(parent) = active::Parent::new()
+    {
         return start(dialog.set_parent(&parent));
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     // eframe exposes only the root native handle for immediate child viewports.
-    let _ = composer_window;
+    let _ = owner;
     let dialog = match root {
         Some(window) => dialog.set_parent(window.as_ref()),
         None => dialog,
