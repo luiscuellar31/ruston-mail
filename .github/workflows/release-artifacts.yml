@@ -180,6 +180,7 @@ jobs:
       - name: Install packaging and test dependencies
         run: |
           sudo apt-get update
+          # libxkbcommon0 to libxi6 hold appimage.sh's BUNDLED_LIBRARIES.
           sudo apt-get install --no-install-recommends -y \
             appstream desktop-file-utils file libfile-mimeinfo-perl \
             libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 zsync \

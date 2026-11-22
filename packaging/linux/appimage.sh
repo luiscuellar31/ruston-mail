@@ -17,6 +17,15 @@ DIST_DIR="${DIST_DIR:-$REPO_ROOT/dist}"
 TARGET_DIR="$REPO_ROOT/target/release"
 
 APP_ID="com.luiscuellar.ruston-mail"
+# winit loads libxkbcommon and, on X11, libxkbcommon-x11, libXcursor and libXi
+# at run time, and stops without them; not every system installs them, and
+# AppImages bundle what is not on the excludelist. The executables get an
+# $ORIGIN-relative RUNPATH, so those loads find the bundled copies. GL, libX11,
+# libxcb and Wayland stay the system's. The release workflow installs their
+# packages.
+BUNDLED_LIBRARIES=(libxkbcommon.so.0 libxkbcommon-x11.so.0 libXcursor.so.1 libXi.so.6)
+# The sizes packaging/generate-desktop-icons.py writes (SIZES).
+ICON_SIZES=(16 24 32 48 64 128 256 512)
 LINUXDEPLOY="${LINUXDEPLOY:-linuxdeploy}"
 APPIMAGETOOL="${APPIMAGETOOL:-appimagetool}"
 
@@ -107,24 +116,20 @@ mkdir -p "$DIST_DIR"
 rm -rf "$APPDIR"
 
 icon_args=()
-for size in 16 24 32 48 64 128 256 512; do
+for size in "${ICON_SIZES[@]}"; do
     icon_args+=(--icon-file "$REPO_ROOT/assets/icons/hicolor/${size}x${size}/apps/$APP_ID.png")
 done
+library_args=()
+for library in "${BUNDLED_LIBRARIES[@]}"; do
+    library_args+=(--library "$(library_path "$library")")
+done
 
-# winit loads libxkbcommon and, on X11, libxkbcommon-x11, libXcursor and libXi
-# at run time, and stops without them; not every system installs them, and
-# AppImages bundle what is not on the excludelist. The executables get an
-# $ORIGIN-relative RUNPATH, so those loads find the bundled copies. GL, libX11,
-# libxcb and Wayland stay the system's.
 "$LINUXDEPLOY" --appdir "$APPDIR" \
     --executable "$TARGET_DIR/ruston" \
     --executable "$TARGET_DIR/ruston-cli" \
     --desktop-file "$REPO_ROOT/packaging/linux/$APP_ID.desktop" \
     "${icon_args[@]}" \
-    --library "$(library_path libxkbcommon.so.0)" \
-    --library "$(library_path libxkbcommon-x11.so.0)" \
-    --library "$(library_path libXcursor.so.1)" \
-    --library "$(library_path libXi.so.6)" \
+    "${library_args[@]}" \
     --custom-apprun "$SCRIPT_DIR/AppRun"
 
 install -Dm644 "$REPO_ROOT/packaging/linux/$APP_ID.appdata.xml" \
@@ -138,7 +143,7 @@ install -Dm644 "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" \
 ln -sf "usr/share/icons/hicolor/256x256/apps/$APP_ID.png" "$APPDIR/.DirIcon"
 
 # 3. Check the AppDir before it becomes read-only
-for library in libxkbcommon.so.0 libxkbcommon-x11.so.0 libXcursor.so.1 libXi.so.6; do
+for library in "${BUNDLED_LIBRARIES[@]}"; do
     [[ -f "$APPDIR/usr/lib/$library" ]] || die "$library was not bundled"
 done
 search_path="$(readelf -d "$APPDIR/usr/bin/ruston" | grep -E '\((RUNPATH|RPATH)\)' || true)"
