@@ -1452,7 +1452,9 @@ edited. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
-removes indexed bodies when messages are deleted. FTS maintenance resolves
+removes indexed bodies when messages are deleted; its tables, indexes and the
+migration that brings an older cache up to date are in
+[`cache/schema.rs`](../crates/ruston-core/src/cache/schema.rs). FTS maintenance resolves
 message IDs through the indexed `msg_fts_rows` table and targets FTS `rowid`s,
 avoiding a full scan for each deletion, invalidation, or header update. A
 header update skips rows whose subject and participants did not change, since

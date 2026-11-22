@@ -1,3 +1,4 @@
+use super::schema::SCHEMA_VERSION;
 use super::*;
 use crate::api::events::MessageEvent;
 use crate::model::enums::label_ids;
