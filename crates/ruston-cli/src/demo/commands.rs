@@ -171,12 +171,9 @@ pub(super) fn messages(ctx: &Ctx, cmd: MessagesCmd, messages: Vec<DemoMessage>) 
         }
         MessagesCmd::Send(args) => {
             let id = "msg-demo-sent-101";
-            if let Some(at) = args.send_at {
-                render::scheduled(ctx.json, id, at);
-            } else if ctx.json {
-                render::sent(ctx.json, id);
-            } else {
-                terminal::println!("Sent (id {id}) to {}", args.message.to.join(", "));
+            match args.send_at {
+                Some(at) => render::scheduled(ctx.json, id, at),
+                None => render::sent(ctx.json, id),
             }
             Ok(())
         }
@@ -184,21 +181,13 @@ pub(super) fn messages(ctx: &Ctx, cmd: MessagesCmd, messages: Vec<DemoMessage>) 
         MessagesCmd::Reply { reference, .. } => {
             let original = message_named(&messages, &reference)?;
             let id = format!("msg-demo-reply-{}", demo_number(original));
-            if ctx.json {
-                render::sent(ctx.json, &id);
-            } else {
-                terminal::println!("Reply sent (id {id})");
-            }
+            render::sent(ctx.json, &id);
             Ok(())
         }
-        MessagesCmd::Forward { reference, to, .. } => {
+        MessagesCmd::Forward { reference, .. } => {
             let original = message_named(&messages, &reference)?;
             let id = format!("msg-demo-fwd-{}", demo_number(original));
-            if ctx.json {
-                render::sent(ctx.json, &id);
-            } else {
-                terminal::println!("Forwarded to {} (id {id})", to.join(", "));
-            }
+            render::sent(ctx.json, &id);
             Ok(())
         }
         MessagesCmd::CancelSend { reference } => {
@@ -459,11 +448,11 @@ pub(super) fn filters(ctx: &Ctx, cmd: FiltersCmd) -> Result<()> {
             render::filters_list(ctx.json, &demo_filters());
             Ok(())
         }
-        FiltersCmd::Check { sieve } => {
+        FiltersCmd::Check { .. } => {
             if ctx.json {
-                render::json_out(&json!({ "valid": true, "sieve": sieve }));
+                render::json_out(&json!({ "valid": true }));
             } else {
-                terminal::println!("Sieve script is valid syntax.");
+                terminal::println!("Sieve script is valid.");
             }
             Ok(())
         }
@@ -527,19 +516,8 @@ pub(super) fn addresses(ctx: &Ctx, cmd: AddressesCmd) -> Result<()> {
             render::addresses_list(ctx.json, &demo_addresses());
             Ok(())
         }
-        AddressesCmd::Update {
-            id,
-            display_name,
-            signature: _,
-        } => {
-            if ctx.json {
-                render::json_out(&json!({ "status": "ok", "id": id }));
-            } else {
-                terminal::println!(
-                    "Updated address {id} with display name '{:?}'",
-                    display_name
-                );
-            }
+        AddressesCmd::Update { id, .. } => {
+            render::action_result(ctx.json, "update", &[id]);
             Ok(())
         }
     }
@@ -680,19 +658,13 @@ pub(super) fn export(
 
     if ctx.json {
         render::json_out(&json!({
-            "status": "ok",
             "exported": written,
             "already_exported": already_exported,
-            "folder": folder,
-            "output_dir": out.display().to_string(),
+            "skipped": [],
+            "out": out.display().to_string(),
         }));
     } else {
-        terminal::println!(
-            "Exported {} demo message(s) from folder '{}' to {}",
-            written,
-            folder,
-            out.display()
-        );
+        terminal::println!("Exported {} message(s) to {}", written, out.display());
         if already_exported > 0 {
             terminal::println!(
                 "{} message(s) were already exported there",
@@ -726,15 +698,11 @@ pub(super) fn sync(ctx: &Ctx, backfill: Option<String>) -> Result<()> {
 }
 
 /// `index`, of the demo's `indexed` messages.
-pub(super) fn index(ctx: &Ctx, folder: String, indexed: usize) -> Result<()> {
+pub(super) fn index(ctx: &Ctx, indexed: usize) -> Result<()> {
     if ctx.json {
-        render::json_out(&json!({
-            "status": "ok",
-            "indexed": indexed,
-            "folder": folder
-        }));
+        render::json_out(&json!({ "indexed": indexed }));
     } else {
-        terminal::println!("Indexed {indexed} demo messages for folder '{folder}'.");
+        terminal::println!("Indexed {indexed} message(s) for local search.");
     }
     Ok(())
 }

@@ -620,31 +620,62 @@ fn finds(
 /// How many of `conversations` each place holds and how many of those are
 /// unread there, as Proton counts them; All mail holds every one.
 fn conversation_counts(conversations: &[Conversation]) -> Vec<LabelCount> {
-    let mut counts: Vec<LabelCount> = Vec::new();
-    for conversation in conversations {
-        for label in &conversation.labels {
-            let at = counts
-                .iter()
-                .position(|count| count.label_id == label.id)
-                .unwrap_or_else(|| {
-                    counts.push(LabelCount {
-                        label_id: label.id.clone(),
-                        total: 0,
-                        unread: 0,
-                    });
-                    counts.len() - 1
-                });
-            counts[at].total += 1;
-            if label.context_num_unread.unwrap_or(0) > 0 {
-                counts[at].unread += 1;
-            }
-        }
-    }
     let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+    tally(
+        conversations.iter().flat_map(|conversation| {
+            conversation
+                .labels
+                .iter()
+                .map(|label| (label.id.as_str(), label.context_num_unread.unwrap_or(0) > 0))
+        }),
+        (conversations.len(), unread),
+    )
+}
+
+/// How many of `messages` each place holds and how many of those are
+/// unread, as Proton counts messages; All mail holds every one.
+fn message_counts(messages: &[DemoMessage]) -> Vec<LabelCount> {
+    let unread = messages.iter().filter(|m| m.meta.unread != 0).count();
+    tally(
+        messages.iter().flat_map(|message| {
+            let unread = message.meta.unread != 0;
+            message
+                .meta
+                .label_ids
+                .iter()
+                .map(move |id| (id.as_str(), unread))
+        }),
+        (messages.len(), unread),
+    )
+}
+
+/// The places each `(place, unread)` pair is in, in the order they first
+/// come, each with how many pairs name it and how many of those are
+/// unread, then All mail with `all`, its total and unread.
+fn tally<'a>(
+    placed: impl Iterator<Item = (&'a str, bool)>,
+    all: (usize, usize),
+) -> Vec<LabelCount> {
+    let mut counts: Vec<LabelCount> = Vec::new();
+    for (place, unread) in placed {
+        let at = counts
+            .iter()
+            .position(|count| count.label_id == place)
+            .unwrap_or_else(|| {
+                counts.push(LabelCount {
+                    label_id: place.to_owned(),
+                    total: 0,
+                    unread: 0,
+                });
+                counts.len() - 1
+            });
+        counts[at].total += 1;
+        counts[at].unread += i64::from(unread);
+    }
     counts.push(LabelCount {
         label_id: label_ids::ALL_MAIL.to_string(),
-        total: conversations.len() as i64,
-        unread: unread as i64,
+        total: all.0 as i64,
+        unread: all.1 as i64,
     });
     counts
 }
@@ -677,7 +708,7 @@ pub async fn dispatch(ctx: &Ctx, cmd: Command) -> Result<()> {
         }
         Command::Search { query, limit } => commands::search(ctx, query, limit),
         Command::Sync { backfill, .. } => commands::sync(ctx, backfill),
-        Command::Index { folder, .. } => commands::index(ctx, folder, mailbox.messages.len()),
+        Command::Index { .. } => commands::index(ctx, mailbox.messages.len()),
         Command::Watch { interval, folder } => commands::watch(ctx, interval, folder),
     }
 }

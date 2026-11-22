@@ -242,7 +242,8 @@ fn a_session_deletes_forever_and_empties_what_was_thrown_away() {
         .into_iter()
         .find(|count| count.label_id == label_ids::ALL_MAIL)
         .map(|count| count.total);
-    assert_eq!(all, Some(3));
+    // The three deleted of seven, the draft's among those left.
+    assert_eq!(all, Some(4));
 }
 
 #[test]

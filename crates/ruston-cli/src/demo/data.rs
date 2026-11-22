@@ -103,7 +103,7 @@ const TEAM: Person = Person {
 };
 
 /// The people the demo's contacts are, as `contacts list` lists them.
-const CONTACTS: [Person; 6] = [ALEX, SAM, PRIYA, JORDAN, RILEY, DREW];
+const CONTACTS: [Person; 8] = [ALEX, SAM, PRIYA, JORDAN, RILEY, DREW, ROBIN, EMERSON];
 
 /// A conversation's place: the label or folder `id`, which holds `messages`
 /// of its messages, `unread` of them unread, the last of them at `time`.
@@ -113,16 +113,6 @@ fn placed(id: &str, messages: i64, unread: i64, time: i64) -> ConversationLabel 
         context_num_messages: Some(messages),
         context_num_unread: Some(unread),
         context_time: Some(time),
-    }
-}
-
-/// How many of the place `label_id` holds, `total`, and how many of those
-/// are unread.
-fn counted(label_id: &str, total: i64, unread: i64) -> LabelCount {
-    LabelCount {
-        label_id: label_id.to_owned(),
-        total,
-        unread,
     }
 }
 
@@ -382,6 +372,19 @@ pub(super) fn fixtures() -> DemoMailbox {
             labels: vec![placed(label_ids::TRASH, 1, 0, now - 345600)],
             ..Conversation::default()
         },
+        Conversation {
+            id: "conv-demo-07".to_string(),
+            subject: "Draft: Release roadmap 2026".to_string(),
+            time: now - 600,
+            num_messages: 1,
+            senders: vec![USER.recipient()],
+            recipients: vec![TEAM.recipient()],
+            labels: vec![
+                placed(label_ids::DRAFTS, 1, 0, now - 600),
+                placed(label_ids::ALL_DRAFTS, 1, 0, now - 600),
+            ],
+            ..Conversation::default()
+        },
     ];
 
     DemoMailbox {
@@ -439,30 +442,14 @@ pub(crate) fn demo_labels() -> Vec<Label> {
     ]
 }
 
+/// What `counts` reports: the conversations or the messages each place
+/// holds, worked out from the demo's mail, as the terminal interface's are.
 pub(crate) fn demo_counts(conversations: bool) -> Vec<LabelCount> {
+    let mailbox = fixtures();
     if conversations {
-        vec![
-            counted(label_ids::INBOX, 4, 2),
-            counted(label_ids::TRASH, 1, 0),
-            counted(label_ids::ARCHIVE, 1, 0),
-            counted(label_ids::ALL_MAIL, 6, 2),
-            counted(label_ids::STARRED, 1, 1),
-            counted("label-demo-work", 2, 2),
-            counted("label-demo-personal", 1, 0),
-        ]
+        super::conversation_counts(&mailbox.conversations)
     } else {
-        vec![
-            counted(label_ids::INBOX, 4, 2),
-            counted(label_ids::ALL_DRAFTS, 1, 0),
-            counted(label_ids::ALL_SENT, 1, 0),
-            counted(label_ids::TRASH, 1, 0),
-            counted(label_ids::SPAM, 0, 0),
-            counted(label_ids::ALL_MAIL, 8, 2),
-            counted(label_ids::ARCHIVE, 1, 0),
-            counted(label_ids::SENT, 1, 0),
-            counted(label_ids::DRAFTS, 1, 0),
-            counted(label_ids::STARRED, 1, 1),
-        ]
+        super::message_counts(&mailbox.messages)
     }
 }
 
