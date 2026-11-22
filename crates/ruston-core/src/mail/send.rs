@@ -523,20 +523,15 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
             "BodyKeyPacket": STANDARD.encode(&bkp),
             "Signature": attachment_signatures(attachments),
         });
-        if !attachments.is_empty() {
-            let mut akp = Map::new();
-            for attachment in attachments {
-                akp.insert(
-                    attachment.id.clone(),
-                    json!(STANDARD.encode(crypto::wrap_session_key(
-                        provider,
-                        pubkey,
-                        &attachment.session_key
-                    )?)),
-                );
-            }
-            entry["AttachmentKeyPackets"] = Value::Object(akp);
-        }
+        attachment_keys_field(
+            &mut entry,
+            "AttachmentKeyPackets",
+            attachments,
+            |attachment| {
+                let packet = crypto::wrap_session_key(provider, pubkey, &attachment.session_key)?;
+                Ok(json!(STANDARD.encode(packet)))
+            },
+        )?;
         Ok(entry)
     };
 
@@ -614,17 +609,12 @@ fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
                 "Algorithm": crypto::algo_name(body.session_key.algo),
             },
         });
-        if !attachments.is_empty() {
-            let mut ak = Map::new();
-            for attachment in attachments {
-                let key = &attachment.session_key;
-                ak.insert(
-                    attachment.id.clone(),
-                    json!({ "Key": STANDARD.encode(&key.key), "Algorithm": crypto::algo_name(key.algo) }),
-                );
-            }
-            pkg["AttachmentKeys"] = Value::Object(ak);
-        }
+        attachment_keys_field(&mut pkg, "AttachmentKeys", attachments, |attachment| {
+            let key = &attachment.session_key;
+            Ok(
+                json!({ "Key": STANDARD.encode(&key.key), "Algorithm": crypto::algo_name(key.algo) }),
+            )
+        })?;
         packages.push(pkg);
     }
     Ok(packages)
@@ -665,21 +655,40 @@ fn password_entry(
     if !hint.is_empty() {
         entry["PasswordHint"] = json!(hint);
     }
-    if !attachments.is_empty() {
-        let mut akp = Map::new();
-        for attachment in attachments {
-            akp.insert(
-                attachment.id.clone(),
-                json!(STANDARD.encode(crypto::wrap_session_key_with_password(
-                    &provider,
-                    password,
-                    &attachment.session_key
-                )?)),
-            );
-        }
-        entry["AttachmentKeyPackets"] = Value::Object(akp);
-    }
+    attachment_keys_field(
+        &mut entry,
+        "AttachmentKeyPackets",
+        attachments,
+        |attachment| {
+            let packet = crypto::wrap_session_key_with_password(
+                &provider,
+                password,
+                &attachment.session_key,
+            )?;
+            Ok(json!(STANDARD.encode(packet)))
+        },
+    )?;
     Ok(entry)
+}
+
+/// Puts under `field` of `entry` each attachment's key, by the attachment's
+/// ID, as `key` gives it: wrapped to a recipient, wrapped with a password,
+/// or in the clear. A message without attachments gets no such field.
+fn attachment_keys_field(
+    entry: &mut Value,
+    field: &str,
+    attachments: &[AttachmentKey],
+    mut key: impl FnMut(&AttachmentKey) -> Result<Value>,
+) -> Result<()> {
+    if attachments.is_empty() {
+        return Ok(());
+    }
+    let mut keys = Map::new();
+    for attachment in attachments {
+        keys.insert(attachment.id.clone(), key(attachment)?);
+    }
+    entry[field] = Value::Object(keys);
+    Ok(())
 }
 
 async fn submit_send<D: Doer>(http: &D, message_id: &str, request: Value) -> Result<()> {
