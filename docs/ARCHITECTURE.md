@@ -1252,7 +1252,10 @@ instead of an unknown outcome.
   execution and response-body failures, so both frontends receive the same
   sanitized HTTP errors. Paths can still contain resource IDs; other logging
   targets and server-provided errors keep their existing behavior.
-- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in. `Client::login_with_prompts`
+- [`auth/`](../crates/ruston-core/src/auth/) handles the SRP sign-in, and
+  [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs) a `Client`'s
+  session around it: signing in, resuming, settling and signing out, with the
+  options and prompts they take. `Client::login_with_prompts`
   asks through `LoginPrompts` for what the account needs and the options do not
   carry: a TOTP code once any human verification is done, and a separate mailbox
   password once the account password is accepted, so neither repeats the other.
@@ -1288,8 +1291,8 @@ instead of an unknown outcome.
 
 | Change or question | Start here | Follow the boundary into |
 | --- | --- | --- |
-| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
-| CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
+| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), core [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs), [`session/`](../crates/ruston-core/src/session/) |
+| CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), core [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | Core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
