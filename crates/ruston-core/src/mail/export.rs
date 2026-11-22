@@ -168,8 +168,11 @@ impl Client {
         // The file carries no word on who signed the body, so the sender's
         // keys are not asked for: one lookup a message is what gets a long
         // export refused for asking too much.
-        let full = match self.open_message_with(message.clone(), Vec::new()).await {
-            Ok(full) => full,
+        let (full, mut inside) = match self
+            .open_message_and_parts(message.clone(), Vec::new())
+            .await
+        {
+            Ok(opened) => opened,
             Err(error) => return Ok(skipped(message, error)),
         };
         // The file is written under a hidden name and moved into place once
@@ -182,9 +185,11 @@ impl Client {
 
         let result = async {
             let mut eml = EmlWriter::new(&mut file, &full, message.header.as_deref())?;
-            for attachment in &message.attachments {
+            // Those inside a PGP/MIME body come from the one opened here.
+            let refused = full.verdict == crate::crypto::Verdict::Invalid;
+            for attachment in &full.attachments {
                 let (_, bytes) = self
-                    .download_listed_attachment(&message.meta, attachment)
+                    .take_attachment(&message.meta, attachment, &mut inside, refused)
                     .await?;
                 eml.attachment(attachment, &bytes)?;
             }

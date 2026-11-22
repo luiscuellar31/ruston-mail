@@ -781,6 +781,50 @@ async fn an_export_asks_for_no_keys_to_check_a_body_it_does_not_vouch_for() {
 }
 
 #[tokio::test]
+async fn an_export_carries_the_attachments_inside_a_pgp_mime_body() {
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    serve_folder(&server, &[pgp_mime_message(&client)]).await;
+    let folder = export_directory("export-pgp-mime");
+
+    let written = client.export_folder("inbox", &folder, 10).await;
+    // "message" in hex.
+    let eml = std::fs::read(folder.join("message-6d657373616765.eml"));
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(written.unwrap(), 1);
+    let eml = eml.unwrap();
+    let parsed = mail_parser::MessageParser::default().parse(&eml).unwrap();
+    assert_eq!(parsed.body_text(0).as_deref(), Some("See the report."));
+    let attachments: Vec<_> = parsed
+        .attachments()
+        .map(|part| {
+            use mail_parser::MimeHeaders as _;
+            let name = part.attachment_name().unwrap_or_default().to_owned();
+            (name, part.contents().to_vec())
+        })
+        .collect();
+    let logo = STANDARD.decode("iVBORw0KGgo=").unwrap();
+    assert_eq!(
+        attachments,
+        [
+            ("report.pdf".to_owned(), b"%PDF-1.4\n".to_vec()),
+            ("attachment-2".to_owned(), logo)
+        ]
+    );
+    // Taken from the body opened for the file, with no keys asked for.
+    let requests = server.received_requests().await.unwrap();
+    let asked = |route: &str| {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == route)
+            .count()
+    };
+    assert_eq!(asked("/mail/v4/messages/message"), 1);
+    assert_eq!(asked("/core/v4/keys/all"), 0);
+}
+
+#[tokio::test]
 async fn a_rerun_resumes_without_fetching_exported_messages_again() {
     let server = MockServer::start().await;
     let (client, attachment) = attachment_client(&server).await;

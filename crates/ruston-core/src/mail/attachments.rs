@@ -427,22 +427,38 @@ impl Client {
             .iter()
             .filter(|att| include_inline || !att.is_inline())
         {
-            let (name, bytes) = match mime_attachment_position(&att.id) {
-                Some(_) if refused => return Err(Error::AttachmentVerificationFailed),
-                Some(position) => {
-                    let bytes = inside
-                        .get_mut(position - 1)
-                        .map(std::mem::take)
-                        .ok_or_else(|| Error::NotFound {
-                            kind: "attachment".into(),
-                        })?;
-                    (att.name.clone(), bytes)
-                }
-                None => self.download_listed_attachment(&meta, att).await?,
-            };
+            let (name, bytes) = self
+                .take_attachment(&meta, att, &mut inside, refused)
+                .await?;
             receive(name, bytes)?;
         }
         Ok(())
+    }
+
+    /// The name and bytes of `att`, listed by a message opened with
+    /// [`Self::open_message_and_parts`] into `inside`, the parts of its
+    /// PGP/MIME body: one of those is taken from there, unless `refused`
+    /// says the body's signature is invalid, and any other is downloaded.
+    pub(super) async fn take_attachment(
+        &self,
+        meta: &MessageMetadata,
+        att: &Attachment,
+        inside: &mut [Vec<u8>],
+        refused: bool,
+    ) -> Result<(String, Vec<u8>)> {
+        match mime_attachment_position(&att.id) {
+            Some(_) if refused => Err(Error::AttachmentVerificationFailed),
+            Some(position) => {
+                let bytes = inside
+                    .get_mut(position - 1)
+                    .map(std::mem::take)
+                    .ok_or_else(|| Error::NotFound {
+                        kind: "attachment".into(),
+                    })?;
+                Ok((att.name.clone(), bytes))
+            }
+            None => self.download_listed_attachment(meta, att).await,
+        }
     }
 
     /// Downloads the message again and returns the attachment at `position`,

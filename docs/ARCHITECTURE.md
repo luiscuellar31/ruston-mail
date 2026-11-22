@@ -1141,14 +1141,15 @@ instead of an unknown outcome.
   `list_attachments` opens such a body, unverified, to list them. Downloading
   one fetches and decrypts the message again with the sender's keys and
   returns that part, while `for_each_attachment` opens the body once with
-  them for all its parts; only an `Invalid` body verdict
+  them for all its parts, and export takes them from the body it opens for
+  the file, without keys; only an `Invalid` body verdict
   refuses it with `AttachmentVerificationFailed`, while an unsigned body, or
   one left unverified because no sender keys were found, lets it through, as
-  reading shows such a body. Every caller, export included, reaches them
-  through those methods.
+  reading shows such a body.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
-  using the same metadata, writing MIME parts sequentially to a hidden
+  using the same metadata, those inside a PGP/MIME body taken from the body
+  it decrypted, writing MIME parts sequentially to a hidden
   temporary file. Message-ID comes from Proton's `ExternalID`, and
   In-Reply-To and References from the message's raw `Header`; an ID that is
   not printable ASCII, or that holds a bracket, is left out rather than
