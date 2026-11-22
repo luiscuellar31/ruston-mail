@@ -925,7 +925,9 @@ impl App {
                 }
             };
         }
-        let (places, folders, labels, their_labels) = self.completions();
+        // What Tab offers is worked out only when it is pressed.
+        let completions =
+            matches!(key.code, KeyCode::Tab | KeyCode::BackTab).then(|| self.completions());
         let Some(line) = self.command_line.as_mut() else {
             return Vec::new();
         };
@@ -942,6 +944,7 @@ impl App {
             KeyCode::Down => line.recall(&self.history, false),
             KeyCode::Tab | KeyCode::BackTab => {
                 let backwards = key.code == KeyCode::BackTab;
+                let (places, folders, labels, their_labels) = completions.unwrap_or_default();
                 let after = |command: &str| match command {
                     "folder" | "in:" => places.clone(),
                     "move" => folders.clone(),
