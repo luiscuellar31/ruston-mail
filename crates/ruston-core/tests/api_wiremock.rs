@@ -120,7 +120,9 @@ async fn a_bulk_action_names_the_ids_proton_refused() {
     let http = client(&server.uri());
 
     let ids = ["a".to_string(), "b".to_string()];
-    let error = api::messages::label(&http, "6", &ids).await.unwrap_err();
+    let error = api::messages::label(&http, label_ids::ARCHIVE, &ids)
+        .await
+        .unwrap_err();
     let ruston_core::Error::Api(refused) = error else {
         panic!("expected an API error, got {error:?}");
     };
@@ -132,9 +134,13 @@ async fn a_bulk_action_names_the_ids_proton_refused() {
         refused.message
     );
     // Every ID taken is a success.
-    api::conversations::label(&http, "6", &["c1".to_string(), "c2".to_string()])
-        .await
-        .unwrap();
+    api::conversations::label(
+        &http,
+        label_ids::ARCHIVE,
+        &["c1".to_string(), "c2".to_string()],
+    )
+    .await
+    .unwrap();
 }
 
 #[tokio::test]
