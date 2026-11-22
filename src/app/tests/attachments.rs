@@ -235,6 +235,6 @@ fn a_failed_download_says_why_the_file_was_not_saved() {
         (MailboxError::Service, SaveError::NotFetched),
         (MailboxError::Unavailable, SaveError::NotFetched),
     ] {
-        assert_eq!(super::unsaved(error), saved, "{error:?}");
+        assert_eq!(crate::app::attachments::unsaved(error), saved, "{error:?}");
     }
 }

@@ -1,10 +1,13 @@
 mod accounts;
+mod attachments;
 mod auth;
 mod compose;
 mod effect;
 mod inspection;
 mod keys;
 mod layout;
+mod links;
+mod listing;
 mod mailbox;
 mod mailto;
 mod notifications;
@@ -18,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use futures::future::{AbortHandle, Abortable};
 use inspection::Inspections;
 
-use crate::downloads::{self, SaveError};
+use crate::downloads::SaveError;
 use crate::settings::{Appearance, ComposePlacement, Panels, Settings, StartFolder, Window};
 
 /// How far the window must change before its new size is worth storing.
@@ -31,6 +34,8 @@ use crate::mail::{
     demo::DemoMailbox,
 };
 
+use attachments::AttachmentSave;
+pub use attachments::AttachmentSaveRequest;
 use auth::LoginForm;
 pub use auth::{AuthState, SignInStep};
 use compose::ParkedDraft;
@@ -40,6 +45,7 @@ pub use keys::{Key, KeyPress};
 pub use layout::{
     MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
 };
+pub use links::PendingLink;
 use mailbox::ActionStart;
 use mailbox::PageRequest;
 pub(crate) use mailbox::RequestId;
@@ -49,28 +55,6 @@ pub use mailbox::{
 };
 pub use pictures::InlineImage;
 pub use reader::{ConversationReader, ReaderState};
-
-/// Identifies one file operation across a destination dialog and download.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AttachmentSaveRequest {
-    id: RequestId,
-    session: SessionEpoch,
-    message_id: String,
-    attachment_id: String,
-}
-
-struct AttachmentSave {
-    request: AttachmentSaveRequest,
-    stage: SaveStage,
-}
-
-/// How far a save has come: the person is still choosing where the file
-/// goes, or it is being fetched and written.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SaveStage {
-    ChoosingDestination,
-    Downloading,
-}
 
 type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
@@ -517,151 +501,9 @@ impl App {
         app
     }
 
-    /// The attachment now being fetched, so its row can say so.
-    pub fn saving_attachment(&self) -> Option<&str> {
-        self.saving_attachment
-            .as_ref()
-            .map(|save| save.request.attachment_id.as_str())
-    }
-
     /// The confirmation to show at the foot of the mailbox.
     pub fn notice(&self) -> Option<&Notice> {
         self.notice.as_ref()
-    }
-
-    /// The attachment whose last save failed, by ID, and why.
-    pub fn failed_save(&self) -> Option<(&str, SaveError)> {
-        self.failed_save
-            .as_ref()
-            .map(|(attachment_id, error)| (attachment_id.as_str(), *error))
-    }
-
-    /// Fetches an attachment and writes it off the UI thread.
-    fn save_attachment(
-        &mut self,
-        message_id: String,
-        attachment_id: String,
-        suggested_name: Option<String>,
-    ) -> Effects {
-        if !self.mailbox_actions_available() || self.saving_attachment.is_some() {
-            return Effects::none();
-        }
-        let request = AttachmentSaveRequest {
-            id: self.next_request(),
-            session: self.session_epoch,
-            message_id,
-            attachment_id,
-        };
-        self.failed_save = None;
-        self.saving_attachment = Some(AttachmentSave {
-            request: request.clone(),
-            stage: if suggested_name.is_some() {
-                SaveStage::ChoosingDestination
-            } else {
-                SaveStage::Downloading
-            },
-        });
-        if let Some(name) = suggested_name {
-            Effects::ui(UiEffect::PickAttachmentDestination {
-                request,
-                suggested_name: ruston_core::mail::attachments::safe_attachment_name(&name),
-            })
-        } else {
-            self.download_attachment(request, None)
-        }
-    }
-
-    fn attachment_destination_chosen(
-        &mut self,
-        request: AttachmentSaveRequest,
-        destination: Option<PathBuf>,
-    ) -> Effects {
-        let Some(save) = self.current_save(&request, SaveStage::ChoosingDestination) else {
-            return Effects::none();
-        };
-        let Some(path) = destination else {
-            self.saving_attachment = None;
-            return Effects::none();
-        };
-        save.stage = SaveStage::Downloading;
-        self.download_attachment(request, Some(path))
-    }
-
-    /// The save under way, when it is `request`'s, belongs to this session
-    /// and has come as far as `stage`.
-    fn current_save(
-        &mut self,
-        request: &AttachmentSaveRequest,
-        stage: SaveStage,
-    ) -> Option<&mut AttachmentSave> {
-        if !self.is_current_session(request.session) {
-            return None;
-        }
-        self.saving_attachment
-            .as_mut()
-            .filter(|save| save.request == *request && save.stage == stage)
-    }
-
-    fn download_attachment(
-        &self,
-        request: AttachmentSaveRequest,
-        destination: Option<PathBuf>,
-    ) -> Effects {
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
-        let completion = request.clone();
-
-        Effects::perform(
-            async move {
-                match backend
-                    .download_attachment(&request.message_id, &request.attachment_id)
-                    .await
-                {
-                    // File I/O is blocking, so keep it off both the interface
-                    // thread and Tokio's asynchronous workers.
-                    Ok((name, contents)) => {
-                        tokio::task::spawn_blocking(move || match destination {
-                            Some(path) => downloads::save_selected(&path, &contents),
-                            None => downloads::save(&name, &contents),
-                        })
-                        .await
-                        .unwrap_or(Err(SaveError::Failed))
-                    }
-                    Err(error) => Err(unsaved(error)),
-                }
-            },
-            move |outcome| Message::AttachmentSaved(completion, outcome),
-        )
-    }
-
-    /// Says where the attachment `request` saved went, or why it failed,
-    /// while that save is still the one under way.
-    fn finish_attachment_save(
-        &mut self,
-        request: AttachmentSaveRequest,
-        outcome: Result<PathBuf, SaveError>,
-    ) {
-        if self
-            .current_save(&request, SaveStage::Downloading)
-            .is_none()
-        {
-            return;
-        }
-        self.saving_attachment = None;
-        // An expired session ends here as it does for any request.
-        if matches!(outcome, Err(SaveError::SessionExpired)) {
-            self.close_mailbox(Some(AuthError::SessionExpired));
-            return;
-        }
-        // A save that landed after the session ended has nobody left to tell,
-        // and its news must not surface in the next one.
-        if self.mailbox.is_some() {
-            match outcome {
-                Ok(path) => self.notice = Some(Notice::Saved(path)),
-                Err(error) => self.failed_save = Some((request.attachment_id, error)),
-            }
-        }
     }
 
     pub fn settings(&self) -> &Settings {
@@ -1166,31 +1008,12 @@ impl App {
         self.settings.panels
     }
 
-    pub fn pending_link(&self) -> Option<&PendingLink> {
-        self.pending_link.as_ref()
-    }
-
     /// Whether the refresh on its way is one the app started by itself, which
     /// the list leaves unannounced.
     pub fn refreshing_on_its_own(&self) -> bool {
         self.mailbox.as_ref().is_some_and(|mailbox| {
             matches!(mailbox.status(), ListStatus::Refreshing(id) if Some(id) == self.automatic_refresh)
         })
-    }
-
-    fn open_link_target(&mut self, url: String) -> Effects {
-        if url
-            .get(..7)
-            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("mailto:"))
-        {
-            self.update(
-                crate::mailto::Request::parse(&url)
-                    .map(Message::ReceiveMailto)
-                    .unwrap_or(Message::MailtoRejected),
-            )
-        } else {
-            open_in_browser(url)
-        }
     }
 
     fn next_request(&mut self) -> RequestId {
@@ -1500,16 +1323,6 @@ impl App {
         Effects::batch([next, counts])
     }
 
-    /// Proton owns the folder counts; reload them after a change.
-    fn reload_counts(&mut self) -> Effects {
-        let counts_request = self.next_request();
-        let counts = self
-            .active_mailbox()
-            .map(|mailbox| mailbox.refresh_counts(counts_request));
-
-        self.fetch_counts(counts)
-    }
-
     fn start_conversation_load(&mut self, id: String) -> Effects {
         let request = self.next_request();
         let Some(mailbox) = self.active_mailbox() else {
@@ -1568,488 +1381,6 @@ impl App {
         let (page, counts) = service.snapshot(&folder, page_size, crate::mail::demo::now());
 
         self.active_mailbox()?.apply_action_snapshot(page, counts)
-    }
-
-    /// Reconciles the saved folder with the account's current folders.
-    fn reconcile_open_folder(&mut self) -> Effects {
-        let Some(open) = self
-            .mailbox
-            .as_ref()
-            .map(|mailbox| mailbox.folder().clone())
-        else {
-            return Effects::none();
-        };
-        // Proton's own folders are always there, so only the account's own
-        // can have gone stale.
-        let Some(id) = open.custom_id() else {
-            return Effects::none();
-        };
-        let current = self
-            .folders
-            .iter()
-            .find(|place| place.custom_id() == Some(id))
-            .cloned();
-        // Gone from the account means gone from the sidebar, and the Inbox is
-        // the one place that is always there to fall back to.
-        let Some(current) = current else {
-            return self.select_folder(Folder::INBOX);
-        };
-        if current == open {
-            return Effects::none();
-        }
-
-        // A rename keeps the stable id, loaded mail and reader state.
-        if let Some(mailbox) = self.active_mailbox() {
-            mailbox.rename_folder(current.clone());
-        }
-        self.remember_folder(&current);
-
-        Effects::none()
-    }
-
-    /// Remembers the last real folder, the open account's; demo navigation
-    /// is process-local.
-    fn remember_folder(&mut self, folder: &Folder) {
-        if !self.is_demo() {
-            self.remember(|settings| settings.accounts.set_folder(folder.clone()));
-        }
-    }
-
-    fn select_folder(&mut self, folder: Folder) -> Effects {
-        if self.auth_state.is_authenticated()
-            && self
-                .mailbox
-                .as_ref()
-                .is_some_and(|mailbox| mailbox.folder() != &folder)
-        {
-            self.inspections.cancel();
-            self.abandon_reader_load();
-        }
-        self.showing_settings = false;
-        self.pending_link = None;
-        self.failed_save = None;
-        self.remember_folder(&folder);
-        let request = self.next_request();
-        let page = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.select_folder(folder, request));
-
-        self.fetch_page(page)
-    }
-
-    /// Runs what is typed in the search field against the server, which sees
-    /// every folder and every conversation, not just the loaded ones.
-    fn start_search(&mut self) -> Effects {
-        let request = self.next_request();
-        let Some(request) = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.start_search(request))
-        else {
-            return Effects::none();
-        };
-
-        self.inspections.cancel();
-        self.fetch_search(request)
-    }
-
-    fn fetch_search(&self, request: SearchRequest) -> Effects {
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
-        let query = request.query.clone();
-        let (page, page_size) = (request.page, request.page_size);
-
-        Effects::perform(
-            async move { backend.search(&query, page, page_size).await },
-            move |result| Message::SearchLoaded(request.clone(), result),
-        )
-    }
-
-    /// Shows the page of results a search brought, or asks this device's
-    /// index instead when Proton was out of reach.
-    fn finish_search(
-        &mut self,
-        request: SearchRequest,
-        result: Result<ConversationPage, MailboxError>,
-    ) -> Effects {
-        // With Proton out of reach, this device's index answers instead when
-        // asked to; never for a later page, as the index gives all it finds
-        // at once.
-        let unreachable = matches!(result, Err(MailboxError::Connection));
-        if unreachable
-            && request.page == 0
-            && self.settings.search_device_offline
-            && self.backend.is_some()
-        {
-            return self.fetch_device_search(request);
-        }
-        let error = self
-            .mailbox
-            .as_mut()
-            .and_then(|mailbox| mailbox.finish_search(&request, result));
-        self.end_session_if_expired(error);
-        Effects::none()
-    }
-
-    /// Looks in this device's index for a search Proton could not answer.
-    fn fetch_device_search(&self, request: SearchRequest) -> Effects {
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
-        let query = request.query.clone();
-        Effects::perform(
-            async move { backend.search_local(&query).await },
-            move |found| Message::DeviceSearchLoaded(request, found),
-        )
-    }
-
-    fn refresh_mailbox(&mut self) -> Effects {
-        let page_request = self.next_request();
-        let counts_request = self.next_request();
-        let Some(mailbox) = self.active_mailbox() else {
-            return Effects::none();
-        };
-        let page = mailbox.refresh(page_request);
-        let counts = mailbox.refresh_counts(counts_request);
-
-        if page.is_some() {
-            self.inspections.cancel();
-        }
-        let folders = if self.refetch_folders {
-            self.fetch_folders()
-        } else {
-            Effects::none()
-        };
-
-        Effects::batch([
-            self.fetch_page(page),
-            self.fetch_counts(Some(counts)),
-            folders,
-        ])
-    }
-
-    fn auto_refresh_mailbox(&mut self) -> Effects {
-        if !self.auto_refresh_available() {
-            return Effects::none();
-        }
-        if let Some(mailbox) = &mut self.mailbox {
-            mailbox.invalidate_cached_listings();
-        }
-
-        let refresh = self.refresh_mailbox();
-        // Nothing was loading before, so a refresh on its way is this one.
-        self.automatic_refresh = self
-            .mailbox
-            .as_ref()
-            .and_then(|mailbox| match mailbox.status() {
-                ListStatus::Refreshing(request) => Some(request),
-                _ => None,
-            });
-        let notifications = if self.is_demo() {
-            Effects::none()
-        } else {
-            self.fetch_new_mail_notification()
-        };
-        Effects::batch([refresh, notifications])
-    }
-
-    fn load_more_conversations(&mut self) -> Effects {
-        let request = self.next_request();
-        let Some(mailbox) = self.active_mailbox() else {
-            return Effects::none();
-        };
-        if mailbox.shown_search_query().is_some() {
-            let search = mailbox.load_more_search(request);
-            search.map_or_else(Effects::none, |search| self.fetch_search(search))
-        } else {
-            let page = mailbox.load_more(request);
-            self.fetch_page(page)
-        }
-    }
-
-    fn fetch_page(&self, request: Option<PageRequest>) -> Effects {
-        let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
-            return Effects::none();
-        };
-
-        let (id, folder, page, page_size) =
-            (request.id, request.folder, request.page, request.page_size);
-
-        Effects::perform(
-            async move { backend.list_conversations(&folder, page, page_size).await },
-            move |result| Message::ConversationsLoaded(id, result),
-        )
-    }
-
-    /// Shows a page of the list, if it is the one awaited, and goes on with
-    /// what waited for it: listing again when a change made meanwhile left
-    /// it stale, a search submitted meanwhile, or the rows worth looking into.
-    fn finish_page(
-        &mut self,
-        request: RequestId,
-        mut result: Result<ConversationPage, MailboxError>,
-    ) -> Effects {
-        if !self.accepts_page(request) {
-            return Effects::none();
-        }
-        let candidates = match &mut result {
-            Ok(page) => std::mem::take(&mut page.inspect_candidates),
-            Err(_) => Vec::new(),
-        };
-        let error = self
-            .mailbox
-            .as_mut()
-            .and_then(|mailbox| mailbox.finish_page(request, result));
-        self.end_session_if_expired(error);
-        if error.is_none() {
-            let revalidating = self
-                .mailbox
-                .as_ref()
-                .is_some_and(Mailbox::needs_revalidation);
-            if revalidating {
-                return self.refresh_mailbox();
-            }
-        }
-        // A search submitted while this page loaded has waited for it.
-        if self
-            .mailbox
-            .as_mut()
-            .is_some_and(Mailbox::take_deferred_search)
-        {
-            return self.start_search();
-        }
-        if error.is_none() {
-            let accepted = self
-                .mailbox
-                .as_ref()
-                .is_some_and(|m| m.status() == ListStatus::Loaded);
-            if accepted && !candidates.is_empty() {
-                return self.inspect_candidates(candidates);
-            }
-        }
-        Effects::none()
-    }
-
-    fn inspect_candidates(&mut self, candidates: Vec<String>) -> Effects {
-        let Some(mailbox) = self.mailbox.as_ref() else {
-            return Effects::none();
-        };
-        if mailbox.shown_search_query().is_some() {
-            return Effects::none();
-        }
-        // The automatic refresh lists the same rows every minute: only those
-        // new or changed since they were last looked into are asked about.
-        self.inspections.enqueue(
-            candidates
-                .into_iter()
-                .filter(|id| mailbox.worth_inspecting(id)),
-        );
-        self.start_inspections()
-    }
-
-    fn start_inspections(&mut self) -> Effects {
-        if !self.auth_state.is_authenticated() {
-            return Effects::none();
-        }
-        let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
-            return Effects::none();
-        };
-        let epoch = self.session_epoch;
-        let folder = mailbox.folder().clone();
-        let revision = mailbox.inspection_revision();
-        let mut effects = Vec::new();
-        // Each inspection takes the next request ID itself, asked for only
-        // when there is one to start, so no ID goes unused.
-        while self.inspections.can_start() {
-            let request = self.next_request();
-            let Some((id, registration)) = self.inspections.start(request) else {
-                break;
-            };
-            // A queued row may have been moved or removed before its turn.
-            if !self
-                .mailbox
-                .as_ref()
-                .is_some_and(|mailbox| mailbox.has_inspection_target(&id))
-            {
-                self.inspections.finish(request, &id);
-                continue;
-            }
-            let backend = backend.clone();
-            let target_folder = folder.clone();
-            let callback_folder = folder.clone();
-            let conversation_id = id.clone();
-            let future = Abortable::new(
-                async move {
-                    backend
-                        .inspect_conversation(&conversation_id, &target_folder)
-                        .await
-                },
-                registration,
-            );
-            effects.push(Effects::perform(future, move |result| {
-                Message::ThreadInspected {
-                    epoch,
-                    request,
-                    revision,
-                    folder: callback_folder,
-                    conversation_id: id,
-                    result: result.unwrap_or(Ok(None)),
-                }
-            }));
-        }
-        Effects::batch(effects)
-    }
-
-    /// Splits the row an inspection looked into, or keeps it whole, while its
-    /// answer is still wanted, and starts the inspections waiting.
-    fn finish_inspection(
-        &mut self,
-        epoch: SessionEpoch,
-        request: RequestId,
-        revision: u64,
-        folder: Folder,
-        conversation_id: String,
-        result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
-    ) -> Effects {
-        // Finishing first frees the answer's place even when the folder was
-        // renamed meanwhile, which keeps the folder.
-        if !self.is_current_session(epoch)
-            || !self.inspections.finish(request, &conversation_id)
-            || !self
-                .mailbox
-                .as_ref()
-                .is_some_and(|mailbox| mailbox.shows(&folder))
-        {
-            return Effects::none();
-        }
-        match result {
-            Ok(Some(split_rows)) => {
-                if let Some(mailbox) = self.mailbox.as_mut()
-                    && mailbox.inspection_revision() == revision
-                {
-                    mailbox.split_conversation(&folder, &conversation_id, split_rows);
-                }
-            }
-            Ok(None) => {
-                if let Some(mailbox) = self.mailbox.as_mut()
-                    && mailbox.inspection_revision() == revision
-                {
-                    mailbox.keep_whole(&conversation_id);
-                }
-            }
-            Err(error) => {
-                self.end_session_if_expired(Some(error));
-            }
-        }
-        self.start_inspections()
-    }
-
-    /// Asks for the folders the account made. They change rarely, so only a
-    /// list that failed to load is asked for again, by the next refresh.
-    fn fetch_folders(&mut self) -> Effects {
-        self.refetch_folders = false;
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
-        let epoch = self.session_epoch;
-
-        Effects::perform(async move { backend.list_folders().await }, move |result| {
-            Message::FoldersLoaded(epoch, result)
-        })
-    }
-
-    /// Keeps the folders the account made, which arrived, and asks for the
-    /// counts again now that they are known.
-    fn finish_folders(
-        &mut self,
-        epoch: SessionEpoch,
-        result: Result<OwnPlaces, MailboxError>,
-    ) -> Effects {
-        if !self.is_current_session(epoch) {
-            return Effects::none();
-        }
-        match result {
-            Ok(places) => {
-                self.folders = places.folders;
-                self.place_looks = places.looks;
-            }
-            // Without them the sidebar shows Proton's own until the next
-            // refresh asks again. A list that did not arrive says nothing about
-            // the open folder, which stays open.
-            Err(error) => {
-                self.refetch_folders = true;
-                self.end_session_if_expired(Some(error));
-                return Effects::none();
-            }
-        }
-        // Counts were asked for before the folders were known, so ask again
-        // now that they are.
-        Effects::batch([self.reconcile_open_folder(), self.reload_counts()])
-    }
-
-    fn fetch_counts(&self, request: Option<RequestId>) -> Effects {
-        let (Some(request), Some(backend)) = (request, self.backend.clone()) else {
-            return Effects::none();
-        };
-
-        let folders = self.folders.clone();
-
-        Effects::perform(
-            async move { backend.conversation_counts(&folders).await },
-            move |result| Message::CountsLoaded(request, result),
-        )
-    }
-
-    fn fetch_new_mail_notification(&mut self) -> Effects {
-        if !self.auth_state.is_authenticated()
-            || !self.settings.desktop_notifications
-            || self.new_mail.pending.is_some()
-        {
-            return Effects::none();
-        }
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
-        let epoch = self.session_epoch;
-        let request = self.next_request();
-        self.new_mail.pending = Some(request);
-
-        Effects::perform(
-            async move { backend.recent_inbox(notifications::RECENT_LIMIT).await },
-            move |result| Message::NewMailLoaded(epoch, request, result),
-        )
-    }
-
-    /// Notifies of the newest mail in the Inbox that arrived, if it is new
-    /// and notifications are still wanted.
-    fn finish_new_mail(
-        &mut self,
-        epoch: SessionEpoch,
-        request: RequestId,
-        result: Result<Vec<IncomingMail>, MailboxError>,
-    ) -> Effects {
-        if !self.is_current_session(epoch)
-            || !self.auth_state.is_authenticated()
-            || !self.settings.desktop_notifications
-            || self.new_mail.pending != Some(request)
-        {
-            return Effects::none();
-        }
-        self.new_mail.pending = None;
-        match result {
-            Ok(messages) => {
-                if let Some(mail) = self.new_mail.observe(&messages) {
-                    return Effects::ui(UiEffect::NotifyNewMail {
-                        sender: mail.sender.clone(),
-                        subject: mail.subject.clone(),
-                    });
-                }
-            }
-            Err(error) => {
-                self.end_session_if_expired(Some(error));
-            }
-        }
-        Effects::none()
     }
 
     fn fetch_conversation(&mut self, request: Option<ReaderRequest>) -> Effects {
@@ -2172,64 +1503,6 @@ impl App {
         }
         expired
     }
-}
-
-/// Why an attachment that did not arrive was not saved.
-fn unsaved(error: MailboxError) -> SaveError {
-    match error {
-        MailboxError::AttachmentVerificationFailed => SaveError::VerificationFailed,
-        MailboxError::SessionExpired => SaveError::SessionExpired,
-        MailboxError::SessionUnavailable => SaveError::SessionUnavailable,
-        MailboxError::Connection | MailboxError::Service | MailboxError::Unavailable => {
-            SaveError::NotFetched
-        }
-    }
-}
-
-/// A link clicked in a message, waiting for the user to confirm it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingLink {
-    /// The complete, normalized address that opens.
-    pub url: String,
-    /// Where the link really goes: the web host or the mail address.
-    pub target: String,
-}
-
-impl PendingLink {
-    /// Accepts only web and mail links.
-    fn parse(link: &str) -> Option<Self> {
-        let url = url::Url::parse(link.trim()).ok()?;
-        let target = match url.scheme() {
-            "http" | "https" => url.host_str()?.to_owned(),
-            "mailto" => mail_target(url.as_str()).unwrap_or_else(|| url.path().to_owned()),
-            _ => return None,
-        };
-
-        Some(Self {
-            url: url.into(),
-            target,
-        })
-    }
-}
-
-/// Who a mail link writes to: the addresses the composer would take from it,
-/// those after `?to=` included, as the first few and how many more. `None`
-/// when the composer would refuse the link.
-fn mail_target(link: &str) -> Option<String> {
-    const NAMED: usize = 3;
-    let (to, _, _) = crate::mailto::Request::parse(link)?.into_fields();
-    let addresses: Vec<_> = to
-        .split(", ")
-        .filter(|address| !address.is_empty())
-        .collect();
-    if addresses.len() <= NAMED {
-        return Some(addresses.join(", "));
-    }
-    Some(format!(
-        "{} and {} more",
-        addresses[..NAMED].join(", "),
-        addresses.len() - NAMED
-    ))
 }
 
 /// Runs one mailbox action on Proton and reports the outcome under

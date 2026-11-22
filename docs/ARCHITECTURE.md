@@ -200,7 +200,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   a draft whose own window is still choosing files.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
-  defines the work requested by the state machine.
+  defines the work requested by the state machine. Its dispatch only names
+  the method each message goes to, beside the one that asked for it, in the
+  module of its part of the state: the list, its pages, a search, the
+  folders and the counts in [`listing.rs`](../src/app/listing.rs), saving an
+  attachment in [`attachments.rs`](../src/app/attachments.rs), a link waiting
+  to open in [`links.rs`](../src/app/links.rs), and inspections and new mail
+  in their own.
 - [`app/inspection.rs`](../src/app/inspection.rs) bounds best-effort conversation
   inspection to 50 distinct candidate IDs including at most four running tasks.
   A conversation an inspection left as one is remembered as it was listed
@@ -1289,7 +1295,7 @@ instead of an unknown outcome.
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) and [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
-| Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| Downloading received attachments | Desktop [`src/app/attachments.rs`](../src/app/attachments.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs), [`tui/compose.rs`](../crates/ruston-cli/src/tui/compose.rs), [`tui/editor.rs`](../crates/ruston-cli/src/tui/editor.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
