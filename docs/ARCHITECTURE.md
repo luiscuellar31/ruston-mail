@@ -1063,7 +1063,11 @@ instead of an unknown outcome.
   unless another is named; a draft with attachments, which are keyed to that
   address, cannot change it.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
-  commands and saves its sample attachments as the live command does, with
+  commands, an area to a function in
+  [`demo/commands.rs`](../crates/ruston-cli/src/demo/commands.rs) as
+  `commands::run` has them, over the mail, people, labels and counts that
+  [`demo/data.rs`](../crates/ruston-cli/src/demo/data.rs) writes once each,
+  and saves its sample attachments as the live command does, with
   core's `save_under_free_name`: never over a file or through a link already
   there, and reported the same way. Its commands report through the same
   `render` functions, with the same action names, as the live ones, and
