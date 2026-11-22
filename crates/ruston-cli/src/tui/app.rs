@@ -15,6 +15,7 @@ use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// How many rows a notch of the mouse wheel scrolls the reader, a list or
@@ -281,7 +282,7 @@ pub(crate) struct App {
     pub(crate) search: Option<Search>,
     /// The conversations marked with Space, by ID, which an action from the
     /// list acts on all of.
-    pub(crate) marked: Vec<String>,
+    pub(crate) marked: HashSet<String>,
     /// The move `Z` can take back, until another change is made or another
     /// place listed.
     pub(crate) undo: Option<Undo>,
@@ -566,7 +567,7 @@ impl App {
             command_line: None,
             history: Vec::new(),
             search: None,
-            marked: Vec::new(),
+            marked: HashSet::new(),
             undo: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
@@ -1177,11 +1178,8 @@ impl App {
             return;
         };
         let id = conversation.id.clone();
-        match self.marked.iter().position(|marked| *marked == id) {
-            Some(at) => {
-                self.marked.remove(at);
-            }
-            None => self.marked.push(id),
+        if !self.marked.remove(&id) {
+            self.marked.insert(id);
         }
         self.step(Pane::Conversations, 1);
     }
@@ -1197,7 +1195,7 @@ impl App {
             .iter()
             .all(|conversation| self.marked.contains(&conversation.id));
         self.marked = if all {
-            Vec::new()
+            HashSet::new()
         } else {
             self.conversations
                 .iter()

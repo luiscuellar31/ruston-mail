@@ -89,7 +89,7 @@ fn a_wide_terminal_shows_the_three_panes_and_the_status_bar() {
 #[test]
 fn a_marked_row_says_so_and_the_status_bar_counts_them() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
-    app.marked = vec![app.conversations[0].id.clone()];
+    app.marked = [app.conversations[0].id.clone()].into();
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(screen.contains("✓•   04-24  alex@examp…"), "{screen}");
     let status = screen.lines().last().unwrap();
@@ -744,6 +744,71 @@ fn the_wheel_scrolls_a_list_without_moving_its_selection() {
     assert_eq!(app.selected_conversation, 30);
     assert_eq!(app.conversations_scroll.get().top, 5);
     assert!(top_row(&screen).contains("Subject 5 "), "{screen}");
+}
+
+#[test]
+fn a_list_makes_only_the_rows_it_shows_and_shows_them_as_before() {
+    // Every place, selection and height a short list can have, against
+    // ratatui's own list given every row, as the panes drew it before.
+    let row = |index: usize| ListItem::new(format!("row {index}"));
+    let highlight = Style::new().add_modifier(Modifier::REVERSED);
+    for count in 0..7 {
+        for height in 2..9 {
+            let area = Rect::new(0, 0, 10, height);
+            let rows = usize::from(height - 2);
+            for top in 0..9 {
+                for selected in 0..9 {
+                    for wheeled in [None, Some(selected)] {
+                        let case = format!(
+                            "{count} rows, {rows} high, from {top}, on {selected}, wheeled {wheeled:?}"
+                        );
+                        let scroll = Cell::new(ListScroll { top, wheeled });
+                        let made = Cell::new(0);
+                        let mut terminal = Terminal::new(TestBackend::new(10, height)).unwrap();
+                        let make = |index| {
+                            made.set(made.get() + 1);
+                            row(index)
+                        };
+                        terminal
+                            .draw(|frame| {
+                                let block = Block::bordered();
+                                draw_list(
+                                    frame,
+                                    (count, make),
+                                    selected,
+                                    &scroll,
+                                    true,
+                                    block,
+                                    area,
+                                );
+                            })
+                            .unwrap();
+                        assert!(made.get() <= rows, "{case}");
+
+                        let shown = wheeled.is_none() || (top..top + rows).contains(&selected);
+                        let mut state = ListState::default()
+                            .with_offset(top)
+                            .with_selected(shown.then_some(selected));
+                        let mut before = Terminal::new(TestBackend::new(10, height)).unwrap();
+                        before
+                            .draw(|frame| {
+                                let list = List::new((0..count).map(row))
+                                    .block(Block::bordered())
+                                    .highlight_style(highlight);
+                                frame.render_stateful_widget(list, area, &mut state);
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            terminal.backend().buffer(),
+                            before.backend().buffer(),
+                            "{case}"
+                        );
+                        assert_eq!(scroll.get().top, state.offset(), "{case}");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]

@@ -733,7 +733,8 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     // The first row of its list it shows.
     let first = match pane {
         Pane::Folders => {
-            let items = app.places.iter().map(|place| {
+            let row = |index: usize| {
+                let place = &app.places[index];
                 let mut spans = vec![Span::raw(format!(
                     "{}{}",
                     "  ".repeat(place.depth),
@@ -743,11 +744,11 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                     spans.push(Span::styled(format!(" {}", place.unread), theme.accent));
                 }
                 ListItem::new(Line::from(spans))
-            });
+            };
             let scroll = &app.places_scroll;
             draw_list(
                 frame,
-                items,
+                (app.places.len(), row),
                 app.selected_place,
                 scroll,
                 focused,
@@ -783,16 +784,17 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         }
         Pane::Conversations => {
             let width = usize::from(block.inner(area).width);
-            let items = app.conversations.iter().map(|conversation| {
+            let row = |index: usize| {
+                let conversation = &app.conversations[index];
                 let marked = app.marked.contains(&conversation.id);
                 let labels = app.row_labels(conversation);
                 conversation_row(conversation, marked, &labels, width, theme)
-            });
+            };
             // What the marks at the start of a row say, where they show.
             let legend = Line::styled(ROW_MARKS, Style::new().add_modifier(Modifier::DIM));
             draw_list(
                 frame,
-                items,
+                (app.conversations.len(), row),
                 app.selected_conversation,
                 &app.conversations_scroll,
                 focused,
@@ -808,15 +810,17 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     app.drawn.set(drawn);
 }
 
-/// A list with its selection on `selected`, shown inverted in the focused
-/// pane, which reads without colors too, and underlined elsewhere: bold
-/// says a conversation is unread. From where `scroll` says it was, it
-/// scrolls only as far as the selection needs; scrolled by the wheel, it
-/// stays there, the selection shown only where it falls, until the
-/// selection moves. Returns the first row it shows.
+/// A list of `count` rows, each made by `row`, with its selection on
+/// `selected`, shown inverted in the focused pane, which reads without
+/// colors too, and underlined elsewhere: bold says a conversation is
+/// unread. From where `scroll` says it was, it scrolls only as far as the
+/// selection needs; scrolled by the wheel, it stays there, the selection
+/// shown only where it falls, until the selection moves. Only the rows that
+/// show are made, since a list is drawn after every key and may hold
+/// thousands of conversations. Returns the first row it shows.
 fn draw_list<'a>(
     frame: &mut Frame,
-    items: impl Iterator<Item = ListItem<'a>>,
+    (count, row): (usize, impl Fn(usize) -> ListItem<'a>),
     selected: usize,
     scroll: &Cell<ListScroll>,
     focused: bool,
@@ -828,20 +832,50 @@ fn draw_list<'a>(
     } else {
         Style::new().add_modifier(Modifier::UNDERLINED)
     };
-    let rows = usize::from(block.inner(area).height);
+    let inner = block.inner(area);
+    let rows = usize::from(inner.height);
     let ListScroll { top, wheeled } = scroll.get();
     let wheeled = wheeled.filter(|at| *at == selected);
     let shown = wheeled.is_none() || (top..top + rows).contains(&selected);
-    let list = List::new(items).block(block).highlight_style(highlight);
-    let mut state = ListState::default()
-        .with_offset(top)
-        .with_selected(shown.then_some(selected));
+    let selected = shown.then(|| selected.min(count.saturating_sub(1)));
+    // A pane with no room shows nothing and keeps its place.
+    let (first, end) = if inner.is_empty() {
+        (top, top)
+    } else {
+        shown_rows(count, top, selected, rows)
+    };
+    let list = List::new((first..end).map(row))
+        .block(block)
+        .highlight_style(highlight);
+    let selected = selected.filter(|selected| (first..end).contains(selected));
+    let mut state = ListState::default().with_selected(selected.map(|selected| selected - first));
     frame.render_stateful_widget(list, area, &mut state);
     scroll.set(ListScroll {
-        top: state.offset(),
+        top: first,
         wheeled,
     });
-    state.offset()
+    first
+}
+
+/// The rows a list of `count` one-line rows shows `height` rows tall, from
+/// row `top` and with `selected` in sight, as ratatui works them out: the
+/// first and the one after the last.
+fn shown_rows(count: usize, top: usize, selected: Option<usize>, height: usize) -> (usize, usize) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let mut first = top.min(count - 1);
+    let mut end = (first + height).min(count);
+    let at = selected.map_or(first, |selected| selected.min(count - 1));
+    if at >= end {
+        end = at + 1;
+        first = first.max(end.saturating_sub(height));
+    }
+    if at < first {
+        first = at;
+        end = end.min(first + height);
+    }
+    (first, end)
 }
 
 /// The open conversation, the labels it bears under its subject, the

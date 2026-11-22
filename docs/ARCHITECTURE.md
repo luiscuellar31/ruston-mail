@@ -977,6 +977,9 @@ instead of an unknown outcome.
   conversation opens or one just folded or opened, as the desktop lands on
   one: unless it starts in the upper third already. It also records where it
   drew each pane and the first row of each list it showed, for the mouse.
+  A list makes only the rows it shows, the ones ratatui would show of them
+  all, since it is drawn after every key and may hold thousands of
+  conversations.
   Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into
