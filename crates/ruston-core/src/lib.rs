@@ -82,6 +82,7 @@ pub mod mail;
 pub mod model;
 mod private_file;
 pub mod session;
+pub mod text;
 pub mod transport;
 
 /// Shared local storage identity for sessions, credentials, and the CLI cache.

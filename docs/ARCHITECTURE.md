@@ -1029,7 +1029,7 @@ instead of an unknown outcome.
   errors, and diagnostics use its shared control filter. It processes formatted
   text in one pass, removing C0/C1 controls and DEL except line feeds and tabs,
   and the invisible direction and zero-width marks that core's
-  `is_invisible_mark` names. Human-readable output is filtered even when
+  `text::is_invisible_mark` names. Human-readable output is filtered even when
   redirected. JSON escapes these characters without changing the decoded
   values, and goes out while it serializes, so a large thread is not held a
   second time as text. Explicit `raw` and `html` bodies retain
@@ -1126,7 +1126,9 @@ instead of an unknown outcome.
   reads a message listed on its own through `read_message_or_unreadable`, the
   same way; `read_message` still fails on one it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
-  owns the filename policy and the writing shared by both frontends.
+  hands out, from its
+  [`files.rs`](../crates/ruston-core/src/mail/attachments/files.rs), the
+  filename policy and the writing shared by both frontends.
   `save_under_free_name` saves into a folder under the first free name,
   `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
   a path the user chose. Both create the file exclusively, then mark it with
@@ -1192,6 +1194,9 @@ instead of an unknown outcome.
   administrators, in place as the file is created, that inherits nothing from
   its folder. The EML export writes with it, and `mail::export` re-exports it
   for the CLI, which saves decrypted bodies with it.
+- [`text.rs`](../crates/ruston-core/src/text.rs) names the characters that
+  draw as nothing, `is_invisible_mark`: attachment file names, the CLI's
+  output and desktop notifications drop them.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
   Actions on several messages or conversations read the response Proton gives
   for each ID (`Code` 1001 with `Responses`), and fail with an API error that

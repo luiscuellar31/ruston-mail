@@ -1,6 +1,6 @@
 //! Exercise the actual CLI output boundary without contacting an account.
 
-use ruston_core::mail::attachments::is_invisible_mark;
+use ruston_core::text::is_invisible_mark;
 use std::process::{Command, Output};
 
 const ATTACK: &str =

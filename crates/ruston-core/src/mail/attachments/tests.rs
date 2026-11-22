@@ -1,3 +1,4 @@
+use super::files::{FREE_NAME_ATTEMPTS, MAX_NAME_BYTES, free_names, write_new_file_with};
 use super::*;
 use crate::crypto::{AddressKeys, StoredKey};
 use crate::mail::test_support;
@@ -9,6 +10,8 @@ use proton_crypto::crypto::{
     PGPProviderSync,
 };
 use secrecy::SecretString;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

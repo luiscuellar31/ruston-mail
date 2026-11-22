@@ -8,7 +8,7 @@ mod macos;
 mod windows;
 
 use eframe::egui;
-use ruston_core::mail::attachments::is_invisible_mark;
+use ruston_core::text::is_invisible_mark;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
