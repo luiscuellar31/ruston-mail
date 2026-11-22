@@ -102,19 +102,10 @@ fn reader_cache_evicts_the_least_recent_entry_at_its_limit() {
         load_detail(&mut mailbox, name, detail(name, &[name]), 3 + offset as u64);
     }
 
-    assert_eq!(mailbox.cached_readers.len(), READER_CACHE_CAPACITY);
-    assert!(
-        mailbox
-            .cached_readers
-            .iter()
-            .all(|cached| { cached.reader.conversation_id() != "a" })
-    );
-    assert!(
-        mailbox
-            .cached_readers
-            .iter()
-            .any(|cached| { cached.reader.conversation_id() == "b" })
-    );
+    let cached = mailbox.cached_reader_ids();
+    assert_eq!(cached.len(), READER_CACHE_CAPACITY);
+    assert!(!cached.contains(&"a"));
+    assert!(cached.contains(&"b"));
 }
 
 #[test]
@@ -183,10 +174,7 @@ fn a_preload_no_longer_wanted_or_failed_is_not_kept() {
         Some(MailboxError::Connection)
     );
     assert!(
-        mailbox
-            .cached_readers
-            .iter()
-            .all(|cached| cached.reader.conversation_id() == "a"),
+        mailbox.cached_reader_ids().iter().all(|id| *id == "a"),
         "only the reader left behind is cached"
     );
 
@@ -205,11 +193,11 @@ fn invalidating_readers_for_a_send_forces_the_next_open_to_reload() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     load_detail(&mut mailbox, "a", detail("a", &["a1"]), 3);
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 4);
-    assert_eq!(mailbox.cached_readers.len(), 1);
+    assert_eq!(mailbox.cached_reader_ids(), ["a"]);
 
     mailbox.invalidate_reader_cache();
 
-    assert!(mailbox.cached_readers.is_empty());
+    assert!(mailbox.cached_reader_ids().is_empty());
     assert!(mailbox.start_conversation_load("a".into(), 5).is_some());
 }
 

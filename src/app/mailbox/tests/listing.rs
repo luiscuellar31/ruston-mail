@@ -242,7 +242,7 @@ fn refresh_keeps_reader_when_row_is_absent_from_the_page() {
     mailbox.finish_page(request.id, page(&["a"], 1));
 
     assert_eq!(mailbox.reader_state(), &reader);
-    assert!(mailbox.reader_stamp.is_none());
+    assert!(!mailbox.reader_cacheable());
 
     // Typing keeps it too; folder navigation closes it.
     mailbox.set_search_query("no match".into());

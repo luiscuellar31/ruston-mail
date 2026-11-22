@@ -497,6 +497,23 @@ impl Mailbox {
         &self.conversations
     }
 
+    /// Whether the index of row IDs holds the rows listed, each once, and
+    /// nothing else.
+    #[cfg(test)]
+    pub fn indexes_its_rows(&self) -> bool {
+        self.row_ids.len() == self.conversations.len()
+            && self
+                .conversations
+                .iter()
+                .all(|row| self.row_ids.contains(&row.id))
+    }
+
+    /// How many of the folders left behind stay loaded.
+    #[cfg(test)]
+    pub fn cached_folder_count(&self) -> usize {
+        self.cached_listings.len()
+    }
+
     fn source_rows(&self) -> &[ConversationSummary] {
         match &self.search {
             Some(search) => &search.rows,
@@ -810,6 +827,35 @@ impl Mailbox {
         self.row_ids.contains(id) || self.groups.splits.contains_key(id)
     }
 
+    /// The conversations listed as the messages they were split into, by ID.
+    #[cfg(test)]
+    pub fn split_parents(&self) -> Vec<&str> {
+        let mut parents: Vec<&str> = self.groups.splits.keys().map(String::as_str).collect();
+        parents.sort_unstable();
+        parents
+    }
+
+    /// Each message listed for a split conversation, with that conversation,
+    /// by the message's ID.
+    #[cfg(test)]
+    pub fn split_members(&self) -> Vec<(&str, &str)> {
+        let mut members: Vec<(&str, &str)> = self
+            .groups
+            .parents
+            .iter()
+            .map(|(message, parent)| (message.as_str(), parent.as_str()))
+            .collect();
+        members.sort_unstable();
+        members
+    }
+
+    /// How the split conversation `id` was listed last, which its messages
+    /// stand for.
+    #[cfg(test)]
+    pub fn split_source(&self, id: &str) -> Option<&ConversationSummary> {
+        self.groups.splits.get(id).map(|group| &group.source)
+    }
+
     pub(super) fn inspection_revision(&self) -> u64 {
         self.inspection_revision
     }
@@ -972,6 +1018,23 @@ impl Mailbox {
             ReaderState::Loaded(reader) => Some(reader),
             _ => None,
         }
+    }
+
+    /// Whether the open reader goes into the reader cache when another takes
+    /// its place: only while it is known to show its row as listed.
+    #[cfg(test)]
+    pub fn reader_cacheable(&self) -> bool {
+        self.reader_stamp.is_some()
+    }
+
+    /// The conversations the reader cache holds, the one used longest ago
+    /// first.
+    #[cfg(test)]
+    pub fn cached_reader_ids(&self) -> Vec<&str> {
+        self.cached_readers
+            .iter()
+            .map(|cached| cached.reader.conversation_id())
+            .collect()
     }
 
     pub fn reader_state(&self) -> &ReaderState {
