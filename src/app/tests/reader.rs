@@ -102,8 +102,8 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
     assert_eq!(reader.conversation_id(), "demo-0");
     assert_eq!(reader.detail().id, reader.conversation_id());
     assert_eq!(reader.detail().messages.len(), 3);
-    assert!(reader.is_expanded("demo-0-2", Reading::default()));
-    assert!(!reader.is_expanded("demo-0-0", Reading::default()));
+    assert!(reader.expands("demo-0-2", Reading::default()));
+    assert!(!reader.expands("demo-0-0", Reading::default()));
 }
 
 #[test]
@@ -114,8 +114,8 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let reader = app.mailbox().unwrap().reader().unwrap();
-    assert!(reader.is_expanded("demo-0-0", Reading::default()));
-    assert!(reader.is_expanded("demo-0-2", Reading::default()));
+    assert!(reader.expands("demo-0-0", Reading::default()));
+    assert!(reader.expands("demo-0-2", Reading::default()));
 
     open_conversation(&mut app, "demo-2");
     let effects = app.update(Message::SelectConversation("demo-0".into()));
@@ -129,7 +129,7 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
             .unwrap()
             .reader()
             .unwrap()
-            .is_expanded("demo-0-0", Reading::default())
+            .expands("demo-0-0", Reading::default())
     );
 }
 

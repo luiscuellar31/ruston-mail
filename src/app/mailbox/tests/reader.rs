@@ -58,18 +58,13 @@ fn reselecting_and_returning_to_cached_mail_keep_expansion() {
     mailbox.toggle_message("a1");
 
     assert_eq!(mailbox.start_conversation_load("a".into(), 4), None);
-    assert!(
-        mailbox
-            .reader()
-            .unwrap()
-            .is_expanded("a1", Reading::default())
-    );
+    assert!(mailbox.reader().unwrap().expands("a1", Reading::default()));
 
     load_detail(&mut mailbox, "b", detail("b", &["b1"]), 5);
     assert_eq!(mailbox.start_conversation_load("a".into(), 6), None);
     let reader = mailbox.reader().unwrap();
-    assert!(reader.is_expanded("a1", Reading::default()));
-    assert!(reader.is_expanded("a2", Reading::default()));
+    assert!(reader.expands("a1", Reading::default()));
+    assert!(reader.expands("a2", Reading::default()));
 }
 
 #[test]

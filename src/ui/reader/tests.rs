@@ -2302,7 +2302,7 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
                         reader.toggle("message");
                     }
                     assert_eq!(
-                        reader.is_expanded("message", Reading::default()),
+                        reader.is_expanded(&reader.detail().messages[0], Reading::default()),
                         expanded,
                         "{case}"
                     );

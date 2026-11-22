@@ -768,7 +768,7 @@ fn message_card(
         message_id: &message.id,
         attachments: &message.attachments,
     };
-    let expanded = reader.is_expanded(&message.id, reading);
+    let expanded = reader.is_expanded(message, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
             let header = message_header(ui, message, preview, expanded);
@@ -1484,9 +1484,12 @@ fn texture(
     picture: &std::sync::Arc<crate::pictures::Picture>,
 ) -> egui::TextureHandle {
     let made_from = std::sync::Arc::as_ptr(picture) as usize;
-    let kept = ui.data(|data| {
-        data.get_temp::<Textures>(egui::Id::NULL)
-            .and_then(|textures| textures.0.get(attachment).cloned())
+    // Looked up in place: `get_temp` would clone every picture's entry.
+    let kept = ui.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .get(attachment)
+            .cloned()
     });
     if let Some((from, texture)) = kept
         && from == made_from

@@ -1,7 +1,9 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use crate::mail::{ConversationDetail, Folder, MailboxError, MessageBody, UNREADABLE_NOTICE};
+use crate::mail::{
+    ConversationDetail, Folder, MailMessage, MailboxError, MessageBody, UNREADABLE_NOTICE,
+};
 use crate::settings::Reading;
 
 /// How much of a message its collapsed header stands in for.
@@ -86,24 +88,31 @@ impl ConversationReader {
         self.detail.set_label(label, on);
     }
 
-    pub fn is_expanded(&self, message_id: &str, reading: Reading) -> bool {
-        self.opens_on_its_own(message_id, reading) != self.toggled.contains(message_id)
+    pub fn is_expanded(&self, message: &MailMessage, reading: Reading) -> bool {
+        self.opens_on_its_own(message, reading) != self.toggled.contains(&message.id)
+    }
+
+    /// [`Self::is_expanded`] for the message `message_id`, false for one it
+    /// does not hold: what tests ask by ID.
+    #[cfg(test)]
+    pub fn expands(&self, message_id: &str, reading: Reading) -> bool {
+        self.detail
+            .messages
+            .iter()
+            .find(|message| message.id == message_id)
+            .is_some_and(|message| self.is_expanded(message, reading))
     }
 
     /// Whether settings open this message before manual overrides: the
     /// newest one, and any not read yet.
-    fn opens_on_its_own(&self, message_id: &str, reading: Reading) -> bool {
+    fn opens_on_its_own(&self, message: &MailMessage, reading: Reading) -> bool {
         reading.expand_all_messages
+            || message.unread
             || self
                 .detail
                 .messages
                 .last()
-                .is_some_and(|message| message.id == message_id)
-            || self
-                .detail
-                .messages
-                .iter()
-                .any(|message| message.unread && message.id == message_id)
+                .is_some_and(|newest| newest.id == message.id)
     }
 
     /// The message to bring into view when the conversation opens: the first
@@ -354,9 +363,9 @@ mod tests {
         let reader = reader(vec![message("c", 30), message("a", 10), message("b", 20)]);
 
         assert_eq!(order(&reader), ["a", "b", "c"]);
-        assert!(reader.is_expanded("c", plain()));
-        assert!(!reader.is_expanded("a", plain()));
-        assert!(!reader.is_expanded("b", plain()));
+        assert!(reader.expands("c", plain()));
+        assert!(!reader.expands("a", plain()));
+        assert!(!reader.expands("b", plain()));
     }
 
     #[test]
@@ -391,9 +400,9 @@ mod tests {
             first_unread,
         ]);
 
-        assert!(!reader.is_expanded("read", plain()));
+        assert!(!reader.expands("read", plain()));
         for id in ["first-unread", "later-unread", "newest"] {
-            assert!(reader.is_expanded(id, plain()), "{id}");
+            assert!(reader.expands(id, plain()), "{id}");
         }
         assert_eq!(reader.landing(), Some("first-unread"));
     }
@@ -412,13 +421,13 @@ mod tests {
         let mut reader = reader(vec![message("a", 10), message("b", 20), message("c", 30)]);
 
         reader.toggle("a");
-        assert!(reader.is_expanded("a", plain()));
-        assert!(reader.is_expanded("c", plain()));
-        assert!(!reader.is_expanded("b", plain()));
+        assert!(reader.expands("a", plain()));
+        assert!(reader.expands("c", plain()));
+        assert!(!reader.expands("b", plain()));
 
         reader.toggle("c");
-        assert!(!reader.is_expanded("c", plain()));
-        assert!(reader.is_expanded("a", plain()));
+        assert!(!reader.expands("c", plain()));
+        assert!(reader.expands("a", plain()));
     }
 
     #[test]
@@ -445,7 +454,7 @@ mod tests {
         reader.toggle("missing");
         reader.toggle_quote("missing", 0);
 
-        assert!(!reader.is_expanded("missing", plain()));
+        assert!(!reader.expands("missing", plain()));
         assert!(!reader.is_quote_expanded("missing", 0, plain()));
     }
 
@@ -458,10 +467,10 @@ mod tests {
         };
 
         for id in ["a", "b", "c"] {
-            assert!(reader.is_expanded(id, all), "{id} stayed folded");
+            assert!(reader.expands(id, all), "{id} stayed folded");
         }
         // The same reader still answers for the settings as they were.
-        assert!(!reader.is_expanded("a", plain()));
+        assert!(!reader.expands("a", plain()));
     }
 
     #[test]
@@ -475,9 +484,9 @@ mod tests {
         };
 
         reader.toggle("a");
-        assert!(reader.is_expanded("a", plain()));
-        assert!(!reader.is_expanded("a", all));
-        assert!(reader.is_expanded("b", all));
+        assert!(reader.expands("a", plain()));
+        assert!(!reader.expands("a", all));
+        assert!(reader.expands("b", all));
     }
 
     #[test]
