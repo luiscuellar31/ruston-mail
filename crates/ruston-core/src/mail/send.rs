@@ -153,15 +153,16 @@ async fn prepare_attachment(
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("attachment");
-        let request = api::attachments::upload_request(
-            name,
-            &message_id,
-            "",
-            &guess_mime(&path),
-            &encrypted.key_packet,
-            &encrypted.data_packet,
-            &encrypted.signature,
-        )?;
+        let request = api::attachments::upload_request(&api::attachments::AttachmentUpload {
+            filename: name,
+            message_id: &message_id,
+            // Only pictures shown within a body have one.
+            content_id: "",
+            mime_type: &guess_mime(&path),
+            key_packets: &encrypted.key_packet,
+            data_packet: &encrypted.data_packet,
+            signature: &encrypted.signature,
+        })?;
         Ok((request, encrypted.material, read_len))
     })
     .await?;
@@ -714,6 +715,14 @@ async fn cleanup_failed_draft<D: Doer>(http: &D, message_id: &str, error: &Error
 }
 
 /// The message a reply or a forward answers, which its draft names.
+/// What opens the copies for recipients with no key of their own: a
+/// password the sender gives them some other way, and a hint to recall it.
+#[derive(Clone, Copy)]
+struct EncryptedOutside<'a> {
+    password: &'a str,
+    hint: &'a str,
+}
+
 struct Answering<'a> {
     /// The original's ID.
     parent_id: &'a str,
@@ -783,8 +792,11 @@ impl Client {
         password: &str,
         hint: Option<&str>,
     ) -> Result<String> {
-        let protection = (password.to_owned(), hint.unwrap_or_default().to_owned());
-        self.send_with_parent(opts, None, Some(&protection)).await
+        let protection = EncryptedOutside {
+            password,
+            hint: hint.unwrap_or_default(),
+        };
+        self.send_with_parent(opts, None, Some(protection)).await
     }
 
     /// Reply to a message. It goes to the recipients `opts` names, when it
@@ -898,7 +910,7 @@ impl Client {
         &self,
         opts: &SendOptions,
         answering: Option<Answering<'_>>,
-        eo: Option<&(String, String)>,
+        eo: Option<EncryptedOutside<'_>>,
     ) -> Result<String> {
         validate_attachments(&opts.attachments).await?;
         let provider = crypto::provider();
@@ -951,7 +963,7 @@ impl Client {
         draft: &Message,
         recipients: &[(String, api::keys::RecipientKeys)],
         opts: &SendOptions,
-        eo: Option<&(String, String)>,
+        eo: Option<EncryptedOutside<'_>>,
     ) -> Result<()> {
         let message_id = draft.meta.id.as_str();
         // 3. attachments: those the draft already carries (a forward's copies
@@ -1025,7 +1037,7 @@ impl Client {
         recipients: &'a [(String, api::keys::RecipientKeys)],
         body_key: &SessionKeyMaterial,
         attachment_keys: &[AttachmentKey],
-        eo: Option<&(String, String)>,
+        eo: Option<EncryptedOutside<'_>>,
     ) -> Result<Vec<(&'a str, Delivery<'a>)>> {
         let mut modulus_cache: Option<(String, String)> = None;
         let mut deliveries = Vec::with_capacity(recipients.len());
@@ -1039,7 +1051,7 @@ impl Client {
                     tracing::debug!(target: "ruston_core::send", recipient = %email, "external recipient with PGP key — PGP-inline (Type 8)");
                     Delivery::PgpInline(key)
                 }
-                (RecipientKey::Missing, Some((password, hint))) => {
+                (RecipientKey::Missing, Some(eo)) => {
                     let modulus = match &modulus_cache {
                         Some(m) => m.clone(),
                         None => {
@@ -1050,8 +1062,8 @@ impl Client {
                     };
                     // Up to seconds of key derivation per recipient: keep it
                     // off the async workers.
-                    let password = Zeroizing::new(password.clone());
-                    let hint = hint.clone();
+                    let password = Zeroizing::new(eo.password.to_owned());
+                    let hint = eo.hint.to_owned();
                     let body_key = body_key.clone();
                     let attachments = attachment_keys.to_vec();
                     let entry = tokio::task::spawn_blocking(move || {

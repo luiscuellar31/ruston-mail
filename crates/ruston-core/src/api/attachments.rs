@@ -53,6 +53,10 @@ fn random_boundary() -> String {
     )
 }
 
+/// What ends each part of a multipart body, counted where its size is and
+/// written after it.
+const PART_END: &[u8] = b"\r\n";
+
 fn build_multipart(parts: &[Part]) -> Result<Multipart> {
     // A line break in a value, such as the name of a local file, would read
     // as the end of the part's own lines.
@@ -86,7 +90,7 @@ fn build_multipart(parts: &[Part]) -> Result<Multipart> {
         size = size
             .checked_add(header.len())
             .and_then(|n| n.checked_add(len))
-            .and_then(|n| n.checked_add(2))
+            .and_then(|n| n.checked_add(PART_END.len()))
             .filter(|n| *n <= MAX_ATTACHMENT_UPLOAD_BYTES)
             .ok_or_else(|| {
                 Error::Other(format!(
@@ -102,7 +106,7 @@ fn build_multipart(parts: &[Part]) -> Result<Multipart> {
             Part::Text(_, value) => out.extend_from_slice(value.as_bytes()),
             Part::File(_, data) => out.extend_from_slice(data),
         };
-        out.extend_from_slice(b"\r\n");
+        out.extend_from_slice(PART_END);
     }
     out.extend_from_slice(end.as_bytes());
     Ok(Multipart {
@@ -123,25 +127,29 @@ pub async fn get_attachment<D: Doer>(d: &D, id: &str) -> Result<Vec<u8>> {
     Ok(resp.body)
 }
 
+/// One attachment as it is uploaded: what Proton is told of it and its
+/// three encrypted parts, each by name, so that two of the same type cannot
+/// trade places unseen.
+pub(crate) struct AttachmentUpload<'a> {
+    pub(crate) filename: &'a str,
+    pub(crate) message_id: &'a str,
+    pub(crate) content_id: &'a str,
+    pub(crate) mime_type: &'a str,
+    pub(crate) key_packets: &'a [u8],
+    pub(crate) data_packet: &'a [u8],
+    pub(crate) signature: &'a [u8],
+}
+
 /// Builds the replayable upload on the send pipeline's blocking worker.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn upload_request(
-    filename: &str,
-    message_id: &str,
-    content_id: &str,
-    mime_type: &str,
-    key_packets: &[u8],
-    data_packet: &[u8],
-    signature: &[u8],
-) -> Result<Request> {
+pub(crate) fn upload_request(upload: &AttachmentUpload) -> Result<Request> {
     let multipart = build_multipart(&[
-        Part::Text("Filename", filename),
-        Part::Text("MessageID", message_id),
-        Part::Text("ContentID", content_id),
-        Part::Text("MIMEType", mime_type),
-        Part::File("KeyPackets", key_packets),
-        Part::File("DataPacket", data_packet),
-        Part::File("Signature", signature),
+        Part::Text("Filename", upload.filename),
+        Part::Text("MessageID", upload.message_id),
+        Part::Text("ContentID", upload.content_id),
+        Part::Text("MIMEType", upload.mime_type),
+        Part::File("KeyPackets", upload.key_packets),
+        Part::File("DataPacket", upload.data_packet),
+        Part::File("Signature", upload.signature),
     ])?;
     let content_type = format!("multipart/form-data; boundary={}", multipart.boundary);
     Ok(Request::post("/mail/v4/attachments")
@@ -160,6 +168,19 @@ mod tests {
     use crate::transport::{Body, Response};
     use async_trait::async_trait;
     use serde::de::DeserializeOwned;
+
+    /// An upload of a file named `filename`, its other parts made up.
+    fn upload_named(filename: &str) -> Result<Request> {
+        upload_request(&AttachmentUpload {
+            filename,
+            message_id: "m",
+            content_id: "",
+            mime_type: "text/plain",
+            key_packets: b"k",
+            data_packet: b"d",
+            signature: b"s",
+        })
+    }
 
     struct CheckAttachmentLimit;
 
@@ -195,15 +216,15 @@ mod tests {
 
     #[tokio::test]
     async fn attachment_upload_uses_transfer_deadline() {
-        let request = upload_request(
-            "file.txt",
-            "message",
-            "content",
-            "text/plain",
-            b"keys",
-            b"data",
-            b"signature",
-        )
+        let request = upload_request(&AttachmentUpload {
+            filename: "file.txt",
+            message_id: "message",
+            content_id: "content",
+            mime_type: "text/plain",
+            key_packets: b"keys",
+            data_packet: b"data",
+            signature: b"signature",
+        })
         .unwrap();
         let id = upload_prepared(&CheckAttachmentLimit, request)
             .await
@@ -233,7 +254,7 @@ mod tests {
 
     #[test]
     fn every_upload_has_a_boundary_of_its_own() {
-        let upload = || upload_request("f.txt", "m", "", "text/plain", b"k", b"d", b"s").unwrap();
+        let upload = || upload_named("f.txt").unwrap();
         let boundary = |request: &Request| {
             let content_type = request.content_type.clone().unwrap();
             let boundary = content_type
@@ -253,7 +274,7 @@ mod tests {
     #[test]
     fn a_line_break_cannot_reach_the_upload_form() {
         for name in ["f.txt\r\n--x", "f\nMessageID", "f\r"] {
-            let refused = upload_request(name, "m", "", "text/plain", b"k", b"d", b"s");
+            let refused = upload_named(name);
             assert!(
                 matches!(&refused, Err(Error::Other(message)) if message.contains("line break")),
                 "{name:?}"
