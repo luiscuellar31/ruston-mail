@@ -487,37 +487,14 @@ impl HttpClient {
         // shared state lock so concurrent 401s reuse a successful rotation.
         let mut a = self.auth.clone().write_owned().await;
         if a.uid != sent_auth.uid
-            || a.access.as_ref().map(|t| t.expose_secret())
-                != sent_auth.access.as_ref().map(|t| t.expose_secret())
-            || a.refresh.as_ref().map(|t| t.expose_secret())
-                != sent_auth.refresh.as_ref().map(|t| t.expose_secret())
+            || !same_token(a.access.as_ref(), sent_auth.access.as_ref())
+            || !same_token(a.refresh.as_ref(), sent_auth.refresh.as_ref())
         {
             return Ok(Refresh::Reused);
         }
-        // Hold the cross-process lock until the rotated pair is persisted.
-        // Another process may have refreshed while this client was idle.
-        let session_lock = if let Some(load) = &self.refresh_load {
-            let load = load.clone();
-            let (lock, saved) = tokio::task::spawn_blocking(move || load())
-                .await
-                .map_err(|e| Error::Session(format!("refresh lock task failed: {e}")))??;
-            let saved = saved.ok_or(Error::Unauthorized)?;
-            if a.uid.as_deref() != Some(saved.uid.as_str()) {
-                return Err(Error::Unauthorized);
-            }
-            if !self.refresh_unsaved.load(Ordering::Acquire)
-                && (a.access.as_ref().map(|t| t.expose_secret())
-                    != Some(saved.access.expose_secret())
-                    || a.refresh.as_ref().map(|t| t.expose_secret())
-                        != Some(saved.refresh.expose_secret()))
-            {
-                a.access = Some(saved.access);
-                a.refresh = Some(saved.refresh);
-                return Ok(Refresh::Reused);
-            }
-            Some(lock)
-        } else {
-            None
+        let session_lock = match self.coordinate_with_saved_session(&mut a).await? {
+            Coordination::Adopted => return Ok(Refresh::Reused),
+            Coordination::Rotate(lock) => lock,
         };
         let (Some(uid), Some(refresh)) = (a.uid.clone(), a.refresh.as_ref()) else {
             return Err(Error::Unauthorized);
@@ -548,6 +525,52 @@ impl HttpClient {
             .map_err(|e| Error::Session(format!("token refresh task failed: {e}")))??;
         Ok(Refresh::Rotated)
     }
+}
+
+impl HttpClient {
+    /// Takes the profile's lock and reads the session saved under it, where
+    /// sessions are saved: another process may have refreshed while this
+    /// client was idle. Its pair, when newer than `a`'s, is adopted;
+    /// otherwise the refresh goes ahead, holding the lock until the rotated
+    /// pair is saved. A saved session of another account ends this one.
+    async fn coordinate_with_saved_session(&self, a: &mut AuthState) -> Result<Coordination> {
+        let Some(load) = &self.refresh_load else {
+            return Ok(Coordination::Rotate(None));
+        };
+        let load = load.clone();
+        let (lock, saved) = tokio::task::spawn_blocking(move || load())
+            .await
+            .map_err(|e| Error::Session(format!("refresh lock task failed: {e}")))??;
+        let saved = saved.ok_or(Error::Unauthorized)?;
+        if a.uid.as_deref() != Some(saved.uid.as_str()) {
+            return Err(Error::Unauthorized);
+        }
+        // A pair this client rotated but could not save is newer than the
+        // saved one, which then must not replace it.
+        if !self.refresh_unsaved.load(Ordering::Acquire)
+            && (!same_token(a.access.as_ref(), Some(&saved.access))
+                || !same_token(a.refresh.as_ref(), Some(&saved.refresh)))
+        {
+            a.access = Some(saved.access);
+            a.refresh = Some(saved.refresh);
+            return Ok(Coordination::Adopted);
+        }
+        Ok(Coordination::Rotate(Some(lock)))
+    }
+}
+
+/// What the saved session says to a refresh about to start.
+enum Coordination {
+    /// It held a newer pair, now in use.
+    Adopted,
+    /// The pair in use is the newest: it is rotated, under the profile's
+    /// lock when sessions are saved.
+    Rotate(Option<File>),
+}
+
+/// Whether two tokens, either of which may be missing, are the same.
+fn same_token(a: Option<&SecretString>, b: Option<&SecretString>) -> bool {
+    a.map(ExposeSecret::expose_secret) == b.map(ExposeSecret::expose_secret)
 }
 
 /// How [`HttpClient::refresh_tokens`] replaced the tokens a refused request
