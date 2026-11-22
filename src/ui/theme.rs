@@ -12,6 +12,8 @@ pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
 /// Text and marks drawn on the accent color.
 pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const PANEL_PADDING: i8 = 16;
+// Text sizes come from one scale, 11, 13, 14, 15, 17, 21 and 28 points, and
+// corner radii from another, 4, 8, 12 and 20.
 pub const FOOTNOTE_SIZE: f32 = 11.0;
 /// Text in a conversation row and a message header: names, subjects and
 /// previews.
@@ -20,23 +22,23 @@ pub const ROW_TEXT_SIZE: f32 = 14.0;
 /// the New message button.
 pub const BODY_SIZE: f32 = 15.0;
 /// The app's name heading the sign-in screen and the mailbox's sidebar.
-pub const APP_NAME_SIZE: f32 = 23.0;
+pub const APP_NAME_SIZE: f32 = 21.0;
 /// Small print set apart from the text around it: the account under the
 /// sidebar's name and the keys of a shortcut.
-pub const CAPTION_SIZE: f32 = 12.0;
+pub const CAPTION_SIZE: f32 = 13.0;
 /// The title of a group of settings.
 pub const SECTION_TITLE_SIZE: f32 = 17.0;
 /// The app's name and version in Settings' About.
-pub const ABOUT_TITLE_SIZE: f32 = 18.0;
+pub const ABOUT_TITLE_SIZE: f32 = 17.0;
 /// The title over the conversation list: the open folder or the search.
 pub const LIST_TITLE_SIZE: f32 = 21.0;
 /// The title of a page of its own: Settings and the composer.
-pub const PAGE_TITLE_SIZE: f32 = 24.0;
+pub const PAGE_TITLE_SIZE: f32 = 21.0;
 /// The app's name alone in the window, while it starts.
-pub const DISPLAY_SIZE: f32 = 36.0;
+pub const DISPLAY_SIZE: f32 = 28.0;
 /// The headings of a message's body, from its first level to its third and
 /// on.
-pub const BODY_HEADING_SIZES: [f32; 3] = [24.0, 20.0, 17.0];
+pub const BODY_HEADING_SIZES: [f32; 3] = [28.0, 21.0, 17.0];
 pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.
@@ -49,9 +51,9 @@ const FOCUS_RING_WIDTH: f32 = 2.0;
 const CHECKBOX_ATOM_ID: &str = "ruston-check-box";
 const CHECKBOX_RADIUS: u8 = 4;
 /// The corner radius of buttons, fields and the other widgets.
-pub(crate) const WIDGET_CORNER_RADIUS: u8 = 7;
+pub(crate) const WIDGET_CORNER_RADIUS: u8 = 8;
 /// The corner radius of a card, such as a message's in the reader.
-pub(crate) const CARD_CORNER_RADIUS: u8 = 10;
+pub(crate) const CARD_CORNER_RADIUS: u8 = 12;
 /// The corner radius of the bars a loading skeleton draws; a checkbox's is
 /// the same.
 pub(crate) const SKELETON_CORNER_RADIUS: u8 = 4;
@@ -59,7 +61,7 @@ pub(crate) const SKELETON_CORNER_RADIUS: u8 = 4;
 const FOCUS_RING_RADIUS: u8 = 8;
 /// The corner radius of a block set apart in a message's body: preformatted
 /// text, or the description of an image not loaded.
-pub(crate) const BLOCK_CORNER_RADIUS: u8 = 6;
+pub(crate) const BLOCK_CORNER_RADIUS: u8 = 8;
 /// The corner radius of a picture shown in a message's body.
 pub(crate) const PICTURE_CORNER_RADIUS: u8 = 4;
 /// The corner radius of the sign-in card.

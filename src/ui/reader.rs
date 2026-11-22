@@ -18,9 +18,9 @@ use crate::mail::{
 use crate::settings::Reading;
 use ruston_core::html::rich::TableRow;
 
-const SUBJECT_SIZE: f32 = 22.0;
+const SUBJECT_SIZE: f32 = 21.0;
 /// A sender's address beside their name.
-const ADDRESS_SIZE: f32 = 12.0;
+const ADDRESS_SIZE: f32 = 13.0;
 const MAX_QUOTE_DEPTH: u8 = 4;
 /// Deeper list items keep this level's indent, as in the CLI, so a deeply
 /// nested list cannot push its text out of the column.
