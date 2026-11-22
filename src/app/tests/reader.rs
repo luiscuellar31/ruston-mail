@@ -28,7 +28,7 @@ fn open_behind_the_draft(app: &mut App, id: &str) {
     assert!(app.draft_covers_reader());
     let _ = app.start_conversation_load(id.to_owned());
     deliver_selected_demo_detail(app);
-    assert!(app.defer_read(id));
+    assert!(app.postpone_read_while_covered(id));
 }
 
 #[test]

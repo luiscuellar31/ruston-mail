@@ -13,6 +13,7 @@ mod mailto;
 mod notifications;
 mod pictures;
 mod reader;
+mod reads;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -1034,12 +1035,10 @@ impl App {
         }
         self.pending_link = None;
         if let Some(MailBackend::Demo(service)) = self.backend.clone()
-            && !self.defer_read(&id)
+            && !self.postpone_read_while_covered(&id)
+            && !self.mark_demo_read(&service, &id)
         {
-            if !service.set_unread(&id, false) {
-                return Effects::none();
-            }
-            self.apply_demo_snapshot(&service);
+            return Effects::none();
         }
 
         self.start_conversation_load(id)
@@ -1230,96 +1229,11 @@ impl App {
         Effects::batch([send_next, counts, open_next])
     }
 
-    /// Once an unread Proton row's content is shown, marks it read on Proton.
-    /// Demo rows are already marked read when they are selected, unless a
-    /// draft covers the reader.
-    fn mark_opened_read(&mut self) -> Effects {
-        if !self.settings.mark_read_on_open {
-            return Effects::none();
-        }
-        let Some(MailBackend::Proton(service)) = self.backend.clone() else {
-            return Effects::none();
-        };
-        if let Some(id) = self.selected_conversation_id()
-            && self.defer_read(&id)
-        {
-            return Effects::none();
-        }
-        let request = self.next_request();
-        let Some(request) = self
-            .active_mailbox()
-            .and_then(|mailbox| mailbox.start_mark_read(request))
-        else {
-            return Effects::none();
-        };
-        run_action(service, request, Message::MarkReadFinished)
-    }
-
     fn selected_conversation_id(&self) -> Option<String> {
         self.mailbox
             .as_ref()
             .and_then(Mailbox::selected_conversation)
             .map(str::to_owned)
-    }
-
-    /// Whether a draft covers the reader, so the conversation `id` opens
-    /// where nobody sees it. It then stays unread until the reader shows it.
-    fn defer_read(&mut self, id: &str) -> bool {
-        if !self.draft_covers_reader() {
-            return false;
-        }
-        self.read_once_shown = Some(id.to_owned());
-        true
-    }
-
-    /// Marks read what was opened while a draft covered the reader, now that
-    /// the reader shows it; nothing if another conversation is open by then.
-    fn mark_read_once_shown(&mut self) -> Effects {
-        let Some(id) = self.read_once_shown.take() else {
-            return Effects::none();
-        };
-        if self.selected_conversation_id().as_deref() != Some(id.as_str()) {
-            return Effects::none();
-        }
-        match self.backend.clone() {
-            Some(MailBackend::Demo(service)) => {
-                if service.set_unread(&id, false) {
-                    self.apply_demo_snapshot(&service);
-                }
-                Effects::none()
-            }
-            Some(MailBackend::Proton(_)) => self.mark_opened_read(),
-            None => Effects::none(),
-        }
-    }
-
-    fn finish_mark_read(
-        &mut self,
-        request: ActionRequest,
-        result: Result<(), MailboxError>,
-    ) -> Effects {
-        let Some(completion) = self
-            .mailbox
-            .as_mut()
-            .map(|mailbox| mailbox.finish_mark_read(&request, result))
-        else {
-            return Effects::none();
-        };
-        // The mailbox also records an error for any queued explicit action.
-        // An expired session closes the mailbox, and then nothing is sent.
-        if let Some(error) = completion.error {
-            if self.end_session_if_expired(Some(error)) {
-                return Effects::none();
-            }
-            return self.send_action(completion.next_action);
-        }
-        let next = self.send_action(completion.next_action);
-        let counts = if completion.read_confirmed {
-            self.reload_counts()
-        } else {
-            Effects::none()
-        };
-        Effects::batch([next, counts])
     }
 
     fn start_conversation_load(&mut self, id: String) -> Effects {
