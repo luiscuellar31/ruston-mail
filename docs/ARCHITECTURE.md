@@ -1238,6 +1238,8 @@ instead of an unknown outcome.
   asks through `LoginPrompts` for what the account needs and the options do not
   carry: a TOTP code once any human verification is done, and a separate mailbox
   password once the account password is accepted, so neither repeats the other.
+  The SRP proofs, which hash the password, are worked out on the blocking pool,
+  as the keys are unlocked.
   Once Proton has accepted the password, `auth::or_end_session` ends the session
   if the second factor, unlocking the keys or saving the session then fails.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles

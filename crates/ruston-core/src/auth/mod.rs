@@ -59,7 +59,16 @@ pub async fn login_with_prompt(
     tracing::info!(target: "ruston_core::auth", username, "login: starting SRP flow");
     open_unauthenticated_session(http).await?;
     let challenge = srp_challenge(http, username).await?;
-    let proofs = answer_challenge(username, password, &challenge)?;
+    // Hashing the password takes a tenth of a second or more: work for the
+    // blocking pool, as unlocking the keys is, not for an async worker.
+    let (proofs, challenge) = {
+        let (username, password) = (username.to_owned(), password.clone());
+        crate::mail::off_thread(move || {
+            let proofs = answer_challenge(&username, &password, &challenge)?;
+            Ok((proofs, challenge))
+        })
+        .await?
+    };
     let signed_in = exchange_proofs(http, username, &proofs, &challenge.srp_session).await?;
 
     // The tokens become secrets at once, and the client holds copies of those.
