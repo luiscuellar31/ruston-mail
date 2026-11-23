@@ -39,50 +39,52 @@ pub async fn get_conversation<D: Doer>(d: &D, id: &str) -> Result<(Conversation,
         .map(|opened: GetResp| (opened.conversation, opened.messages))
 }
 
-/// Applies `action` to the conversations whose `IDs` are in `body`, and
-/// fails naming those Proton refused.
-async fn act_on_each<D: Doer>(d: &D, action: &str, body: serde_json::Value) -> Result<()> {
-    let request = Request::put(format!("/mail/v4/conversations/{action}")).json(body);
-    d.decode::<super::EachResponse>(request)
-        .await?
-        .into_result()
+/// Applies `action` to the conversations `ids`, with what else `body` says,
+/// a request for each [`super::MAX_IDS_PER_REQUEST`] of them, and fails
+/// naming those Proton refused.
+async fn act_on_each<D: Doer>(
+    d: &D,
+    action: &str,
+    ids: &[String],
+    body: serde_json::Value,
+) -> Result<()> {
+    super::put_each(d, &format!("/mail/v4/conversations/{action}"), ids, body).await
 }
 
 /// Adds the label `label_id` to the conversations `ids`; a folder's ID moves
 /// them into that folder.
 pub async fn label<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    act_on_each(d, "label", json!({ "LabelID": label_id, "IDs": ids })).await
+    act_on_each(d, "label", ids, json!({ "LabelID": label_id })).await
 }
 /// Takes the label `label_id` off the conversations `ids`.
 pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    act_on_each(d, "unlabel", json!({ "LabelID": label_id, "IDs": ids })).await
+    act_on_each(d, "unlabel", ids, json!({ "LabelID": label_id })).await
 }
 
 /// Marks the conversations `ids` read, or unread. Marking unread names the
 /// folder `label_id` it is done in; marking read takes no folder.
 pub async fn mark<D: Doer>(d: &D, read: bool, ids: &[String], label_id: &str) -> Result<()> {
     if read {
-        act_on_each(d, "read", json!({ "IDs": ids })).await
+        act_on_each(d, "read", ids, json!({})).await
     } else {
-        act_on_each(d, "unread", json!({ "IDs": ids, "LabelID": label_id })).await
+        act_on_each(d, "unread", ids, json!({ "LabelID": label_id })).await
     }
 }
 
 /// Deletes for good what the conversations `ids` hold in the folder
 /// `label_id`.
 pub async fn delete<D: Doer>(d: &D, ids: &[String], label_id: &str) -> Result<()> {
-    act_on_each(d, "delete", json!({ "IDs": ids, "LabelID": label_id })).await
+    act_on_each(d, "delete", ids, json!({ "LabelID": label_id })).await
 }
 
 /// Puts the conversations `ids` away until `snooze_time`, in Unix seconds.
 pub async fn snooze<D: Doer>(d: &D, ids: &[String], snooze_time: i64) -> Result<()> {
-    let until = json!({ "IDs": ids, "SnoozeTime": snooze_time });
-    act_on_each(d, "snooze", until).await
+    act_on_each(d, "snooze", ids, json!({ "SnoozeTime": snooze_time })).await
 }
 
 /// Brings the snoozed conversations `ids` back now.
 pub async fn unsnooze<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    act_on_each(d, "unsnooze", json!({ "IDs": ids })).await
+    act_on_each(d, "unsnooze", ids, json!({})).await
 }
 
 /// How many conversations each label holds, and how many of them are unread.

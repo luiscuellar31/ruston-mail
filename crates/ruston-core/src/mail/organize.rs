@@ -415,6 +415,114 @@ mod tests {
         client.star_conversations(&ids, false).await.unwrap();
     }
 
+    /// IDs `id-0` on, as many as `count`.
+    fn many_ids(count: usize) -> Vec<String> {
+        (0..count).map(|n| format!("id-{n}")).collect()
+    }
+
+    /// Proton's answer to a request about `ids`: success for each, but for
+    /// those in `refused`.
+    fn each_answered(ids: &[String], refused: &[&str]) -> serde_json::Value {
+        let responses: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                let response = if refused.contains(&id.as_str()) {
+                    serde_json::json!({"Code": 2501, "Error": "Message does not exist"})
+                } else {
+                    serde_json::json!({"Code": 1000})
+                };
+                serde_json::json!({"ID": id, "Response": response})
+            })
+            .collect();
+        serde_json::json!({"Code": 1001, "Responses": responses})
+    }
+
+    #[tokio::test]
+    async fn an_action_on_more_ids_than_a_request_takes_goes_in_several() {
+        let server = MockServer::start().await;
+        let ids = many_ids(2 * api::MAX_IDS_PER_REQUEST + 20);
+        for part in ids.chunks(api::MAX_IDS_PER_REQUEST) {
+            let body = serde_json::json!({"LabelID": "6", "IDs": part});
+            expect_put(&server, "/mail/v4/conversations/label", body).await;
+        }
+        let client = test_support::client(&server, Vec::new());
+
+        client.move_conversations(&ids, "archive").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn the_ids_refused_in_every_request_are_named_together() {
+        let server = MockServer::start().await;
+        let ids = many_ids(api::MAX_IDS_PER_REQUEST + 10);
+        let last = ids.last().unwrap().clone();
+        let (first, second) = ids.split_at(api::MAX_IDS_PER_REQUEST);
+        for (part, refused) in [(first, "id-3"), (second, last.as_str())] {
+            Mock::given(method("PUT"))
+                .and(path("/mail/v4/messages/read"))
+                .and(body_json(serde_json::json!({"IDs": part})))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(each_answered(part, &[refused])),
+                )
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let client = test_support::client(&server, Vec::new());
+
+        let error = client
+            .mark_messages_read(&ids, true)
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            error.contains(&format!("Proton refused 2 of {}", ids.len())),
+            "{error}"
+        );
+        assert!(error.contains("id-3 (") && error.contains(&last), "{error}");
+    }
+
+    #[tokio::test]
+    async fn a_request_that_fails_stops_those_after_it() {
+        let server = MockServer::start().await;
+        let ids = many_ids(api::MAX_IDS_PER_REQUEST + 1);
+        let (first, second) = ids.split_at(api::MAX_IDS_PER_REQUEST);
+        Mock::given(method("PUT"))
+            .and(path("/mail/v4/conversations/label"))
+            .and(body_json(serde_json::json!({"LabelID": "6", "IDs": first})))
+            .respond_with(
+                ResponseTemplate::new(422)
+                    .set_body_json(serde_json::json!({"Code": 2001, "Error": "Invalid input"})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/mail/v4/conversations/label"))
+            .and(body_json(
+                serde_json::json!({"LabelID": "6", "IDs": second}),
+            ))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"Code": 1000})),
+            )
+            .expect(0)
+            .mount(&server)
+            .await;
+        let client = test_support::client(&server, Vec::new());
+
+        assert!(client.move_conversations(&ids, "archive").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn an_action_on_no_ids_asks_proton_nothing() {
+        // Any request would find nothing here, and fail.
+        let server = MockServer::start().await;
+        let client = test_support::client(&server, Vec::new());
+
+        client.move_conversations(&[], "archive").await.unwrap();
+        client.mark_messages_read(&[], false).await.unwrap();
+    }
+
     /// Has `server` list `labels` as the account's labels and `folders` as
     /// its folders.
     async fn own_labels(

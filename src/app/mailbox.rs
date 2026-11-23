@@ -10,8 +10,8 @@ use crate::mail::{
 /// request currently in flight is applied; anything else is stale.
 pub type RequestId = u64;
 
-/// The most rows one request to Proton acts on: a page of the list.
-const ACTION_GROUP_LIMIT: usize = 50;
+/// The most rows one request to Proton acts on.
+const ACTION_GROUP_LIMIT: usize = ruston_core::api::MAX_IDS_PER_REQUEST;
 
 /// Recent readers are kept only for quick backtracking within this session.
 const READER_CACHE_CAPACITY: usize = 8;

@@ -1212,9 +1212,13 @@ instead of an unknown outcome.
   draw as nothing, `is_invisible_mark`: attachment file names, the CLI's
   output and desktop notifications drop them.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
-  Actions on several messages or conversations read the response Proton gives
-  for each ID (`Code` 1001 with `Responses`), and fail with an API error that
-  names the IDs it refused, instead of reporting all of them done;
+  Actions on several messages or conversations go in requests of at most
+  `api::MAX_IDS_PER_REQUEST` (50) IDs, one after another, since Proton refuses
+  more than its maximum for an endpoint (code 2024); a request that fails stops
+  the rest, and no IDs asks nothing. They read the response Proton gives for
+  each ID (`Code` 1001 with `Responses`), and fail with an API error that names
+  the IDs it refused in any of the requests, instead of reporting all of them
+  done;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and

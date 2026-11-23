@@ -160,13 +160,16 @@ async fn act_on<D: Doer>(d: &D, method: Method, id: &str, action: &str) -> Resul
     .await
 }
 
-/// Applies `action` to the messages whose `IDs` are in `body`, and fails
-/// naming those Proton refused.
-async fn act_on_each<D: Doer>(d: &D, action: &str, body: serde_json::Value) -> Result<()> {
-    let request = Request::put(format!("/mail/v4/messages/{action}")).json(body);
-    d.decode::<super::EachResponse>(request)
-        .await?
-        .into_result()
+/// Applies `action` to the messages `ids`, with what else `body` says, a
+/// request for each [`super::MAX_IDS_PER_REQUEST`] of them, and fails naming
+/// those Proton refused.
+async fn act_on_each<D: Doer>(
+    d: &D,
+    action: &str,
+    ids: &[String],
+    body: serde_json::Value,
+) -> Result<()> {
+    super::put_each(d, &format!("/mail/v4/messages/{action}"), ids, body).await
 }
 
 /// The counts the `count` endpoint at `path` gives: messages', or
@@ -179,11 +182,11 @@ pub(super) async fn label_counts<D: Doer>(d: &D, path: &str) -> Result<Vec<Label
 /// Adds the label `label_id` to the messages `ids`; a folder's ID moves them
 /// into that folder.
 pub async fn label<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    act_on_each(d, "label", json!({ "LabelID": label_id, "IDs": ids })).await
+    act_on_each(d, "label", ids, json!({ "LabelID": label_id })).await
 }
 /// Takes the label `label_id` off the messages `ids`.
 pub async fn unlabel<D: Doer>(d: &D, label_id: &str, ids: &[String]) -> Result<()> {
-    act_on_each(d, "unlabel", json!({ "LabelID": label_id, "IDs": ids })).await
+    act_on_each(d, "unlabel", ids, json!({ "LabelID": label_id })).await
 }
 
 /// How many messages each label holds, and how many of them are unread.
@@ -198,15 +201,15 @@ pub async fn send_receipt<D: Doer>(d: &D, id: &str) -> Result<()> {
 
 /// Marks the messages `ids` read.
 pub async fn mark_read<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    act_on_each(d, "read", json!({ "IDs": ids })).await
+    act_on_each(d, "read", ids, json!({})).await
 }
 /// Marks the messages `ids` unread.
 pub async fn mark_unread<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    act_on_each(d, "unread", json!({ "IDs": ids })).await
+    act_on_each(d, "unread", ids, json!({})).await
 }
 /// Deletes the messages `ids` for good.
 pub async fn delete<D: Doer>(d: &D, ids: &[String]) -> Result<()> {
-    act_on_each(d, "delete", json!({ "IDs": ids })).await
+    act_on_each(d, "delete", ids, json!({})).await
 }
 
 /// Calls off the scheduled sending of the message `id`.
