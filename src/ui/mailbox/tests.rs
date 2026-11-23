@@ -2245,6 +2245,76 @@ fn a_bottom_notice_stays_while_the_pointer_rests_on_it() {
 }
 
 #[test]
+fn a_notice_centers_its_words_on_its_button_or_puts_the_button_below_them() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let words = "Ruston Mail 10.20.300 is available.";
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Room for the words and the button on one line, and the smallest window
+    // at the largest zoom, where the words wrap.
+    for (size, one_line) in [
+        (egui::vec2(1100.0, 700.0), true),
+        (egui::vec2(240.0, 210.0), false),
+    ] {
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) = mailbox_frame(
+                &context,
+                &app,
+                &mut state,
+                size,
+                None,
+                egui::RawInput::default(),
+            );
+        }
+        let text = visible_text_rect(&shapes, words).expect("the words are drawn");
+        let button = visible_text_rect(&shapes, "Download").expect("the button is drawn");
+        if one_line {
+            assert!(
+                (text.center().y - button.center().y).abs() <= 0.5,
+                "at {size:?} the words {text:?} sit off the button's {button:?}"
+            );
+        } else {
+            assert!(
+                button.top() > text.bottom(),
+                "at {size:?} the button {button:?} sits beside the words' last line {text:?}"
+            );
+        }
+    }
+
+    // The offer to undo, with the same line.
+    let mut app = two_demo_rows();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+        Folder::System(MailFolder::Trash),
+    )));
+    let mut state = UiState::default();
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        (_, shapes) = mailbox_frame(
+            &context,
+            &app,
+            &mut state,
+            egui::vec2(1100.0, 700.0),
+            None,
+            Default::default(),
+        );
+    }
+    let text = visible_text_rect(&shapes, "Moved 2 conversations to Trash.").expect("the offer");
+    let button = visible_text_rect(&shapes, "Undo").expect("its button");
+    assert!(
+        (text.center().y - button.center().y).abs() <= 0.5,
+        "the offer {text:?} sits off its button {button:?}"
+    );
+}
+
+#[test]
 fn a_long_folder_name_stays_on_one_row() {
     // Account folder names truncate rather than changing row height.
     let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);

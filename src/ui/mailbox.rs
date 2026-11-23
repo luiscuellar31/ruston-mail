@@ -975,10 +975,13 @@ fn notice_content(
 ) {
     match notice {
         BottomNotice::Undo(offer) => {
-            ui.label(match offer.rows.len() {
-                1 => format!("Moved to {}.", offer.to.name()),
-                moved => format!("Moved {moved} conversations to {}.", offer.to.name()),
-            });
+            notice_words(
+                ui,
+                match offer.rows.len() {
+                    1 => format!("Moved to {}.", offer.to.name()),
+                    moved => format!("Moved {moved} conversations to {}.", offer.to.name()),
+                },
+            );
             // The move back waits while the list loads or loads more.
             let ready = mailbox.takes_actions();
             if ui
@@ -989,10 +992,10 @@ fn notice_content(
             }
         }
         BottomNotice::Confirmation(Notice::Sent) => {
-            ui.label("Message sent.");
+            notice_words(ui, "Message sent.");
         }
         BottomNotice::Confirmation(Notice::UpdateAvailable(version)) => {
-            ui.label(format!("Ruston Mail {version} is available."));
+            notice_words(ui, format!("Ruston Mail {version} is available."));
             settings::download_button(ui, messages);
         }
         BottomNotice::Confirmation(Notice::Saved(path)) => {
@@ -1000,13 +1003,41 @@ fn notice_content(
                 || path.display().to_string(),
                 |name| name.to_string_lossy().into_owned(),
             );
-            ui.label(format!("Saved {name}."))
-                .on_hover_text(path.display().to_string());
+            notice_words(ui, format!("Saved {name}.")).on_hover_text(path.display().to_string());
             if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
                 messages.push(Message::RevealAttachment(path.clone()));
             }
         }
     }
+}
+
+/// Adds a notice's `words` where its button follows. Words that fit on one
+/// line share it with the button, both centered on a line as high as the
+/// button; longer words wrap with their own spacing, and the button goes
+/// below them.
+fn notice_words(ui: &mut egui::Ui, words: impl Into<egui::WidgetText>) -> egui::Response {
+    let words = words.into();
+    let one_line = words
+        .clone()
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::FontSelection::Default,
+        )
+        .size()
+        .x
+        <= ui.available_width();
+    // A wrapping row starts shorter than the button, and would center a
+    // label's first line on that shorter height.
+    if one_line {
+        ui.set_row_height(theme::COMPACT_BUTTON_HEIGHT);
+    }
+    let response = ui.label(words);
+    if !one_line {
+        ui.end_row();
+    }
+    response
 }
 
 /// How long `notice` stays from `now`: its own time from when it first

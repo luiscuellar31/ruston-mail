@@ -320,7 +320,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   list carries the undo offer or, with none, `App`'s `Notice` of a message sent,
   a file saved or a newer release. With Settings shown it sits at the foot of
   their page, above Apply and Back to mail, and its words wrap rather than run
-  past the list, the page or the window;
+  past the list, the page or the window. Words that fit on one line share it
+  with the notice's button, both centered on a line as high as the button;
+  longer words wrap and put the button below them.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
   `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as

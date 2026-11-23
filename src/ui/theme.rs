@@ -43,7 +43,8 @@ pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.
 const ANIMATION_FRAME: Duration = Duration::from_millis(50);
-const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
+/// The height of [`compact_button`], which a line of words beside one takes.
+pub const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const DIALOG_BUTTON_HEIGHT: f32 = 32.0;
 const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
