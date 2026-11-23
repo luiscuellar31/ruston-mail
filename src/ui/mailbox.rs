@@ -50,8 +50,8 @@ pub(super) fn show(
     let context = root.ctx().clone();
     let window_width = root.available_width();
     if compact_layout(window_width) {
-        show_compact(root, app, settings_draft, state, messages);
-        bottom_notice(&context, app, mailbox, state, None, messages);
+        let settings = show_compact(root, app, settings_draft, state, messages);
+        bottom_notice(&context, app, mailbox, state, settings, messages);
         return;
     }
     let widths = panel_widths(app.panels(), window_width);
@@ -66,9 +66,11 @@ pub(super) fn show(
             sidebar(ui, app, mailbox, messages);
         });
 
-    let conversations = match settings_draft {
+    // The list, and where a notice sits: at the foot of the list, or of
+    // Settings' page, above its buttons.
+    let (conversations, notice_place) = match settings_draft {
         Some(draft) => {
-            egui::CentralPanel::default()
+            let page = egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
                 .show(root, |ui| {
                     settings::show(
@@ -80,8 +82,9 @@ pub(super) fn show(
                         app.third_party_notices(),
                         app.update_status(),
                     )
-                });
-            None
+                })
+                .inner;
+            (None, page)
         }
         None => {
             let remaining =
@@ -98,11 +101,14 @@ pub(super) fn show(
             egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
                 .show(root, |ui| reading_pane(ui, app, state, messages));
-            Some(conversations.response.rect)
+            (
+                Some(conversations.response.rect),
+                conversations.response.rect,
+            )
         }
     };
 
-    bottom_notice(&context, app, mailbox, state, conversations, messages);
+    bottom_notice(&context, app, mailbox, state, Some(notice_place), messages);
     let conversations = conversations.map(|list| list.width());
 
     let stored = app.panels();
@@ -178,13 +184,15 @@ fn sidebar_skeleton(ui: &mut egui::Ui) {
     }
 }
 
+/// One column at a time. With Settings shown, returns where its page
+/// scrolls, above its buttons.
 fn show_compact(
     root: &mut egui::Ui,
     app: &App,
     settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
-) {
+) -> Option<egui::Rect> {
     let mailbox = app.mailbox().expect("authenticated mailbox");
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
@@ -233,7 +241,7 @@ fn show_compact(
         .frame(theme::panel_frame(fill))
         .show(root, |ui| {
             if let Some(draft) = settings_draft {
-                settings::show(
+                return Some(settings::show(
                     ui,
                     app.settings(),
                     draft,
@@ -241,17 +249,18 @@ fn show_compact(
                     state.notification_status,
                     app.third_party_notices(),
                     app.update_status(),
-                );
-            } else {
-                match state.compact_view {
-                    CompactView::Folders => {
-                        sidebar(ui, app, mailbox, messages);
-                    }
-                    CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
-                    CompactView::Reader => reading_pane(ui, app, state, messages),
-                }
+                ));
             }
-        });
+            match state.compact_view {
+                CompactView::Folders => {
+                    sidebar(ui, app, mailbox, messages);
+                }
+                CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
+                CompactView::Reader => reading_pane(ui, app, state, messages),
+            }
+            None
+        })
+        .inner
 }
 
 /// The list on its own, as one column shows it. The reader, which says why
@@ -898,17 +907,17 @@ enum Pointer {
     OnNotice,
 }
 
-/// The notice at the foot of the list it is about, `list`, rather than
-/// across the divider beside it; without a list on screen, at the foot of
-/// the window. It offers to take back the last move or, with none to take
-/// back, confirms a message sent or a file saved, or announces a newer
-/// release.
+/// The notice at the foot of `place`: the list it is about, rather than
+/// across the divider beside it, or Settings' page, above its buttons; with
+/// neither on screen, at the foot of the window. It offers to take back the
+/// last move or, with none to take back, confirms a message sent or a file
+/// saved, or announces a newer release.
 fn bottom_notice(
     context: &egui::Context,
     app: &App,
     mailbox: &Mailbox,
     state: &mut UiState,
-    list: Option<egui::Rect>,
+    place: Option<egui::Rect>,
     messages: &mut Vec<Message>,
 ) {
     let notice = match (mailbox.undo(), app.notice()) {
@@ -939,17 +948,20 @@ fn bottom_notice(
     context.request_repaint_after(remaining);
 
     let area = egui::Area::new(id);
-    let area = match list {
-        Some(list) => area
+    let area = match place {
+        Some(place) => area
             .pivot(Align2::CENTER_BOTTOM)
-            .fixed_pos(list.center_bottom() - egui::vec2(0.0, NOTICE_MARGIN)),
+            .fixed_pos(place.center_bottom() - egui::vec2(0.0, NOTICE_MARGIN)),
         None => area.anchor(Align2::CENTER_BOTTOM, egui::vec2(0.0, -NOTICE_MARGIN)),
     };
+    // Words that would run past their place, or the window, wrap instead.
+    let room = place.unwrap_or_else(|| context.content_rect()).width() - 2.0 * NOTICE_MARGIN;
     let _ = area.order(egui::Order::Foreground).show(context, |ui| {
+        ui.set_max_width(room);
         theme::card(ui)
             .stroke(Stroke::new(1.0, theme::ACCENT))
             .show(ui, |ui| {
-                ui.horizontal(|ui| notice_content(ui, &notice, mailbox, messages));
+                ui.horizontal_wrapped(|ui| notice_content(ui, &notice, mailbox, messages));
             });
     });
 }

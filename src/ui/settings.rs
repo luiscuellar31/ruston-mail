@@ -7,6 +7,8 @@ use crate::app::{Message, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
 
+/// Settings, with Apply and Back to mail at their foot. Returns where the
+/// page scrolls, above those buttons, which a notice must leave uncovered.
 pub(super) fn show(
     root: &mut egui::Ui,
     current: &Settings,
@@ -15,7 +17,7 @@ pub(super) fn show(
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
     update_status: Option<UpdateStatus>,
-) {
+) -> egui::Rect {
     egui::Panel::bottom("settings-actions")
         .frame(
             theme::panel_frame(theme::colors(root).panel).outer_margin(egui::Margin {
@@ -56,7 +58,9 @@ pub(super) fn show(
                     update_status,
                 )
             });
-    });
+    })
+    .response
+    .rect
 }
 
 #[derive(Clone, Copy)]

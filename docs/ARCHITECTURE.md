@@ -317,8 +317,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   labels list mail wherever it sits, so a move to another folder keeps the row
   there and the mailbox remembers where it went, for the reader's buttons and a
   later undo; Spam and Trash still take it out. One notice at the foot of the
-  list carries the undo offer or, with none, `App`'s `Notice` of a message sent
-  or a file saved; [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
+  list carries the undo offer or, with none, `App`'s `Notice` of a message sent,
+  a file saved or a newer release. With Settings shown it sits at the foot of
+  their page, above Apply and Back to mail, and its words wrap rather than run
+  past the list, the page or the window;
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
   `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its

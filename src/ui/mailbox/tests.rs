@@ -2115,6 +2115,114 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
 }
 
 #[test]
+fn a_bottom_notice_keeps_within_its_list_or_the_window_however_narrow() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    // A newer release with a long number: the widest notice whose words are
+    // the app's own.
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let words = "Ruston Mail 10.20.300 is available.";
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Three narrow columns, one column, and the smallest window at the
+    // largest zoom.
+    for size in [
+        egui::vec2(700.0, 600.0),
+        egui::vec2(560.0, 600.0),
+        egui::vec2(240.0, 210.0),
+    ] {
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) = mailbox_frame(
+                &context,
+                &app,
+                &mut state,
+                size,
+                None,
+                egui::RawInput::default(),
+            );
+        }
+        let notice = context
+            .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
+            .expect("the notice is drawn");
+        let room = if compact_layout(size.x) {
+            egui::Rect::from_min_size(egui::Pos2::ZERO, size)
+        } else {
+            egui::containers::panel::PanelState::load(
+                &context,
+                egui::Id::new(CONVERSATION_PANEL_ID),
+            )
+            .expect("the list is drawn")
+            .outer_rect
+        };
+        assert!(
+            notice.left() >= room.left() && notice.right() <= room.right(),
+            "at {size:?} the notice spans {:?}, past {:?}",
+            notice.x_range(),
+            room.x_range()
+        );
+        assert!(
+            visible_text_rect(&shapes, words).is_some(),
+            "at {size:?} its words are cut off"
+        );
+    }
+}
+
+#[test]
+fn a_bottom_notice_over_settings_leaves_its_buttons_uncovered() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let _ = app.update(Message::ShowSettings(true));
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Wide, three narrow columns, one column, the smallest window, and that
+    // at the largest zoom.
+    for size in [
+        egui::vec2(1100.0, 700.0),
+        egui::vec2(700.0, 600.0),
+        egui::vec2(560.0, 600.0),
+        egui::vec2(480.0, 420.0),
+        egui::vec2(240.0, 210.0),
+    ] {
+        let mut state = UiState::default();
+        let mut draft = app.settings().clone();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) = mailbox_frame(
+                &context,
+                &app,
+                &mut state,
+                size,
+                Some(&mut draft),
+                egui::RawInput::default(),
+            );
+        }
+        let notice = context
+            .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
+            .expect("the notice is drawn");
+        assert!(
+            notice.left() >= 0.0 && notice.right() <= size.x,
+            "at {size:?} the notice spans {:?}",
+            notice.x_range()
+        );
+        for button in ["Apply", "Back to mail"] {
+            let button = visible_text_rect(&shapes, button)
+                .unwrap_or_else(|| panic!("at {size:?} {button} is not drawn"));
+            assert!(
+                !button.intersects(notice),
+                "at {size:?} the notice {notice:?} covers {button:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn a_bottom_notice_stays_while_the_pointer_rests_on_it() {
     let sent = BottomNotice::Confirmation(Notice::Sent);
     let mut state = UiState::default();
