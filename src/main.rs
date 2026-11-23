@@ -12,6 +12,7 @@ mod licenses;
 mod mail;
 mod mailto;
 mod pictures;
+mod releases;
 mod runtime;
 mod settings;
 #[cfg(test)]

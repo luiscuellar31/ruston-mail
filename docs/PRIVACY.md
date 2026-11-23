@@ -448,6 +448,17 @@ environment variables, which take precedence. Automatic proxy configuration
 when; the HTTPS traffic itself stays encrypted end to end between Ruston Mail
 and Proton.
 
+The desktop app contacts one other server, GitHub's API at `api.github.com`,
+and only while **Check for updates** is on under Settings → About, which it is
+not by default. It then asks, as the app starts and once a day while it runs,
+for the number of the latest published Ruston Mail release, through the same
+proxies. The request carries no account, mail or settings data, no cookies,
+and neither the version running nor the system: it names itself `ruston-mail`
+and nothing else. GitHub, and a proxy on the way, see your IP address and when
+you check, as with any visit to a website. Only the release number is read
+from the reply, and no more than 1 MiB of it. Nothing is downloaded or
+installed: **Download** opens the release page in your browser.
+
 ## HTTP diagnostics
 
 `RUSTON_DEBUG_HTTP=1` prints Proton request methods, paths, body kinds, status

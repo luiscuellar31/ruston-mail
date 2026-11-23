@@ -87,6 +87,9 @@ getrandom = { workspace = true }
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 # Decodes the pictures a message carries within it, and no other format.
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Asks GitHub for the latest release when checking for updates is on, with
+# the proxies and TLS core's Proton client uses.
+reqwest = { workspace = true }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image", "svg"] }
 ruston-core = { workspace = true }
@@ -105,6 +108,7 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 [dev-dependencies]
 # Paused time lets the sign-in deadline be tested without waiting for it.
 tokio = { version = "1", features = ["test-util"] }
+wiremock = { workspace = true }
 zbus = { version = "5", features = ["p2p"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

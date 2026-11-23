@@ -78,6 +78,7 @@ pub(super) fn show(
                         messages,
                         state.notification_status,
                         app.third_party_notices(),
+                        app.update_status(),
                     )
                 });
             None
@@ -239,6 +240,7 @@ fn show_compact(
                     messages,
                     state.notification_status,
                     app.third_party_notices(),
+                    app.update_status(),
                 );
             } else {
                 match state.compact_view {
@@ -899,7 +901,8 @@ enum Pointer {
 /// The notice at the foot of the list it is about, `list`, rather than
 /// across the divider beside it; without a list on screen, at the foot of
 /// the window. It offers to take back the last move or, with none to take
-/// back, confirms a message sent or a file saved.
+/// back, confirms a message sent or a file saved, or announces a newer
+/// release.
 fn bottom_notice(
     context: &egui::Context,
     app: &App,
@@ -975,6 +978,10 @@ fn notice_content(
         }
         BottomNotice::Confirmation(Notice::Sent) => {
             ui.label("Message sent.");
+        }
+        BottomNotice::Confirmation(Notice::UpdateAvailable(version)) => {
+            ui.label(format!("Ruston Mail {version} is available."));
+            settings::download_button(ui, messages);
         }
         BottomNotice::Confirmation(Notice::Saved(path)) => {
             let name = path.file_name().map_or_else(

@@ -134,6 +134,8 @@ struct DesktopApp {
     title: String,
     unread_badge: Option<u32>,
     auto_refresh: AutoRefresh,
+    /// When to ask GitHub whether a newer release is out.
+    update_schedule: crate::releases::Schedule,
     /// Preferences being edited in the settings pane until Apply is pressed.
     settings_draft: Option<Settings>,
     /// Where to go after the user decides what to do with unsaved preferences.
@@ -231,6 +233,7 @@ impl DesktopApp {
             title: String::new(),
             unread_badge: None,
             auto_refresh: AutoRefresh::default(),
+            update_schedule: crate::releases::Schedule::default(),
             settings_draft: None,
             pending_settings_exit: None,
             pending_discard: None,
@@ -991,6 +994,15 @@ impl DesktopApp {
         }
     }
 
+    /// Asks whether a newer release is out as the window opens with checking
+    /// on, as checking is turned on, and a day after each check.
+    fn check_for_updates(&mut self, now: f64, context: &egui::Context) {
+        let on = self.app.settings().check_for_updates;
+        if self.update_schedule.due(now, on) {
+            self.dispatch(Message::CheckForUpdates, context);
+        }
+    }
+
     /// Applies UI zoom without changing the remembered window size.
     fn apply_zoom(&self, context: &egui::Context) {
         let zoom = self.app.settings().zoom;
@@ -1271,6 +1283,7 @@ impl eframe::App for DesktopApp {
         self.forget_finished_draft(context);
         let now = self.clock();
         self.refresh_automatically(now, context);
+        self.check_for_updates(now, context);
         self.save_settled_settings(now, context);
         self.update_title(context);
         self.update_unread_badge();

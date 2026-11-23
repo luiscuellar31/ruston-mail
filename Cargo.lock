@@ -5711,6 +5711,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-user-notifications 0.3.2",
+ "reqwest",
  "rfd",
  "ruston-core",
  "secrecy",
@@ -5726,6 +5727,7 @@ dependencies = [
  "windows-sys 0.61.2",
  "winit",
  "winresource",
+ "wiremock",
  "zbus",
  "zeroize",
 ]

@@ -3,7 +3,7 @@ use std::path::Path;
 use eframe::egui::{self, Align, Layout};
 
 use super::theme::{self, Emphasis};
-use crate::app::Message;
+use crate::app::{Message, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
 
@@ -14,6 +14,7 @@ pub(super) fn show(
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
+    update_status: Option<UpdateStatus>,
 ) {
     egui::Panel::bottom("settings-actions")
         .frame(
@@ -52,6 +53,7 @@ pub(super) fn show(
                     messages,
                     notification_status,
                     third_party_notices,
+                    update_status,
                 )
             });
     });
@@ -89,6 +91,7 @@ fn page(
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
+    update_status: Option<UpdateStatus>,
 ) {
     ui.heading(
         egui::RichText::new("Settings")
@@ -111,7 +114,7 @@ fn page(
     ui.add_space(14.0);
     keyboard(ui);
     ui.add_space(14.0);
-    about(ui, messages, third_party_notices);
+    about(ui, settings, messages, third_party_notices, update_status);
 }
 
 /// What opens with a conversation, and how much of what its sender wrote shows.
@@ -417,10 +420,13 @@ fn keyboard(ui: &mut egui::Ui) {
     });
 }
 
+/// The version running, where it comes from, and whether a newer one is out.
 fn about(
     ui: &mut egui::Ui,
+    settings: &mut Settings,
     messages: &mut Vec<Message>,
     third_party_notices: Option<&Path>,
+    update_status: Option<UpdateStatus>,
 ) -> egui::Response {
     section(ui, "About", |ui| {
         ui.horizontal_top(|ui| {
@@ -474,7 +480,45 @@ fn about(
                 messages.push(Message::OpenThirdPartyNotices);
             }
         });
+        ui.add_space(12.0);
+        ui.add(theme::Checkbox::new(
+            &mut settings.check_for_updates,
+            "Check for updates",
+        ));
+        description(
+            ui,
+            "As the app starts and once a day, GitHub is asked for the latest release. Nothing is downloaded: a newer version is announced, with a link to its page.",
+        );
+        if let Some(status) = update_status {
+            update_found(ui, status, messages);
+        }
     })
+}
+
+/// What the last check for updates found.
+fn update_found(ui: &mut egui::Ui, status: UpdateStatus, messages: &mut Vec<Message>) {
+    match status {
+        UpdateStatus::Checking => description(ui, "Checking for updates…"),
+        UpdateStatus::Latest => description(ui, "You have the latest version."),
+        UpdateStatus::Failed => description(ui, "Could not check for updates."),
+        UpdateStatus::Available(version) => {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("Ruston Mail {version} is available."));
+                download_button(ui, messages);
+            });
+        }
+    }
+}
+
+/// Opens a newer release's page, where it is downloaded from.
+pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
+    if ui
+        .add(theme::compact_button("Download"))
+        .on_hover_text("Opens the release page in your browser.")
+        .clicked()
+    {
+        messages.push(Message::OpenReleasePage);
+    }
 }
 
 pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
@@ -546,6 +590,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
         messages.push(Message::SetDesktopNotifications(
             draft.desktop_notifications,
         ));
+    }
+    if draft.check_for_updates != current.check_for_updates {
+        messages.push(Message::SetCheckForUpdates(draft.check_for_updates));
     }
     messages
 }
@@ -726,6 +773,7 @@ mod tests {
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
                     None,
+                    None,
                 )
             },
         );
@@ -776,6 +824,7 @@ mod tests {
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
                     Some(Path::new("THIRD_PARTY_LICENSES.txt")),
+                    None,
                 )
             },
         );
@@ -813,6 +862,7 @@ mod tests {
                     &mut Settings::default(),
                     &mut Vec::new(),
                     super::super::notifications::Status::Off,
+                    None,
                     None,
                 )
             },
@@ -859,8 +909,10 @@ mod tests {
                         |ui| {
                             card = about(
                                 ui,
+                                &mut Settings::default(),
                                 &mut messages,
                                 Some(Path::new("THIRD_PARTY_LICENSES.txt")),
+                                None,
                             )
                             .rect;
                         },
@@ -909,7 +961,7 @@ mod tests {
         theme::install(&context);
         let draw = || {
             context.run_ui(egui::RawInput::default(), |ui| {
-                about(ui, &mut Vec::new(), None);
+                about(ui, &mut Settings::default(), &mut Vec::new(), None, None);
             })
         };
         draw().drop_without_applying_deltas();
@@ -925,6 +977,77 @@ mod tests {
 
         assert!(source);
         assert!(!notices);
+    }
+
+    #[test]
+    fn about_offers_to_check_for_updates_and_says_what_the_last_check_found() {
+        let newer = crate::releases::Version::parse("999.0.0").unwrap();
+        let lines = [
+            "Checking for updates…",
+            "You have the latest version.",
+            "Could not check for updates.",
+            "Ruston Mail 999.0.0 is available.",
+        ];
+        for (status, said) in [
+            (None, None),
+            (Some(UpdateStatus::Checking), Some(lines[0])),
+            (Some(UpdateStatus::Latest), Some(lines[1])),
+            (Some(UpdateStatus::Failed), Some(lines[2])),
+            (Some(UpdateStatus::Available(newer)), Some(lines[3])),
+        ] {
+            let context = egui::Context::default();
+            theme::install(&context);
+            let mut settings = Settings::default();
+            let mut messages = Vec::new();
+            let mut draw = |events| {
+                context.run_ui(
+                    egui::RawInput {
+                        events,
+                        ..Default::default()
+                    },
+                    |ui| {
+                        about(ui, &mut settings, &mut messages, None, status);
+                    },
+                )
+            };
+            draw(Vec::new()).drop_without_applying_deltas();
+            let output = draw(Vec::new());
+            let drawn = |label| {
+                output
+                    .shapes
+                    .iter()
+                    .any(|shape| shape_text_rect(&shape.shape, label).is_some())
+            };
+            for line in lines {
+                assert_eq!(drawn(line), said == Some(line), "{line} for {status:?}");
+            }
+            let checkbox = text_rect(&output.shapes, "Check for updates");
+            let download = drawn("Download").then(|| text_rect(&output.shapes, "Download"));
+            output.drop_without_applying_deltas();
+            assert_eq!(download.is_some(), said == Some(lines[3]));
+
+            // The box turns checking on in the draft, for Apply to send;
+            // Download asks for the release's page.
+            for target in [Some(checkbox), download].into_iter().flatten() {
+                for pressed in [true, false] {
+                    draw(vec![
+                        egui::Event::PointerMoved(target.center()),
+                        egui::Event::PointerButton {
+                            pos: target.center(),
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: Default::default(),
+                        },
+                    ])
+                    .drop_without_applying_deltas();
+                }
+            }
+            assert!(settings.check_for_updates);
+            match download {
+                Some(_) => assert!(matches!(messages.as_slice(), [Message::OpenReleasePage])),
+                None => assert!(messages.is_empty()),
+            }
+        }
     }
 
     #[test]
@@ -1020,8 +1143,14 @@ mod tests {
         draft.sender_text_styles = false;
         draft.data_tables = false;
         draft.show_inline_images = false;
+        draft.check_for_updates = true;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 13);
+        assert_eq!(changes.len(), 14);
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetCheckForUpdates(true)))
+        );
         assert!(
             changes
                 .iter()

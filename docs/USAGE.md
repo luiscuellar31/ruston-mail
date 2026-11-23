@@ -468,6 +468,13 @@ Choose **Source code** to open the project's repository in your browser, or
 **Third-party notices** to read the licenses of the software Ruston Mail
 includes, which open in your system's app for text files. Only a packaged app
 has that button: a build from source has no notices beside it.
+Turn on **Check for updates** there, and Apply, to have Ruston Mail ask GitHub
+as it starts and once a day whether a newer release is out; it is off by
+default. A newer version is announced at the foot of the window and stays in
+About, with a **Download** button that opens its release page in your browser.
+Nothing is downloaded or installed for you. About also says when you have the
+latest version, or when GitHub could not be asked. The
+[privacy guide](PRIVACY.md#network-connections) lists what the check sends.
 **Advanced**, above the keyboard shortcuts, holds choices most people can leave
 alone.
 
@@ -492,6 +499,7 @@ Settings control:
 - Interface scale.
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
+- Whether Ruston Mail asks GitHub for its latest release (About).
 - On macOS, whether the Dock icon shows the unread inbox count; on Windows,
   whether the taskbar button does; on Linux, whether the dock icon does, on
   docks that show counts, such as Ubuntu's dock and KDE's task manager.

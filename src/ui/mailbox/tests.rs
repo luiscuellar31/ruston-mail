@@ -2022,6 +2022,45 @@ fn a_saved_file_is_confirmed_with_a_way_to_show_it() {
     ));
 }
 
+#[test]
+fn a_newer_release_is_announced_with_a_way_to_its_page() {
+    let version = crate::releases::Version::parse("999.0.0").unwrap();
+    let notice = BottomNotice::Confirmation(Notice::UpdateAvailable(version));
+    let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| notice_content(ui, &notice, &mailbox, &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(Vec::new());
+    text_rect(&shapes, "Ruston Mail 999.0.0 is available.");
+    let download = text_rect(&shapes, "Download").center();
+    let press = |pressed| egui::Event::PointerButton {
+        pos: download,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    let (_, asked) = frame(vec![
+        egui::Event::PointerMoved(download),
+        press(true),
+        press(false),
+    ]);
+
+    assert!(matches!(asked.as_slice(), [Message::OpenReleasePage]));
+}
+
 #[tokio::test]
 async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there() {
     let (mut app, _) = App::boot(true, Settings::default());

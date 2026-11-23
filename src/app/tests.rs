@@ -19,6 +19,7 @@ mod selection;
 mod session;
 mod settings;
 mod sign_in;
+mod updates;
 
 use super::*;
 use crate::mail::demo;

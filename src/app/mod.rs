@@ -14,6 +14,7 @@ mod notifications;
 mod pictures;
 mod reader;
 mod reads;
+mod updates;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,6 +24,7 @@ use futures::future::{AbortHandle, Abortable};
 use inspection::Inspections;
 
 use crate::downloads::SaveError;
+use crate::releases::{self, Version};
 use crate::settings::{Appearance, ComposePlacement, Panels, Settings, StartFolder, Window};
 
 /// How far the window must change before its new size is worth storing.
@@ -59,6 +61,7 @@ pub use mailbox::{
 pub use mailto::MailtoError;
 pub use pictures::InlineImage;
 pub use reader::{ConversationReader, ReaderState};
+pub use updates::UpdateStatus;
 
 type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
@@ -197,6 +200,14 @@ pub enum Message {
     /// Opens the notices of the third-party software the package shipped,
     /// from the About card.
     OpenThirdPartyNotices,
+    /// Asks GitHub whether a newer release is out, which the window does
+    /// while checking for updates is on.
+    CheckForUpdates,
+    /// The latest published release's number, or none when it could not be
+    /// read.
+    UpdatesChecked(Option<Version>),
+    /// Opens the page of the latest release, from its notice or About.
+    OpenReleasePage,
     /// Marks opened mail as read, or leaves it unread.
     SetMarkReadOnOpen(bool),
     /// Asks where a link goes before opening it, or opens it straight away.
@@ -239,6 +250,9 @@ pub enum Message {
     SetAcceptInternationalDomains(bool),
     /// Searches this device's index when Proton cannot be reached, or not.
     SetSearchDeviceOffline(bool),
+    /// Asks GitHub as the app starts and once a day whether a newer release
+    /// is out, or never.
+    SetCheckForUpdates(bool),
     /// Starts a new message.
     OpenCompose,
     ReceiveMailto(crate::mailto::Request),
@@ -291,6 +305,8 @@ pub enum Notice {
     Sent,
     /// An attachment was saved at this path.
     Saved(PathBuf),
+    /// A newer release is out, with this number.
+    UpdateAvailable(Version),
 }
 
 pub struct App {
@@ -384,6 +400,8 @@ pub struct App {
     /// The turns those pictures take to be fetched.
     picture_turns: pictures::Turns,
     new_mail: notifications::NewMail,
+    /// What checking for updates last found, while it is on.
+    update_status: Option<UpdateStatus>,
 }
 
 impl App {
@@ -450,6 +468,7 @@ impl App {
             inline_images: HashMap::new(),
             picture_turns: pictures::Turns::default(),
             new_mail: notifications::NewMail::default(),
+            update_status: None,
         }
     }
 
@@ -683,6 +702,11 @@ impl App {
                 if let Some(notices) = &self.third_party_notices {
                     return open_in_default_app(notices.clone());
                 }
+            }
+            Message::CheckForUpdates => return self.check_for_updates(),
+            Message::UpdatesChecked(latest) => self.updates_checked(latest),
+            Message::OpenReleasePage => {
+                return open_in_browser(releases::RELEASE_PAGE.to_owned());
             }
             Message::CopyVerificationLink => {
                 if let AuthState::NeedsHumanVerification { url } = &self.auth_state {
@@ -943,6 +967,7 @@ impl App {
             Message::SetSearchDeviceOffline(on) => {
                 self.remember(|settings| settings.search_device_offline = on);
             }
+            Message::SetCheckForUpdates(on) => self.set_check_for_updates(on),
             Message::OpenCompose => {
                 self.showing_settings = false;
                 return self.open_compose();

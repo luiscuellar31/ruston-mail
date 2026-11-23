@@ -102,6 +102,11 @@ pub struct Settings {
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,
+    /// Ask GitHub as the app starts, and once a day, whether a newer release
+    /// is out, to say so. Off by default, and for settings saved before this
+    /// choice existed: it connects to a server other than Proton's.
+    #[serde(default)]
+    pub check_for_updates: bool,
     /// The accounts signed in to, and the one open now. Settings saved before
     /// there could be several have the first, `ruston`.
     #[serde(default)]
@@ -145,6 +150,7 @@ impl Default for Settings {
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
+            check_for_updates: false,
             accounts: Accounts::default(),
             file: None,
         }
@@ -496,6 +502,21 @@ mod tests {
             .insert("from_a_later_version".into(), true.into());
         let read: Settings = serde_json::from_value(written).unwrap();
         assert_eq!(read, following);
+    }
+
+    #[test]
+    fn updates_are_checked_only_once_asked_to() {
+        assert!(!Settings::default().check_for_updates);
+
+        // Settings saved before this choice existed do not ask either.
+        let mut old = serde_json::to_value(Settings {
+            check_for_updates: true,
+            ..Settings::default()
+        })
+        .unwrap();
+        old.as_object_mut().unwrap().remove("check_for_updates");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert!(!restored.check_for_updates);
     }
 
     #[test]
