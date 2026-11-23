@@ -26,6 +26,10 @@ pub const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// what a window can still show something useful at.
 pub const MIN_ZOOM: f32 = 0.8;
 pub const MAX_ZOOM: f32 = 2.0;
+/// How many seconds a notice at the foot of the window may stay: long enough
+/// to reach its button, short enough not to cover the list for long.
+pub const MIN_NOTICE_SECONDS: u64 = 3;
+pub const MAX_NOTICE_SECONDS: u64 = 10;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
@@ -102,6 +106,11 @@ pub struct Settings {
     pub show_unread_badge: bool,
     /// Show desktop notification when new mail arrives in inbox.
     pub desktop_notifications: bool,
+    /// How many seconds a notice at the foot of the window stays while the
+    /// pointer is away from it. Settings saved before this choice existed
+    /// have the default.
+    #[serde(default = "default_notice_seconds")]
+    pub notice_seconds: u64,
     /// Ask GitHub as the app starts, and once a day, whether a newer release
     /// is out, to say so. Off by default, and for settings saved before this
     /// choice existed: it connects to a server other than Proton's.
@@ -150,6 +159,7 @@ impl Default for Settings {
             zoom: 1.0,
             show_unread_badge: true,
             desktop_notifications: true,
+            notice_seconds: default_notice_seconds(),
             check_for_updates: false,
             accounts: Accounts::default(),
             file: None,
@@ -324,6 +334,9 @@ impl Settings {
         } else {
             defaults.zoom
         };
+        self.notice_seconds = self
+            .notice_seconds
+            .clamp(MIN_NOTICE_SECONDS, MAX_NOTICE_SECONDS);
         self.panels.sidebar = clamp_ratio(self.panels.sidebar, defaults.panels.sidebar);
         self.panels.conversations =
             clamp_ratio(self.panels.conversations, defaults.panels.conversations);
@@ -346,6 +359,10 @@ impl Settings {
 
 fn enabled() -> bool {
     true
+}
+
+fn default_notice_seconds() -> u64 {
+    5
 }
 
 fn clamp_ratio(value: f32, fallback: f32) -> f32 {
@@ -517,6 +534,37 @@ mod tests {
         old.as_object_mut().unwrap().remove("check_for_updates");
         let restored: Settings = serde_json::from_value(old).unwrap();
         assert!(!restored.check_for_updates);
+    }
+
+    #[test]
+    fn notices_stay_five_seconds_until_asked_otherwise() {
+        assert_eq!(Settings::default().notice_seconds, 5);
+
+        // Settings saved before this choice existed have the same.
+        let mut old = serde_json::to_value(Settings {
+            notice_seconds: 9,
+            ..Settings::default()
+        })
+        .unwrap();
+        old.as_object_mut().unwrap().remove("notice_seconds");
+        let restored: Settings = serde_json::from_value(old).unwrap();
+        assert_eq!(restored.notice_seconds, 5);
+
+        // A hand-edited file can neither flash them by nor keep them up.
+        let at = |notice_seconds| {
+            Settings {
+                notice_seconds,
+                ..Settings::default()
+            }
+            .sanitized()
+            .notice_seconds
+        };
+        assert_eq!(at(0), MIN_NOTICE_SECONDS);
+        assert_eq!(at(1), MIN_NOTICE_SECONDS);
+        assert_eq!(at(7), 7);
+        assert_eq!(at(60), MAX_NOTICE_SECONDS);
+        assert_eq!(at(u64::MAX), MAX_NOTICE_SECONDS);
+        assert_eq!((MIN_NOTICE_SECONDS, MAX_NOTICE_SECONDS), (3, 10));
     }
 
     #[test]

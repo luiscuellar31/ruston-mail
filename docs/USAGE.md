@@ -215,7 +215,8 @@ The reader can:
 - Add or remove a custom label from the tag button, which is filled while the
   conversation carries one.
 - Undo the latest move while its notice remains visible at the foot of the
-  list; it stays while the pointer rests on it. Under a label,
+  list, for 5 seconds unless you choose another time under Settings →
+  Interface; it stays while the pointer rests on it. Under a label,
   Starred, or in search results the conversation's folder is not known, so a
   move made there offers no undo until you have moved it once from that view;
   **Move to…** can still put it back.
@@ -497,6 +498,8 @@ Settings control:
 - Dark or light appearance, or on macOS and Windows the system's. Dark remains
   the default.
 - Interface scale.
+- How long notices at the foot of the window, such as **Message sent**, stay:
+  from 3 to 10 seconds, 5 by default.
 - Optional system interface font, with Ruston's fonts retained as fallback.
 - A button to reset the window and pane sizes to their defaults immediately.
 - Whether Ruston Mail asks GitHub for its latest release (About).

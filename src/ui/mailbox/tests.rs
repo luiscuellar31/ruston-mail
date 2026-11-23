@@ -1952,7 +1952,13 @@ fn a_bottom_notice_expires_and_a_new_one_gets_its_own_time() {
     let undo = BottomNotice::Undo(Box::new(offer.clone()));
     let mut state = UiState::default();
     let remaining = |state: &mut UiState, notice: &BottomNotice, now| {
-        notice_remaining(state, notice, now, Pointer::Away)
+        notice_remaining(
+            state,
+            notice,
+            now,
+            Pointer::Away,
+            std::time::Duration::from_secs(6),
+        )
     };
 
     assert_eq!(
@@ -2226,22 +2232,55 @@ fn a_bottom_notice_over_settings_leaves_its_buttons_uncovered() {
 fn a_bottom_notice_stays_while_the_pointer_rests_on_it() {
     let sent = BottomNotice::Confirmation(Notice::Sent);
     let mut state = UiState::default();
-    notice_remaining(&mut state, &sent, 1.0, Pointer::Away);
+    let lasts = std::time::Duration::from_secs(6);
+    notice_remaining(&mut state, &sent, 1.0, Pointer::Away, lasts);
 
     // Past its own time, it is still there to be read.
     assert_eq!(
-        notice_remaining(&mut state, &sent, 9.0, Pointer::OnNotice),
-        Some(std::time::Duration::from_secs(6))
+        notice_remaining(&mut state, &sent, 9.0, Pointer::OnNotice, lasts),
+        Some(lasts)
     );
     // Once the pointer leaves, its time runs again from then.
     assert_eq!(
-        notice_remaining(&mut state, &sent, 14.0, Pointer::Away),
+        notice_remaining(&mut state, &sent, 14.0, Pointer::Away, lasts),
         Some(std::time::Duration::from_secs(1))
     );
     assert_eq!(
-        notice_remaining(&mut state, &sent, 15.0, Pointer::Away),
+        notice_remaining(&mut state, &sent, 15.0, Pointer::Away, lasts),
         None
     );
+}
+
+#[test]
+fn a_bottom_notice_stays_as_long_as_settings_say() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    // Whether the notice is still there `after` seconds from when it showed.
+    let stays = |app: &App, after: f64| {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let at = |time| egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        };
+        let _ = mailbox_frame(&context, app, &mut state, size, None, at(1.0));
+        let (asked, _) = mailbox_frame(&context, app, &mut state, size, None, at(1.0 + after));
+        !asked
+            .iter()
+            .any(|message| matches!(message, Message::DismissNotice(_)))
+    };
+
+    // Five seconds, unless Settings say otherwise.
+    assert!(stays(&app, 4.9));
+    assert!(!stays(&app, 5.0));
+    let _ = app.update(Message::SetNoticeSeconds(8));
+    assert!(stays(&app, 7.9));
+    assert!(!stays(&app, 8.0));
 }
 
 #[test]

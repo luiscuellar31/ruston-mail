@@ -5,7 +5,9 @@ use eframe::egui::{self, Align, Layout};
 use super::theme::{self, Emphasis};
 use crate::app::{Message, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
-use crate::settings::{Appearance, ComposePlacement, Settings, StartFolder};
+use crate::settings::{
+    Appearance, ComposePlacement, MAX_NOTICE_SECONDS, MIN_NOTICE_SECONDS, Settings, StartFolder,
+};
 
 /// Settings, with Apply and Back to mail at their foot. Returns where the
 /// page scrolls, above those buttons, which a notice must leave uncovered.
@@ -315,6 +317,26 @@ fn interface(
         if settings.desktop_notifications {
             description(ui, notification_status.description());
         }
+        ui.add_space(8.0);
+        let label = ui.label("Notice duration");
+        egui::ComboBox::from_id_salt("notice-seconds")
+            .selected_text(seconds_label(settings.notice_seconds))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for seconds in MIN_NOTICE_SECONDS..=MAX_NOTICE_SECONDS {
+                    ui.selectable_value(
+                        &mut settings.notice_seconds,
+                        seconds,
+                        seconds_label(seconds),
+                    );
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        description(
+            ui,
+            "How long notices at the foot of the window stay, such as Message sent or the offer to undo a move. A notice also stays while the pointer rests on it.",
+        );
         ui.add_space(12.0);
         if ui.button("Reset window and pane sizes").clicked() {
             messages.push(Message::ResetLayout);
@@ -595,6 +617,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
             draft.desktop_notifications,
         ));
     }
+    if draft.notice_seconds != current.notice_seconds {
+        messages.push(Message::SetNoticeSeconds(draft.notice_seconds));
+    }
     if draft.check_for_updates != current.check_for_updates {
         messages.push(Message::SetCheckForUpdates(draft.check_for_updates));
     }
@@ -610,6 +635,10 @@ fn start_label(start: StartFolder) -> &'static str {
 
 fn zoom_label(zoom: f32) -> String {
     format!("{:.0}%", zoom * 100.0)
+}
+
+fn seconds_label(seconds: u64) -> String {
+    format!("{seconds} seconds")
 }
 
 /// Fixed usable zoom levels; loaded settings clamp other values.
@@ -893,6 +922,55 @@ mod tests {
     }
 
     #[test]
+    fn how_long_notices_stay_is_chosen_under_interface() {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 4000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                page(
+                    ui,
+                    &mut Settings::default(),
+                    &mut Vec::new(),
+                    super::super::notifications::Status::Off,
+                    None,
+                    None,
+                )
+            },
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+
+        let interface = text_rect(&shapes, "Interface");
+        let advanced = text_rect(&shapes, "Advanced");
+        for drawn in ["Notice duration", "5 seconds"] {
+            let drawn = text_rect(&shapes, drawn);
+            assert!(interface.bottom() < drawn.top() && drawn.bottom() < advanced.top());
+        }
+        assert_eq!(
+            (MIN_NOTICE_SECONDS..=MAX_NOTICE_SECONDS)
+                .map(seconds_label)
+                .collect::<Vec<_>>(),
+            [
+                "3 seconds",
+                "4 seconds",
+                "5 seconds",
+                "6 seconds",
+                "7 seconds",
+                "8 seconds",
+                "9 seconds",
+                "10 seconds"
+            ]
+        );
+    }
+
+    #[test]
     fn about_fits_both_themes_and_its_buttons_ask_for_what_they_name() {
         for appearance in [Appearance::Dark, Appearance::Light] {
             for width in [240.0, 720.0] {
@@ -1148,12 +1226,18 @@ mod tests {
         draft.data_tables = false;
         draft.show_inline_images = false;
         draft.check_for_updates = true;
+        draft.notice_seconds = 8;
         let changes = preference_changes(&current, &draft);
-        assert_eq!(changes.len(), 14);
+        assert_eq!(changes.len(), 15);
         assert!(
             changes
                 .iter()
                 .any(|message| matches!(message, Message::SetCheckForUpdates(true)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|message| matches!(message, Message::SetNoticeSeconds(8)))
         );
         assert!(
             changes

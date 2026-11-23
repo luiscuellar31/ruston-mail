@@ -237,6 +237,8 @@ pub enum Message {
     SetShowUnreadBadge(bool),
     /// Shows or hides desktop notifications for incoming mail.
     SetDesktopNotifications(bool),
+    /// Keeps a notice at the foot of the window up for this many seconds.
+    SetNoticeSeconds(u64),
     /// Picks the folder a run opens in.
     SetStartFolder(StartFolder),
     /// Writes a message out as HTML, or as plain text.
@@ -952,6 +954,9 @@ impl App {
                 if on && !self.is_demo() {
                     return self.fetch_new_mail_notification();
                 }
+            }
+            Message::SetNoticeSeconds(seconds) => {
+                self.remember(|settings| settings.notice_seconds = seconds);
             }
             Message::SetStartFolder(start) => self.remember(|settings| settings.start = start),
             Message::SetComposeFormat(format) => {

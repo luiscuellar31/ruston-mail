@@ -323,7 +323,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   past the list, the page or the window. Words that fit on one line share it
   with the notice's button, both centered on a line as high as the button;
   longer words wrap and put the button below them.
-  [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it by `Settings::notice_seconds`,
+  5 unless Settings → Interface changes it and kept between 3 and 10, starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
   `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its

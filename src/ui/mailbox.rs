@@ -889,7 +889,6 @@ fn failure_line(
     ui.add_space(4.0);
 }
 
-const NOTICE_SECONDS: f64 = 6.0;
 const NOTICE_MARGIN: f32 = 20.0;
 
 #[cfg(target_os = "macos")]
@@ -938,7 +937,8 @@ fn bottom_notice(
         (Some(rect), Some(position)) if rect.contains(position) => Pointer::OnNotice,
         _ => Pointer::Away,
     };
-    let Some(remaining) = notice_remaining(state, &notice, now, pointer) else {
+    let lasts = std::time::Duration::from_secs(app.settings().notice_seconds);
+    let Some(remaining) = notice_remaining(state, &notice, now, pointer, lasts) else {
         messages.push(match notice {
             BottomNotice::Undo(offer) => Message::DismissUndo(*offer),
             BottomNotice::Confirmation(notice) => Message::DismissNotice(notice),
@@ -1040,23 +1040,25 @@ fn notice_words(ui: &mut egui::Ui, words: impl Into<egui::WidgetText>) -> egui::
     response
 }
 
-/// How long `notice` stays from `now`: its own time from when it first
-/// showed, started again while the pointer rests on it. `None` once it is up.
+/// How long `notice` stays from `now`: its own time, `lasts`, from when it
+/// first showed, started again while the pointer rests on it. `None` once it
+/// is up.
 fn notice_remaining(
     state: &mut UiState,
     notice: &BottomNotice,
     now: f64,
     pointer: Pointer,
+    lasts: std::time::Duration,
 ) -> Option<std::time::Duration> {
     let timed = match &mut state.bottom_notice {
         Some(timed) if timed.notice == *notice => timed,
         other => other.insert(TimedNotice {
             notice: notice.clone(),
-            expires_at: now + NOTICE_SECONDS,
+            expires_at: now + lasts.as_secs_f64(),
         }),
     };
     if pointer == Pointer::OnNotice {
-        timed.expires_at = now + NOTICE_SECONDS;
+        timed.expires_at = now + lasts.as_secs_f64();
     }
     let remaining = timed.expires_at - now;
     (remaining > 0.0).then(|| std::time::Duration::from_secs_f64(remaining))
