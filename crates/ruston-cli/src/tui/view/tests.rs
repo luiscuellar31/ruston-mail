@@ -89,7 +89,7 @@ fn a_wide_terminal_shows_the_three_panes_and_the_status_bar() {
 #[test]
 fn a_marked_row_says_so_and_the_status_bar_counts_them() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
-    app.marked = vec![app.conversations[0].id.clone()];
+    app.marked = [app.conversations[0].id.clone()].into();
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(screen.contains("✓•   04-24  alex@examp…"), "{screen}");
     let status = screen.lines().last().unwrap();
@@ -251,6 +251,7 @@ fn the_reader_shows_the_open_conversation_and_scrolls_within_it() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(screen.contains("Plans for May"), "{screen}");
@@ -267,6 +268,32 @@ fn the_reader_shows_the_open_conversation_and_scrolls_within_it() {
     app.scroll.set(500);
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(screen.contains("line 99"), "{screen}");
+}
+
+#[test]
+fn the_reader_reaches_the_end_of_a_conversation_longer_than_65535_rows() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    app.reading = Some(Reading {
+        id: "log".into(),
+        subject: "A long log".into(),
+        lines: (0..70_000).map(|n| format!("line {n}")).collect(),
+        quotes: Vec::new(),
+        links: Vec::new(),
+        attachments: Vec::new(),
+        messages: Vec::new(),
+        answer: None,
+        wrapped: Default::default(),
+    });
+    app.focus = Pane::Reader;
+    let _ = drawn(120, 30, &app, &Theme::new(false));
+    // End goes as far as the last line, past the 65,535th row.
+    app.update(Message::Bottom);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(screen.contains("line 69999"), "{screen}");
+    app.update(Message::Up);
+    let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
+    assert!(!screen.contains("line 69999"), "{screen}");
+    assert!(screen.contains("line 69998"), "{screen}");
 }
 
 #[test]
@@ -292,6 +319,7 @@ fn the_reader_names_the_labels_the_conversation_bears() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     assert!(!screen.contains("Labels:"), "{screen}");
@@ -321,6 +349,7 @@ fn the_reader_folds_quoted_passages_until_they_are_shown() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
     for shown in [
@@ -356,6 +385,7 @@ fn z_keeps_the_line_at_the_readers_top_there() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     // Under the subject and a blank row, the folded passage takes a row.
     app.scroll.set(8);
@@ -743,6 +773,71 @@ fn the_wheel_scrolls_a_list_without_moving_its_selection() {
 }
 
 #[test]
+fn a_list_makes_only_the_rows_it_shows_and_shows_them_as_before() {
+    // Every place, selection and height a short list can have, against
+    // ratatui's own list given every row, as the panes drew it before.
+    let row = |index: usize| ListItem::new(format!("row {index}"));
+    let highlight = Style::new().add_modifier(Modifier::REVERSED);
+    for count in 0..7 {
+        for height in 2..9 {
+            let area = Rect::new(0, 0, 10, height);
+            let rows = usize::from(height - 2);
+            for top in 0..9 {
+                for selected in 0..9 {
+                    for wheeled in [None, Some(selected)] {
+                        let case = format!(
+                            "{count} rows, {rows} high, from {top}, on {selected}, wheeled {wheeled:?}"
+                        );
+                        let scroll = Cell::new(ListScroll { top, wheeled });
+                        let made = Cell::new(0);
+                        let mut terminal = Terminal::new(TestBackend::new(10, height)).unwrap();
+                        let make = |index| {
+                            made.set(made.get() + 1);
+                            row(index)
+                        };
+                        terminal
+                            .draw(|frame| {
+                                let block = Block::bordered();
+                                draw_list(
+                                    frame,
+                                    (count, make),
+                                    selected,
+                                    &scroll,
+                                    true,
+                                    block,
+                                    area,
+                                );
+                            })
+                            .unwrap();
+                        assert!(made.get() <= rows, "{case}");
+
+                        let shown = wheeled.is_none() || (top..top + rows).contains(&selected);
+                        let mut state = ListState::default()
+                            .with_offset(top)
+                            .with_selected(shown.then_some(selected));
+                        let mut before = Terminal::new(TestBackend::new(10, height)).unwrap();
+                        before
+                            .draw(|frame| {
+                                let list = List::new((0..count).map(row))
+                                    .block(Block::bordered())
+                                    .highlight_style(highlight);
+                                frame.render_stateful_widget(list, area, &mut state);
+                            })
+                            .unwrap();
+                        assert_eq!(
+                            terminal.backend().buffer(),
+                            before.backend().buffer(),
+                            "{case}"
+                        );
+                        assert_eq!(scroll.get().top, state.offset(), "{case}");
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
     let mut app = with_mail("alex@example.test", "Quarterly report");
     app.conversations.push(Conversation::default());
@@ -755,6 +850,7 @@ fn the_wheel_scrolls_what_it_is_over_and_the_keys_over_the_panes() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let _ = drawn(120, 30, &app, &Theme::new(false));
     // The reader a few rows a notch, the keys staying with the folders and
@@ -800,6 +896,7 @@ fn long_reader_lines_wrap_to_the_pane() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let _ = drawn(120, 30, &app, &Theme::new(false));
     // 300 columns wrap into several rows of the 46-column pane.
@@ -820,6 +917,7 @@ fn a_quoted_line_stays_dim_on_every_row_it_wraps_to() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     let buffer = drawn(120, 30, &app, &Theme::new(false));
     let screen = text(&buffer);
@@ -883,6 +981,7 @@ fn the_links_list_over_the_panes_and_ask_before_one_opens() {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     app.picking_link = Some(LinkPick {
         selected: 1,
@@ -1264,6 +1363,7 @@ fn the_attachments_list_over_the_panes_with_their_sizes() {
         }],
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     });
     app.picking_attachment = Some(0);
     let screen = text(&drawn(120, 30, &app, &Theme::new(false)));
@@ -1471,4 +1571,45 @@ fn the_accent_is_ruston_mails_violet_as_near_as_the_terminal_shows_it() {
     assert_eq!(accent_among("", "xterm-256color"), Color::Indexed(99));
     assert_eq!(accent_among("", "screen-256color"), Color::Indexed(99));
     assert_eq!(accent_among("", "linux"), Color::Magenta);
+}
+
+#[test]
+fn a_long_conversation_is_wrapped_once_and_drawn_from_where_it_shows() {
+    let mut app = with_mail("alex@example.test", "Quarterly report");
+    // Lines that wrap to several rows each in the pane: half a megabyte.
+    let words = "word ".repeat(40);
+    app.reading = Some(Reading {
+        id: "long".into(),
+        subject: "A long thread".into(),
+        lines: (0..2_500).map(|n| format!("line {n} {words}")).collect(),
+        quotes: Vec::new(),
+        links: Vec::new(),
+        attachments: Vec::new(),
+        messages: Vec::new(),
+        answer: None,
+        wrapped: Default::default(),
+    });
+    let theme = Theme::new(false);
+    let first = text(&drawn(120, 30, &app, &theme));
+    assert!(first.contains("line 0 word"), "{first}");
+    // Every line takes as many rows, under the subject and its blank row.
+    let rows = app.reader_bottom.get() + usize::from(app.reader_rows.get());
+    let each = (rows - 2) / 2_500;
+    assert!(each > 1 && (rows - 2).is_multiple_of(2_500), "{rows}");
+    app.scroll.set(2 + 1_000 * each);
+    let started = std::time::Instant::now();
+    let mut screen = String::new();
+    for _ in 0..40 {
+        screen = text(&drawn(120, 30, &app, &theme));
+    }
+    assert!(screen.contains("line 1000 word"), "{screen}");
+    assert!(!screen.contains("line 999 word"), "{screen}");
+    assert!(screen.contains("line 1001 word"), "{screen}");
+    // Every key drew the whole conversation again, wrapped from its first
+    // line: forty frames of it took tens of seconds.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        started.elapsed()
+    );
 }

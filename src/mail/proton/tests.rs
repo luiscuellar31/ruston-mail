@@ -1,7 +1,11 @@
 use ruston_core::ApiError;
 use ruston_core::model::ConversationLabel;
 
+use super::sign_in::{PromptTime, Prompter, SIGN_IN_TIMEOUT, Supplied, map_sign_in_error, within};
 use super::*;
+use futures::channel::mpsc;
+use secrecy::SecretString;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[tokio::test(start_paused = true)]
 async fn the_sign_in_deadline_leaves_out_the_time_spent_on_prompts() {
@@ -626,7 +630,7 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
             base_url: base_url.into(),
             password_mode: 1,
             user_agent: None,
-            user_id: None,
+            user_id: "user-1".into(),
         };
         let tokens = Tokens {
             uid: "UID1".into(),

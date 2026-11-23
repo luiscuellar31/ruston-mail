@@ -1,6 +1,6 @@
 //! Exercise the actual CLI output boundary without contacting an account.
 
-use ruston_core::mail::attachments::is_invisible_mark;
+use ruston_core::text::is_invisible_mark;
 use std::process::{Command, Output};
 
 const ATTACK: &str =
@@ -436,7 +436,7 @@ fn a_second_demo_export_into_the_same_folder_resumes() {
         );
     }
     let text = assert_safe(&second.stdout);
-    assert!(text.contains("Exported 0 demo message(s)"), "{text}");
+    assert!(text.contains("Exported 0 message(s) to"), "{text}");
     assert!(
         text.contains("2 message(s) were already exported there"),
         "{text}"

@@ -1,7 +1,7 @@
 //! CLI output boundary: readable text is safe even when piped into a terminal.
 
 use ruston_core::error::exit_status;
-use ruston_core::mail::attachments::is_invisible_mark;
+use ruston_core::text::is_invisible_mark;
 use std::fmt::{self, Write as _};
 use std::io::{self, IsTerminal, Write as _};
 use tracing::{Event, Subscriber};

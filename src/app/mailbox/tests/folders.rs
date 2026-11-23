@@ -153,7 +153,7 @@ fn only_the_folders_left_last_stay_loaded() {
         mailbox.finish_page(page_request.id, page(&["x"], 1));
     }
     // Inbox and f0 to f7 were left behind; only eight stay.
-    assert_eq!(mailbox.cached_listings.len(), LISTING_CACHE_CAPACITY);
+    assert_eq!(mailbox.cached_folder_count(), LISTING_CACHE_CAPACITY);
 
     // f0 is still loaded and opens at once.
     assert!(mailbox.select_folder(folders[0].clone(), 30).is_none());

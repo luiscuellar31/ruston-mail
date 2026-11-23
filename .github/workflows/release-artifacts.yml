@@ -27,9 +27,9 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     outputs:
-      tag_name: ${{ steps.meta.outputs.tag_name }}
-      tag_commit: ${{ steps.meta.outputs.tag_commit }}
-      version: ${{ steps.meta.outputs.version }}
+      tag_name: ${{ steps.source.outputs.tag_name }}
+      tag_commit: ${{ steps.source.outputs.tag_commit }}
+      version: ${{ steps.source.outputs.version }}
 
     steps:
       # Actions are pinned to a commit SHA so release builds remain deterministic.
@@ -40,13 +40,14 @@ jobs:
           fetch-depth: 0
 
       - name: Validate version and tag when present
-        id: meta
+        id: source
         run: |
           set -euo pipefail
 
-          version="$(sed -n '/^\[workspace\.package\]/,/^\[/ s/^version = "\([0-9][0-9.]*\)"$/\1/p' Cargo.toml | head -n1)"
-          if [[ -z "$version" ]]; then
-            echo "Could not detect the workspace version in Cargo.toml"
+          version="$(packaging/workspace-version.sh)"
+          # A release tag is v and this version, so only digits and dots.
+          if [[ ! "$version" =~ ^[0-9][0-9.]*$ ]]; then
+            echo "Unsupported workspace version: '$version' (expected: X.Y.Z)"
             exit 1
           fi
           echo "version=${version}" >> "$GITHUB_OUTPUT"
@@ -91,6 +92,8 @@ jobs:
     env:
       VERSION: ${{ needs.verify-source.outputs.version }}
       ARCH: ${{ matrix.arch }}
+      # The name package.sh gives the disk image; publish-assets names it again.
+      DMG: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}-UNSIGNED.dmg
     strategy:
       fail-fast: false
       matrix:
@@ -125,7 +128,7 @@ jobs:
       - name: Collect macOS artifacts
         run: |
           set -euo pipefail
-          dmg="dist/ruston-mail-${VERSION}-${ARCH}-UNSIGNED.dmg"
+          dmg="dist/${DMG}"
           [[ -s "$dmg" && -s "${dmg}.sha256" ]] || {
             echo "Missing disk image for ${ARCH}"
             ls -la dist || true
@@ -156,6 +159,8 @@ jobs:
       # The AppImage tools are AppImages themselves; extracting avoids FUSE.
       APPIMAGE_EXTRACT_AND_RUN: "1"
       APPIMAGE_UPDATE_INFORMATION: gh-releases-zsync|luiscuellar31|ruston-mail|latest|ruston-mail-*-${{ matrix.arch }}.AppImage.zsync
+      # The name appimage.sh gives the AppImage; publish-assets names it again.
+      APPIMAGE: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}.AppImage
       RUSTON_MAX_GLIBC_VERSION: "2.35"
     strategy:
       fail-fast: false
@@ -175,6 +180,7 @@ jobs:
       - name: Install packaging and test dependencies
         run: |
           sudo apt-get update
+          # libxkbcommon0 to libxi6 hold appimage.sh's BUNDLED_LIBRARIES.
           sudo apt-get install --no-install-recommends -y \
             appstream desktop-file-utils file libfile-mimeinfo-perl \
             libxkbcommon0 libxkbcommon-x11-0 libxcursor1 libxi6 zsync \
@@ -249,7 +255,7 @@ jobs:
       - name: Start the AppImage
         run: |
           set -euo pipefail
-          appimage="dist/ruston-mail-${VERSION}-${ARCH}.AppImage"
+          appimage="dist/${APPIMAGE}"
           # The catalog's test: an X11 session and no saved session.
           xvfb-run -a ./packaging/smoke-test.sh "$appimage"
           cli_version="$("$appimage" --cli --version)"
@@ -261,7 +267,7 @@ jobs:
       - name: Collect Linux artifacts
         run: |
           set -euo pipefail
-          appimage="dist/ruston-mail-${VERSION}-${ARCH}.AppImage"
+          appimage="dist/${APPIMAGE}"
           mkdir -p out
           cp "$appimage" "${appimage}.zsync" "${appimage}.sha256" out/
           ls -lah out
@@ -285,6 +291,11 @@ jobs:
     env:
       VERSION: ${{ needs.verify-source.outputs.version }}
       ARCH: ${{ matrix.arch }}
+      # The names package.ps1 and ruston-mail.iss give what they make;
+      # publish-assets names the installer and the ZIP again.
+      SETUP_EXE: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}-setup-UNSIGNED.exe
+      PORTABLE_ZIP: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}-windows-UNSIGNED.zip
+      PORTABLE_DIR: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}-windows
     strategy:
       fail-fast: false
       matrix:
@@ -339,15 +350,15 @@ jobs:
 
       # Runners have no GPU, so the app draws with WARP, as a VM would.
       - name: Start the portable app
-        run: ./packaging/windows/smoke-test.ps1 -Executable "dist/ruston-mail-$env:VERSION-$env:ARCH-windows/ruston.exe"
+        run: ./packaging/windows/smoke-test.ps1 -Executable "dist/$env:PORTABLE_DIR/ruston.exe"
 
       - name: Install, start and uninstall
-        run: ./packaging/windows/test-installer.ps1 -Installer "dist/ruston-mail-$env:VERSION-$env:ARCH-setup-UNSIGNED.exe"
+        run: ./packaging/windows/test-installer.ps1 -Installer "dist/$env:SETUP_EXE"
 
       - name: Collect Windows artifacts
         run: |
           New-Item -ItemType Directory -Force -Path out | Out-Null
-          foreach ($file in "ruston-mail-$env:VERSION-$env:ARCH-setup-UNSIGNED.exe", "ruston-mail-$env:VERSION-$env:ARCH-windows-UNSIGNED.zip") {
+          foreach ($file in $env:SETUP_EXE, $env:PORTABLE_ZIP) {
             foreach ($part in "dist/$file", "dist/$file.sha256") {
               if (-not (Test-Path -LiteralPath $part)) { throw "Missing $part" }
               Copy-Item -LiteralPath $part -Destination out
@@ -401,6 +412,11 @@ jobs:
       - name: Select release files and build SHA256SUMS.txt
         run: |
           set -euo pipefail
+          # Each loop holds one entry for each row of its build job's matrix,
+          # and the names its env gives (DMG, APPIMAGE, SETUP_EXE and
+          # PORTABLE_ZIP). A new architecture or artifact changes those,
+          # these loops, subject-path below, the download text of
+          # release-notes.sh and the artifact list in docs/DEVELOPMENT.md.
           for arch in arm64 x86_64; do
             dmg="release-assets/macos-${arch}/ruston-mail-${VERSION}-${arch}-UNSIGNED.dmg"
             [[ -s "$dmg" ]] || { echo "Missing disk image for ${arch}"; exit 1; }

@@ -121,7 +121,7 @@ function Get-CargoField([string]$Manifest, [string]$Field) {
     if (-not $line) { Stop-Verification "No $Field in $Manifest" }
     return ($line -split '"')[1]
 }
-$version = Get-CargoField (Join-Path $repository 'Cargo.toml') 'version'
+$version = & (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace-version.ps1')
 
 $machines = @{ 'x86_64' = 0x8664; 'arm64' = 0xAA64 }
 $executables = @(

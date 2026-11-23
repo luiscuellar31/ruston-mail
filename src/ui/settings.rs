@@ -90,9 +90,32 @@ fn page(
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
 ) {
-    ui.heading(egui::RichText::new("Settings").size(24.0).strong());
+    ui.heading(
+        egui::RichText::new("Settings")
+            .size(theme::PAGE_TITLE_SIZE)
+            .strong(),
+    );
     ui.add_space(18.0);
 
+    reading(ui, settings);
+    ui.add_space(14.0);
+    links_and_images(ui, settings);
+    ui.add_space(14.0);
+    writing(ui, settings);
+    ui.add_space(14.0);
+    starting_up(ui, settings);
+    ui.add_space(14.0);
+    interface(ui, settings, messages, notification_status);
+    ui.add_space(14.0);
+    advanced(ui, settings);
+    ui.add_space(14.0);
+    keyboard(ui);
+    ui.add_space(14.0);
+    about(ui, messages, third_party_notices);
+}
+
+/// What opens with a conversation, and how much of what its sender wrote shows.
+fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, "Reading", |ui| {
         ui.add(theme::Checkbox::new(
             &mut settings.mark_read_on_open,
@@ -153,7 +176,10 @@ fn page(
             "Receipts, invoices and timetables keep their columns. Tables that only lay a newsletter out read as text either way.",
         );
     });
-    ui.add_space(14.0);
+}
+
+/// What a message may open or show beyond its own text.
+fn links_and_images(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, "Links and images", |ui| {
         ui.add(theme::Checkbox::new(
             &mut settings.confirm_links,
@@ -174,7 +200,10 @@ fn page(
             "They come with the message, so nothing is fetched to show them. Pictures on the web are never downloaded, which protects your privacy from tracking pixels.",
         );
     });
-    ui.add_space(14.0);
+}
+
+/// Where a message is written and how it is sent.
+fn writing(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, "Writing", |ui| {
         ui.horizontal_wrapped(|ui| {
             for (placement, label) in [
@@ -205,7 +234,10 @@ fn page(
             "How a message you write is sent. Either way you write text: a tag you type is shown as you typed it, never obeyed.",
         );
     });
-    ui.add_space(14.0);
+}
+
+/// The folder a run opens in.
+fn starting_up(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, "Starting up", |ui| {
         egui::ComboBox::from_id_salt("start-folder")
             .selected_text(start_label(settings.start))
@@ -229,33 +261,17 @@ fn page(
             "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
         );
     });
-    ui.add_space(14.0);
+}
+
+/// How the window looks and what it tells the system.
+fn interface(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    messages: &mut Vec<Message>,
+    notification_status: super::notifications::Status,
+) {
     section(ui, "Interface", |ui| {
-        ui.label("Appearance");
-        // winit tells the system's mode on macOS and Windows, not on Linux.
-        let offer_system = !cfg!(target_os = "linux");
-        ui.horizontal_wrapped(|ui| {
-            // Following the system keeps the scheme last chosen, for where
-            // the system tells none.
-            if offer_system
-                && ui
-                    .selectable_label(settings.follow_system_appearance, "System")
-                    .clicked()
-            {
-                settings.follow_system_appearance = true;
-            }
-            for (appearance, label) in [(Appearance::Dark, "Dark"), (Appearance::Light, "Light")] {
-                let chosen =
-                    !settings.follow_system_appearance && settings.appearance == appearance;
-                if ui.selectable_label(chosen, label).clicked() {
-                    settings.follow_system_appearance = false;
-                    settings.appearance = appearance;
-                }
-            }
-        });
-        if offer_system {
-            description(ui, "System follows your computer's light or dark mode.");
-        }
+        appearance_choice(ui, settings);
         ui.add_space(8.0);
         ui.add(theme::Checkbox::new(
             &mut settings.system_font,
@@ -276,42 +292,9 @@ fn page(
             "Scales everything, not the text alone, so the window keeps its proportions.",
         );
         ui.add_space(8.0);
-        #[cfg(target_os = "macos")]
-        {
-            ui.add(theme::Checkbox::new(
-                &mut settings.show_unread_badge,
-                "Show unread count badge on the Dock icon",
-            ));
-            description(
-                ui,
-                "Updates the Dock icon with the number of unread messages in your inbox.",
-            );
-            ui.add_space(8.0);
-        }
-        #[cfg(target_os = "windows")]
-        {
-            ui.add(theme::Checkbox::new(
-                &mut settings.show_unread_badge,
-                "Show unread count on the taskbar button",
-            ));
-            description(
-                ui,
-                "Marks the taskbar button with the number of unread messages in your inbox, \
-                 while badges are on in Windows' taskbar settings.",
-            );
-            ui.add_space(8.0);
-        }
-        #[cfg(target_os = "linux")]
-        {
-            ui.add(theme::Checkbox::new(
-                &mut settings.show_unread_badge,
-                "Show unread count on the dock icon",
-            ));
-            description(
-                ui,
-                "Shows the number of unread messages in your inbox on docks that support it, \
-                 such as Ubuntu's dock and KDE's task manager.",
-            );
+        if let Some((label, what_it_does)) = UNREAD_BADGE {
+            ui.add(theme::Checkbox::new(&mut settings.show_unread_badge, label));
+            description(ui, what_it_does);
             ui.add_space(8.0);
         }
         ui.add(theme::Checkbox::new(
@@ -331,7 +314,62 @@ fn page(
         }
         description(ui, "Restores the default layout immediately.");
     });
-    ui.add_space(14.0);
+}
+
+/// Dark, light or, where the system tells which it is in, the system's own.
+/// Choosing a scheme stops following the system.
+fn appearance_choice(ui: &mut egui::Ui, settings: &mut Settings) {
+    ui.label("Appearance");
+    // winit tells the system's mode on macOS and Windows, not on Linux.
+    let offer_system = !cfg!(target_os = "linux");
+    ui.horizontal_wrapped(|ui| {
+        // Following the system keeps the scheme last chosen, for where
+        // the system tells none.
+        if offer_system
+            && ui
+                .selectable_label(settings.follow_system_appearance, "System")
+                .clicked()
+        {
+            settings.follow_system_appearance = true;
+        }
+        for (appearance, label) in [(Appearance::Dark, "Dark"), (Appearance::Light, "Light")] {
+            let chosen = !settings.follow_system_appearance && settings.appearance == appearance;
+            if ui.selectable_label(chosen, label).clicked() {
+                settings.follow_system_appearance = false;
+                settings.appearance = appearance;
+            }
+        }
+    });
+    if offer_system {
+        description(ui, "System follows your computer's light or dark mode.");
+    }
+}
+
+/// What the unread count on the app's icon is called on this system and what
+/// it does there, for the systems that have such an icon.
+const UNREAD_BADGE: Option<(&str, &str)> = if cfg!(target_os = "macos") {
+    Some((
+        "Show unread count badge on the Dock icon",
+        "Updates the Dock icon with the number of unread messages in your inbox.",
+    ))
+} else if cfg!(target_os = "windows") {
+    Some((
+        "Show unread count on the taskbar button",
+        "Marks the taskbar button with the number of unread messages in your inbox, \
+         while badges are on in Windows' taskbar settings.",
+    ))
+} else if cfg!(target_os = "linux") {
+    Some((
+        "Show unread count on the dock icon",
+        "Shows the number of unread messages in your inbox on docks that support it, \
+         such as Ubuntu's dock and KDE's task manager.",
+    ))
+} else {
+    None
+};
+
+/// Choices that ask Proton, or this device, for more than the defaults do.
+fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, "Advanced", |ui| {
         ui.add(theme::Checkbox::new(
             &mut settings.check_recipient_protection,
@@ -362,7 +400,10 @@ fn page(
             "A search then looks in the index that ruston-cli index builds on this device, which Ruston Mail reads without changing. That index holds your mail decrypted and unencrypted; Ruston Mail never writes it, and opening a result still needs Proton.",
         );
     });
-    ui.add_space(14.0);
+}
+
+/// The keys the mailbox answers to.
+fn keyboard(ui: &mut egui::Ui) {
     section(ui, "Keyboard", |ui| {
         description(
             ui,
@@ -374,8 +415,6 @@ fn page(
             shortcut(ui, keys, what, width);
         }
     });
-    ui.add_space(14.0);
-    about(ui, messages, third_party_notices);
 }
 
 fn about(
@@ -393,7 +432,7 @@ fn about(
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION")))
-                        .size(18.0)
+                        .size(theme::ABOUT_TITLE_SIZE)
                         .strong(),
                 );
                 description(ui, "A native Proton Mail client.");
@@ -616,7 +655,9 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str, keys_width: f32) {
 }
 
 fn key_text(keys: &str) -> egui::RichText {
-    egui::RichText::new(keys).monospace().size(12.0)
+    egui::RichText::new(keys)
+        .monospace()
+        .size(theme::CAPTION_SIZE)
 }
 
 /// The width of the keys column: its widest key, or more. A key wider than
@@ -650,7 +691,11 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
         .show(ui, |ui| {
             // Cards fill the page instead of sizing to their longest line.
             ui.set_width(ui.available_width());
-            ui.heading(egui::RichText::new(title).size(17.0).strong());
+            ui.heading(
+                egui::RichText::new(title)
+                    .size(theme::SECTION_TITLE_SIZE)
+                    .strong(),
+            );
             ui.add_space(4.0);
             content(ui);
         })

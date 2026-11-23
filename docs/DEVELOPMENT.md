@@ -3,7 +3,12 @@
 All three packages use Rust 2024 and require Rust 1.96 or newer. Their shared
 version, edition, and minimum Rust version are set in the root
 [`Cargo.toml`](../Cargo.toml) under `[workspace.package]`, whose
-`resolver = "3"` prefers dependency versions that minimum can build.
+`resolver = "3"` prefers dependency versions that minimum can build. The
+release workflow and the macOS and Linux packaging scripts read that version
+with [`packaging/workspace-version.sh`](../packaging/workspace-version.sh),
+and the Windows ones with
+[`packaging/workspace-version.ps1`](../packaging/workspace-version.ps1), which
+reads it the same way.
 [`rust-toolchain.toml`](../rust-toolchain.toml) names the Rust that builds
 them here, in CI and in releases, which rustup fetches on first use; it moves
 up only when that file does, so a new Rust release cannot fail a build on its
@@ -561,6 +566,9 @@ Options:
 - `--skip-build`: Package the existing `target/release` binaries without rebuilding.
 - `--target <TRIPLE>`: Build for another architecture, such as `x86_64-apple-darwin`
   on Apple Silicon, after `rustup target add <TRIPLE>`.
+- `--binary <PATH>`: Package a `ruston` built elsewhere, with the `ruston-cli`
+  beside it; nothing is built.
+- `--dist <PATH>`: Write the bundle and disk image there instead of `dist/`.
 - `CODESIGN_IDENTITY="Developer ID Application: ..."`: Sign with a commercial certificate; defaults to ad-hoc signing (`-s -`).
 
 Artifacts are written to `dist/`:

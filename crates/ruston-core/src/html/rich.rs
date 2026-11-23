@@ -469,6 +469,46 @@ struct OpenList {
     within: Option<ListMarker>,
 }
 
+/// A style an inline element gives the text within it.
+#[derive(Clone, Copy)]
+enum InlineStyle {
+    Strong,
+    Emphasis,
+    Code,
+    Struck,
+}
+
+/// The style the element `name` gives its text, if it gives one.
+fn inline_style(name: &str) -> Option<InlineStyle> {
+    Some(match name {
+        "b" | "strong" => InlineStyle::Strong,
+        "i" | "em" | "cite" => InlineStyle::Emphasis,
+        "code" | "kbd" | "samp" | "tt" => InlineStyle::Code,
+        "s" | "strike" | "del" => InlineStyle::Struck,
+        _ => return None,
+    })
+}
+
+/// How many elements giving each inline style are open.
+#[derive(Default)]
+struct InlineDepth {
+    strong: u16,
+    emphasis: u16,
+    code: u16,
+    struck: u16,
+}
+
+impl InlineDepth {
+    fn of(&mut self, style: InlineStyle) -> &mut u16 {
+        match style {
+            InlineStyle::Strong => &mut self.strong,
+            InlineStyle::Emphasis => &mut self.emphasis,
+            InlineStyle::Code => &mut self.code,
+            InlineStyle::Struck => &mut self.struck,
+        }
+    }
+}
+
 /// One body's conversion: the blocks read so far, and what the elements
 /// still open say about the text to come.
 struct Builder {
@@ -476,11 +516,12 @@ struct Builder {
     spans: Vec<RichSpan>,
     /// A separating space has already been written since the last visible
     /// character.
-    space: bool,
-    strong: u16,
-    emphasis: u16,
-    code: u16,
-    struck: u16,
+    space_written: bool,
+    /// Whether the text shown last in this block ends in a space, or none is
+    /// shown yet: kept as runs are written, so a space after hidden text
+    /// need not look back over every run for it.
+    shown_ends_in_space: bool,
+    inline_depth: InlineDepth,
     link: Option<Arc<str>>,
     heading: Option<u8>,
     /// The lists kept open, innermost last, at most [`MAX_LIST_DEPTH`].
@@ -489,11 +530,11 @@ struct Builder {
     /// them before any of `lists`.
     omitted_lists: usize,
     /// The marker of the next block of the list item being read.
-    item: Option<ListMarker>,
+    item_marker: Option<ListMarker>,
     /// How many quotes are open, counted in full so that their ends unwind
     /// to the right level; blocks keep at most `u8::MAX`.
     quote_depth: usize,
-    pre: u16,
+    pre_depth: u16,
     pre_text: String,
     /// Element whose content is never read, as `script`'s is.
     hidden: Skipping,
@@ -528,18 +569,16 @@ impl Builder {
         Self {
             blocks: Vec::new(),
             spans: Vec::new(),
-            space: false,
-            strong: 0,
-            emphasis: 0,
-            code: 0,
-            struck: 0,
+            space_written: false,
+            shown_ends_in_space: true,
+            inline_depth: InlineDepth::default(),
             link: None,
             heading: None,
             lists: Vec::new(),
             omitted_lists: 0,
-            item: None,
+            item_marker: None,
             quote_depth: 0,
-            pre: 0,
+            pre_depth: 0,
             pre_text: String::new(),
             hidden: Skipping::default(),
             sender_hidden: Skipping::default(),
@@ -632,6 +671,11 @@ impl Builder {
         {
             table.data = false;
         }
+        if let Some(style) = inline_style(name) {
+            let depth = self.inline_depth.of(style);
+            *depth = depth.saturating_add(1);
+            return;
+        }
         match name {
             "br" => self.line_break(),
             "hr" => {
@@ -670,7 +714,7 @@ impl Builder {
             }
             "li" => {
                 self.flush();
-                self.item = Some(self.next_marker());
+                self.item_marker = Some(self.next_marker());
             }
             "blockquote" => {
                 self.flush();
@@ -678,12 +722,8 @@ impl Builder {
             }
             "pre" => {
                 self.flush();
-                self.pre = self.pre.saturating_add(1);
+                self.pre_depth = self.pre_depth.saturating_add(1);
             }
-            "b" | "strong" => self.strong = self.strong.saturating_add(1),
-            "i" | "em" | "cite" => self.emphasis = self.emphasis.saturating_add(1),
-            "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_add(1),
-            "s" | "strike" | "del" => self.struck = self.struck.saturating_add(1),
             // A target longer than the whole body may be could not be kept.
             "a" => self.link = link_target(tag).filter(|link| link.len() <= self.limit),
             // Table cells read left to right, separated like words.
@@ -782,6 +822,11 @@ impl Builder {
     }
 
     fn end_element(&mut self, name: &str) {
+        if let Some(style) = inline_style(name) {
+            let depth = self.inline_depth.of(style);
+            *depth = depth.saturating_sub(1);
+            return;
+        }
         match name {
             "br" => self.line_break(),
             "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => {
@@ -791,7 +836,7 @@ impl Builder {
             "ul" | "ol" => {
                 self.flush();
                 // The item the list sat in goes on, under its own text.
-                self.item = if self.omitted_lists > 0 {
+                self.item_marker = if self.omitted_lists > 0 {
                     self.omitted_lists -= 1;
                     None
                 } else {
@@ -800,17 +845,13 @@ impl Builder {
             }
             "li" => {
                 self.flush();
-                self.item = None;
+                self.item_marker = None;
             }
             "blockquote" => {
                 self.flush();
                 self.quote_depth = self.quote_depth.saturating_sub(1);
             }
             "pre" => self.end_pre(),
-            "b" | "strong" => self.strong = self.strong.saturating_sub(1),
-            "i" | "em" | "cite" => self.emphasis = self.emphasis.saturating_sub(1),
-            "code" | "kbd" | "samp" | "tt" => self.code = self.code.saturating_sub(1),
-            "s" | "strike" | "del" => self.struck = self.struck.saturating_sub(1),
             "a" => self.link = None,
             "td" | "th" => {
                 if let Some(table) = self.open_table() {
@@ -846,7 +887,7 @@ impl Builder {
         if self.hidden.active() {
             return;
         }
-        if self.pre > 0 {
+        if self.pre_depth > 0 {
             // A terminal would obey a control character; spacing stays.
             for character in text
                 .chars()
@@ -877,7 +918,7 @@ impl Builder {
                 {
                     table.data = false;
                 }
-                self.space = false;
+                self.space_written = false;
                 self.push_text(word);
             }
             if last.is_whitespace() {
@@ -890,17 +931,12 @@ impl Builder {
     /// A space after hidden text, beside one already shown before it, is
     /// hidden with it, so leaving that text out leaves a single space.
     fn separate(&mut self) {
-        if !self.space && self.wants_space() {
+        if !self.space_written && self.wants_space() {
             let beside_space = !self.marking()
                 && self.spans.last().is_some_and(|span| span.hidden)
-                && self
-                    .spans
-                    .iter()
-                    .rev()
-                    .find(|span| !span.hidden)
-                    .is_none_or(|span| span.text.ends_with(char::is_whitespace));
+                && self.shown_ends_in_space;
             self.push_run(" ", self.marking() || beside_space);
-            self.space = true;
+            self.space_written = true;
         }
     }
 
@@ -921,11 +957,12 @@ impl Builder {
     }
 
     fn push_run(&mut self, text: &str, hidden: bool) {
+        let depth = &self.inline_depth;
         let (strong, emphasis, code, struck) = (
-            self.strong > 0,
-            self.emphasis > 0,
-            self.code > 0,
-            self.struck > 0,
+            depth.strong > 0,
+            depth.emphasis > 0,
+            depth.code > 0,
+            depth.struck > 0,
         );
         let styled = self.sender_style();
         let continues = self.spans.last().is_some_and(|span| {
@@ -951,6 +988,9 @@ impl Builder {
         if self.spans.is_empty() {
             self.centered = self.centers();
         }
+        if !hidden && !text.is_empty() {
+            self.shown_ends_in_space = text.ends_with(char::is_whitespace);
+        }
         let run = RichSpan {
             text: text.to_owned(),
             strong,
@@ -962,9 +1002,14 @@ impl Builder {
             styled,
             button: false,
         };
-        // A cell keeps its own copy, in case its table holds data; a line
-        // break within it reads as a space there.
-        if let Some(cell) = self.open_table().and_then(|table| table.cell.as_mut()) {
+        // A cell keeps its own copy, in case its table holds data, which ends
+        // once the table is known to hold none; a line break within it reads
+        // as a space there.
+        if let Some(cell) = self
+            .open_table()
+            .filter(|table| table.data)
+            .and_then(|table| table.cell.as_mut())
+        {
             let text = if text == "\n" { " " } else { text };
             match cell.last_mut() {
                 Some(last) if same_style(last, &run) => last.text.push_str(text),
@@ -1013,11 +1058,11 @@ impl Builder {
     }
 
     fn line_break(&mut self) {
-        if self.pre > 0 {
+        if self.pre_depth > 0 {
             self.push_pre('\n');
         } else if !self.spans.is_empty() {
             self.push_text("\n");
-            self.space = false;
+            self.space_written = false;
         }
     }
 
@@ -1072,7 +1117,7 @@ impl Builder {
 
     fn start_list(&mut self, next: Option<u32>) {
         if self.lists.len() < MAX_LIST_DEPTH {
-            let within = self.item.take();
+            let within = self.item_marker.take();
             self.lists.push(OpenList { next, within });
         } else {
             self.omitted_lists = self.omitted_lists.saturating_add(1);
@@ -1111,7 +1156,8 @@ impl Builder {
             last.text.truncate(length);
         }
         self.spans.retain(|span| !span.text.is_empty());
-        self.space = false;
+        self.space_written = false;
+        self.shown_ends_in_space = true;
         if self.spans.is_empty() {
             return;
         }
@@ -1120,9 +1166,9 @@ impl Builder {
         let hidden = spans.iter().all(|span| span.hidden);
         let kind = if let Some(level) = self.heading {
             BlockKind::Heading { level, spans }
-        } else if let Some(marker) = self.item.take() {
+        } else if let Some(marker) = self.item_marker.take() {
             // Later blocks of the same item keep the indent, not the marker.
-            self.item = Some(ListMarker::Continuation);
+            self.item_marker = Some(ListMarker::Continuation);
             BlockKind::ListItem {
                 marker,
                 depth: u8::try_from(self.lists.len().max(1)).unwrap_or(u8::MAX),
@@ -1135,11 +1181,11 @@ impl Builder {
     }
 
     fn end_pre(&mut self) {
-        if self.pre == 0 {
+        if self.pre_depth == 0 {
             return;
         }
-        self.pre -= 1;
-        if self.pre > 0 {
+        self.pre_depth -= 1;
+        if self.pre_depth > 0 {
             return;
         }
 
@@ -1181,10 +1227,10 @@ impl Builder {
 
     fn finish(mut self) -> RichBody {
         self.flush();
-        if self.pre > 0 {
+        if self.pre_depth > 0 {
             // A <pre> left open ends with the body: at depth one, end_pre
             // closes all its levels at once.
-            self.pre = 1;
+            self.pre_depth = 1;
             self.end_pre();
         }
         RichBody {

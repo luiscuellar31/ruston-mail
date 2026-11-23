@@ -2,6 +2,12 @@
 
 use super::*;
 
+/// The one row an offer to undo puts back.
+fn only_row(undo: UndoMove) -> MovedRow {
+    let [row] = <[MovedRow; 1]>::try_from(undo.rows).expect("one row moved");
+    row
+}
+
 /// A mailbox showing `view` with rows "a" and "b", "a" open.
 fn viewing(view: Folder) -> Mailbox {
     let mut mailbox = loaded_inbox(&["x"], 1);
@@ -60,7 +66,7 @@ fn a_refresh_keeps_the_offer_to_undo() {
     assert!(mailbox.undo().is_some());
 
     mailbox.finish_page(refresh.id, page(&["b"], 1));
-    let undo = mailbox.take_undo().expect("the offer outlives the refresh");
+    let undo = only_row(mailbox.take_undo().expect("the offer outlives the refresh"));
     assert_eq!(undo.row_id, "a");
     assert!(
         mailbox
@@ -81,8 +87,9 @@ fn a_move_out_of_a_folder_can_be_taken_back() {
     // opens, and the move can be taken back at once.
     assert_eq!(start.opened.as_deref(), Some("b"));
     let undo = mailbox.undo().expect("a move out of the Inbox undoes");
-    assert_eq!(undo.row_id, "a");
-    assert_eq!(undo.from, sys(MailFolder::Inbox));
+    assert_eq!(undo.rows.len(), 1);
+    assert_eq!(undo.rows[0].row_id, "a");
+    assert_eq!(undo.rows[0].from, sys(MailFolder::Inbox));
     assert_eq!(undo.to, sys(MailFolder::Archive));
     let finish = mailbox.finish_action(&start.send.unwrap(), Ok(()));
     assert_eq!(finish.result, Ok(()));
@@ -107,7 +114,7 @@ fn archived_mail_can_go_back_to_the_inbox_and_that_can_be_taken_back_too() {
     let _ = mailbox.finish_action(&start.send.unwrap(), Ok(()));
 
     let undo = mailbox.undo().expect("a move back to the Inbox undoes");
-    assert_eq!(undo.from, sys(MailFolder::Archive));
+    assert_eq!(undo.rows[0].from, sys(MailFolder::Archive));
     assert_eq!(undo.to, Folder::INBOX);
 }
 
@@ -168,10 +175,12 @@ fn taking_back_a_move_out_of_a_label_view_asks_for_the_row_again() {
     let _ = mailbox.finish_action(&archived, Ok(()));
     let trashed = send(&mut mailbox, MailAction::MoveTo(sys(MailFolder::Trash)), 5);
     let _ = mailbox.finish_action(&trashed, Ok(()));
-    let undo = mailbox
-        .undo()
-        .cloned()
-        .expect("it was known to be in Archive");
+    let undo = only_row(
+        mailbox
+            .undo()
+            .cloned()
+            .expect("it was known to be in Archive"),
+    );
     assert_eq!(undo.from, sys(MailFolder::Archive));
 
     let back = mailbox
@@ -207,20 +216,21 @@ fn only_a_folder_that_lists_the_row_says_where_it_is() {
 fn an_expired_offer_cannot_dismiss_the_move_after_it() {
     let mut mailbox = loaded_inbox(&["a", "b"], 2);
     mailbox.offer_undo(
-        "a",
-        SummaryKind::Conversation,
-        MailAction::MoveTo(sys(MailFolder::Archive)),
+        &[("a", SummaryKind::Conversation)],
+        &MailAction::MoveTo(sys(MailFolder::Archive)),
     );
     let expired = mailbox.undo().unwrap().clone();
     mailbox.offer_undo(
-        "b",
-        SummaryKind::Conversation,
-        MailAction::MoveTo(sys(MailFolder::Trash)),
+        &[("b", SummaryKind::Conversation)],
+        &MailAction::MoveTo(sys(MailFolder::Trash)),
     );
 
     mailbox.dismiss_undo(&expired);
 
-    assert_eq!(mailbox.undo().map(|offer| offer.row_id.as_str()), Some("b"));
+    assert_eq!(
+        mailbox.undo().map(|offer| offer.rows[0].row_id.as_str()),
+        Some("b")
+    );
     let current = mailbox.undo().unwrap().clone();
     mailbox.dismiss_undo(&current);
     assert!(mailbox.undo().is_none());
@@ -472,9 +482,11 @@ fn a_move_taken_back_while_the_list_refreshes_keeps_its_row() {
     let _ = mailbox.finish_action(&archive, Ok(()));
     let refresh = mailbox.refresh(5).unwrap();
 
-    let undo = mailbox
-        .take_undo()
-        .expect("a refresh does not hold Undo back");
+    let undo = only_row(
+        mailbox
+            .take_undo()
+            .expect("a refresh does not hold Undo back"),
+    );
     let back = mailbox.start_move_back(undo, 6).unwrap().send.unwrap();
     assert_eq!(ids(&mailbox), ["a", "b"]);
 
@@ -652,9 +664,11 @@ fn taking_a_move_back_goes_after_the_move() {
         3,
     );
 
-    let undo = mailbox
-        .take_undo()
-        .expect("a move can be taken back while it is on its way");
+    let undo = only_row(
+        mailbox
+            .take_undo()
+            .expect("a move can be taken back while it is on its way"),
+    );
     let back = mailbox
         .start_action_on(undo.row_id, undo.kind, MailAction::MoveTo(undo.from), 4)
         .unwrap();
@@ -716,7 +730,7 @@ fn taking_back_a_move_lists_a_row_from_a_deeper_page_again() {
     // p60 is on the second page, which a reload does not read.
     let mut mailbox = archived_from_a_deeper_page("p60");
 
-    let undo = mailbox.take_undo().expect("the move can be taken back");
+    let undo = only_row(mailbox.take_undo().expect("the move can be taken back"));
     let back = mailbox
         .start_move_back(undo, 6)
         .and_then(|start| start.send)
@@ -753,7 +767,7 @@ fn taking_back_a_move_lists_a_row_from_a_deeper_page_again() {
 #[test]
 fn a_refused_move_back_takes_its_row_away_again() {
     let mut mailbox = archived_from_a_deeper_page("p60");
-    let undo = mailbox.take_undo().unwrap();
+    let undo = only_row(mailbox.take_undo().unwrap());
     let back = mailbox
         .start_move_back(undo, 6)
         .and_then(|start| start.send)
@@ -772,7 +786,7 @@ fn a_move_back_behind_its_move_keeps_the_row_when_the_move_ends() {
         MailAction::MoveTo(sys(MailFolder::Archive)),
         3,
     );
-    let undo = mailbox.take_undo().unwrap();
+    let undo = only_row(mailbox.take_undo().unwrap());
     let back = mailbox.start_move_back(undo, 4).unwrap();
     assert_eq!(back.send, None, "the move back waits for the move");
     assert!(mailbox.has_row("a"));

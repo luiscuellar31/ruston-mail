@@ -404,3 +404,39 @@ fn thread_inspected_stale_epoch_or_folder_is_ignored() {
     assert!(!visible.contains(&"split-ignored"));
     assert!(visible.contains(&"demo-0"));
 }
+
+#[test]
+fn a_conversation_kept_whole_is_inspected_again_only_once_its_row_changes() {
+    let mut app = loaded_demo_app();
+    let page = inspection_page(&app, 2);
+    // A refresh that lists `page`, and how many inspections it starts.
+    let refresh = |app: &mut App, page: &ConversationPage| {
+        let _ = app.update(Message::RefreshMailbox);
+        let request = pending_list_request(app);
+        app.update(Message::ConversationsLoaded(request, Ok(page.clone())))
+            .units()
+    };
+    assert_eq!(refresh(&mut app, &page), 2);
+    // Each stays the one conversation it is listed as.
+    for id in ["candidate-0", "candidate-1"] {
+        let request = running_inspection(&app, id);
+        let _ = app.update(Message::ThreadInspected {
+            revision: app.mailbox().map_or(0, Mailbox::inspection_revision),
+            epoch: app.session_epoch,
+            request,
+            folder: Folder::INBOX,
+            conversation_id: id.into(),
+            result: Ok(None),
+        });
+    }
+
+    // Every refresh brings the same rows, a minute apart: Proton is not
+    // asked about them again.
+    assert_eq!(refresh(&mut app, &page), 0);
+    assert_eq!(refresh(&mut app, &page), 0);
+    // One more message in a conversation may change the answer.
+    let mut grown = page.clone();
+    grown.conversations[1].message_count += 1;
+    assert_eq!(refresh(&mut app, &grown), 1);
+    assert!(app.inspections.running_request("candidate-1").is_some());
+}

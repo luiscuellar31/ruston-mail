@@ -28,7 +28,7 @@ tracing = { workspace = true }
 async-trait = { workspace = true }
 secrecy = { workspace = true }
 zeroize = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 futures = { workspace = true }
 url = { workspace = true }
 urlencoding = { workspace = true }

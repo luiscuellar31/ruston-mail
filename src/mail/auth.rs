@@ -78,7 +78,7 @@ impl fmt::Display for AuthError {
             Self::LogoutUnavailable => {
                 "Ruston Mail could not remove all saved Proton credentials. They may remain on this device."
             }
-            Self::SessionExpired => "Your Proton session has expired. Sign in again.",
+            Self::SessionExpired => super::model::SESSION_EXPIRED,
             // Only the status and code are shown; Proton's message and raw body
             // are never surfaced.
             Self::Service { http_status, code } => {

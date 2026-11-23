@@ -62,8 +62,6 @@ struct EventResp {
     refresh: i64,
     #[serde(rename = "Messages", default)]
     messages: Vec<MessageEvent>,
-    #[serde(rename = "MessageCounts", default)]
-    counts: Vec<LabelCount>,
 }
 
 /// The events after a cursor, read.
@@ -77,8 +75,6 @@ pub struct EventBatch {
     pub refresh: bool,
     /// The messages that changed.
     pub messages: Vec<MessageEvent>,
-    /// The labels whose counts changed, with their counts now.
-    pub counts: Vec<LabelCount>,
 }
 
 /// The newest event's ID, where following the stream starts.
@@ -98,6 +94,5 @@ pub async fn get_events<D: Doer>(d: &D, event_id: &str) -> Result<EventBatch> {
         more: events.more == 1,
         refresh: events.refresh & 1 != 0,
         messages: events.messages,
-        counts: events.counts,
     })
 }

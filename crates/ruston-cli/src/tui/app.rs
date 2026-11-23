@@ -15,6 +15,7 @@ use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 use ruston_core::model::enums::label_ids;
 use ruston_core::{Conversation, Error, Label, RecipientProtection, SearchOpts};
 use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// How many rows a notch of the mouse wheel scrolls the reader, a list or
@@ -223,7 +224,7 @@ pub(crate) struct App {
     pub(crate) reading: Option<Reading>,
     /// How many rows down the reader is scrolled; the view scrolls it to
     /// the message `landing` names.
-    pub(crate) scroll: Cell<u16>,
+    pub(crate) scroll: Cell<usize>,
     /// The message of the open conversation the reader brings to its top
     /// when next drawn, unless it starts in the upper third already: where
     /// the conversation opens, or one just folded or shown. The view takes
@@ -281,14 +282,14 @@ pub(crate) struct App {
     pub(crate) search: Option<Search>,
     /// The conversations marked with Space, by ID, which an action from the
     /// list acts on all of.
-    pub(crate) marked: Vec<String>,
+    pub(crate) marked: HashSet<String>,
     /// The move `Z` can take back, until another change is made or another
     /// place listed.
     pub(crate) undo: Option<Undo>,
     /// The furthest the reader could scroll when last drawn: its wrapped
     /// rows less those that fit. The view sets it, as only it knows the
     /// pane's size.
-    pub(crate) reader_bottom: Cell<u16>,
+    pub(crate) reader_bottom: Cell<usize>,
     /// How many rows of the reader fit when last drawn, for a page.
     pub(crate) reader_rows: Cell<u16>,
     /// Where each pane was last drawn, which the view sets, for a click or
@@ -566,7 +567,7 @@ impl App {
             command_line: None,
             history: Vec::new(),
             search: None,
-            marked: Vec::new(),
+            marked: HashSet::new(),
             undo: None,
             reader_bottom: Cell::new(0),
             reader_rows: Cell::new(1),
@@ -924,7 +925,9 @@ impl App {
                 }
             };
         }
-        let (places, folders, labels, their_labels) = self.completions();
+        // What Tab offers is worked out only when it is pressed.
+        let completions =
+            matches!(key.code, KeyCode::Tab | KeyCode::BackTab).then(|| self.completions());
         let Some(line) = self.command_line.as_mut() else {
             return Vec::new();
         };
@@ -941,6 +944,7 @@ impl App {
             KeyCode::Down => line.recall(&self.history, false),
             KeyCode::Tab | KeyCode::BackTab => {
                 let backwards = key.code == KeyCode::BackTab;
+                let (places, folders, labels, their_labels) = completions.unwrap_or_default();
                 let after = |command: &str| match command {
                     "folder" | "in:" => places.clone(),
                     "move" => folders.clone(),
@@ -1177,11 +1181,8 @@ impl App {
             return;
         };
         let id = conversation.id.clone();
-        match self.marked.iter().position(|marked| *marked == id) {
-            Some(at) => {
-                self.marked.remove(at);
-            }
-            None => self.marked.push(id),
+        if !self.marked.remove(&id) {
+            self.marked.insert(id);
         }
         self.step(Pane::Conversations, 1);
     }
@@ -1197,7 +1198,7 @@ impl App {
             .iter()
             .all(|conversation| self.marked.contains(&conversation.id));
         self.marked = if all {
-            Vec::new()
+            HashSet::new()
         } else {
             self.conversations
                 .iter()
@@ -1856,7 +1857,12 @@ impl App {
             Message::Wheel { by, .. } => by * WHEEL_ROWS,
             _ => return,
         };
-        self.help_scroll = scrolled(self.help_scroll, by, self.help_bottom.get());
+        let help = scrolled(
+            usize::from(self.help_scroll),
+            by,
+            usize::from(self.help_bottom.get()),
+        );
+        self.help_scroll = u16::try_from(help).unwrap_or(u16::MAX);
     }
 
     /// Moves the selection of `pane`'s list, or the reader, `by` rows, as
@@ -2086,9 +2092,8 @@ fn page_of(rows: &Cell<u16>) -> isize {
 
 /// Where a view scrolled down `scroll` rows goes `by` rows on, between its
 /// top and `bottom`, the furthest it can go.
-fn scrolled(scroll: u16, by: isize, bottom: u16) -> u16 {
-    let scroll = usize::from(scroll).saturating_add_signed(by);
-    u16::try_from(scroll.min(usize::from(bottom))).unwrap_or(u16::MAX)
+fn scrolled(scroll: usize, by: isize, bottom: usize) -> usize {
+    scroll.saturating_add_signed(by).min(bottom)
 }
 
 /// Whether `conversation` is starred.

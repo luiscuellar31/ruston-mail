@@ -15,7 +15,8 @@ const MAX_PIXELS: u64 = 40_000_000;
 /// none wider than its pane.
 const MAX_SIDE: u32 = 1600;
 
-/// A decoded picture: its size in pixels and its RGBA bytes, row by row.
+/// A decoded picture: its size in pixels and its RGBA bytes, row by row,
+/// each color already multiplied by its alpha, as a texture takes it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Picture {
     pub size: [usize; 2],
@@ -59,7 +60,13 @@ fn decode_within(bytes: &[u8], max_pixels: u64, max_side: u32) -> Option<Picture
     } else {
         picture
     };
-    let rgba = picture.into_rgba8();
+    let mut rgba = picture.into_rgba8();
+    // Here rather than on the interface's thread, where a large picture took
+    // a few milliseconds of its first frame.
+    for pixel in rgba.pixels_mut() {
+        let [r, g, b, a] = pixel.0;
+        pixel.0 = eframe::egui::Color32::from_rgba_unmultiplied(r, g, b, a).to_array();
+    }
     Some(Picture {
         size: [rgba.width() as usize, rgba.height() as usize],
         rgba: rgba.into_raw(),
@@ -92,6 +99,24 @@ mod tests {
             assert_eq!(picture.size, [4, 3], "{format:?}");
             assert_eq!(picture.rgba.len(), 4 * 3 * 4, "{format:?}");
         }
+    }
+
+    #[test]
+    fn a_picture_comes_with_its_colors_multiplied_by_their_alpha() {
+        let picture = image::RgbaImage::from_fn(2, 1, |x, _| {
+            image::Rgba(if x == 0 {
+                [200, 100, 50, 128]
+            } else {
+                [10, 20, 30, 255]
+            })
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        picture.write_to(&mut bytes, ImageFormat::Png).unwrap();
+
+        let decoded = decode(&bytes.into_inner()).unwrap();
+        let half = eframe::egui::Color32::from_rgba_unmultiplied(200, 100, 50, 128).to_array();
+        assert_eq!(decoded.rgba[..4], half);
+        assert_eq!(decoded.rgba[4..], [10, 20, 30, 255]);
     }
 
     #[test]

@@ -164,9 +164,7 @@ pub async fn run(ctx: &Ctx, cmd: MessagesCmd) -> Result<()> {
             cached,
         } => {
             let (total, msgs) = if cached {
-                LocalCache::open(&ctx.profile)
-                    .await?
-                    .messages_page(&folder, unread, page, page_size)?
+                LocalCache::open(&ctx.profile)?.messages_page(&folder, unread, page, page_size)?
             } else {
                 let client = Client::resume(&ctx.profile).await?;
                 let folder = client.folder_id(&folder).await?;

@@ -7,6 +7,7 @@ pub mod contacts;
 pub mod drafts;
 pub mod export;
 pub mod filters;
+mod login;
 pub mod organize;
 pub mod read;
 pub mod recipients;
@@ -15,29 +16,24 @@ pub mod sync;
 #[cfg(test)]
 mod test_support;
 
-use crate::DEFAULT_BASE_URL;
+pub use login::{LoginOptions, LoginPrompts, MailboxPasswordPrompt};
+
 use crate::api;
-use crate::auth::{self, TotpPrompt};
 use crate::cache::CacheIdentity;
-use crate::crypto::{self, keys::KeyStore};
+use crate::crypto::keys::KeyStore;
 use crate::error::{Error, Result};
-use crate::model::enums::{key_flag, password_mode};
-use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
-use crate::transport::{Doer, HttpClient};
-use secrecy::{ExposeSecret, SecretString};
+use crate::model::enums::key_flag;
+use crate::session::{Paths, SecretStore};
+use crate::transport::HttpClient;
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
-const DEFAULT_APP_VERSION: &str = "Other";
 const SENDER_KEY_CACHE_CAPACITY: usize = 256;
 /// How long a sender's keys are reused before Proton is asked again, so a key
 /// marked compromised during a long session stops verifying.
 const SENDER_KEY_CACHE_TTL: Duration = Duration::from_secs(10 * 60);
-/// Bound the complete best-effort revocation, including retries and backoff.
-const LOGOUT_REVOCATION_TIMEOUT: Duration = Duration::from_secs(30);
-
 #[derive(Default)]
 struct SenderKeyCache {
     /// Each sender's keys and when they were fetched.
@@ -78,67 +74,6 @@ impl SenderKeyCache {
     }
 }
 
-/// What signing in to an account takes.
-pub struct LoginOptions {
-    /// The account's email address.
-    pub username: String,
-    /// The account's password.
-    pub password: SecretString,
-    /// The current code from the account's authenticator app, when it has
-    /// one and it is known up front.
-    pub totp: Option<SecretString>,
-    /// The mailbox password of an account that keeps a separate one
-    /// (`PasswordMode` 2).
-    pub mailbox_password: Option<SecretString>,
-    /// The local profile the session is saved under.
-    pub profile: String,
-    /// Another API address than Proton's own.
-    pub base_url: Option<String>,
-    /// The app version to present to the API, in place of the default.
-    pub app_version: Option<String>,
-    /// The `User-Agent` to present, so requests look like a given client's.
-    pub user_agent: Option<String>,
-    /// What solves a human-verification challenge (a CAPTCHA) when Proton
-    /// answers with code 9001.
-    pub hv: Option<crate::transport::HvResolver>,
-}
-
-/// Asks for the separate mailbox password of a two-password account during
-/// login.
-///
-/// Called only when the account has one and none was supplied up front,
-/// after the account password and any TOTP code are accepted, so neither is
-/// asked for again. Obtain it interactively and do not persist it.
-pub type MailboxPasswordPrompt =
-    Arc<dyn Fn() -> futures::future::BoxFuture<'static, Result<SecretString>> + Send + Sync>;
-
-/// What a login may ask the person signing in for, when the account needs
-/// it and [`LoginOptions`] does not carry it.
-#[derive(Clone, Default)]
-pub struct LoginPrompts {
-    /// Asks for the TOTP code; see [`TotpPrompt`].
-    pub totp: Option<TotpPrompt>,
-    /// Asks for the mailbox password; see [`MailboxPasswordPrompt`].
-    pub mailbox_password: Option<MailboxPasswordPrompt>,
-}
-
-/// The mailbox password of an account that has a separate one: the one
-/// `given`, or else what `prompt` asks for now, kept in `asked`. Without
-/// either, [`Error::MailboxPasswordRequired`].
-async fn mailbox_password<'a>(
-    given: Option<&'a SecretString>,
-    prompt: Option<&MailboxPasswordPrompt>,
-    asked: &'a mut Option<SecretString>,
-) -> Result<&'a SecretString> {
-    if let Some(password) = given {
-        return Ok(password);
-    }
-    let Some(prompt) = prompt else {
-        return Err(Error::MailboxPasswordRequired);
-    };
-    Ok(asked.insert(prompt().await?))
-}
-
 /// A signed-in Proton Mail account, with its unlocked keys, through which
 /// every mail operation goes.
 pub struct Client {
@@ -158,282 +93,6 @@ impl Client {
     }
     pub(crate) fn keys(&self) -> &KeyStore {
         &self.keys
-    }
-
-    /// Shares the saved session with other processes: a refresh starts from
-    /// the tokens saved last, under the profile lock, and saves the new ones.
-    pub(crate) fn wire_refresh(
-        http: &mut HttpClient,
-        store: Arc<dyn SecretStore>,
-        paths: Paths,
-        profile: &str,
-    ) {
-        let load_store = store.clone();
-        let load_profile = profile.to_owned();
-        http.set_refresh_load(Arc::new(move || {
-            Session::lock_and_load_tokens(&paths, &load_profile, load_store.as_ref())
-        }));
-        http.set_refresh_persist_fallible(Arc::new(move |tokens| {
-            Session::save_tokens(
-                store.as_ref(),
-                tokens.access.expose_secret(),
-                tokens.refresh.expose_secret(),
-            )
-        }));
-    }
-
-    /// Signs in with what `opts` carries, second factor included, unlocks
-    /// the account's keys, and saves the session under `opts.profile`.
-    pub async fn login(opts: LoginOptions) -> Result<Client> {
-        Self::login_inner(opts, LoginPrompts::default()).await
-    }
-
-    /// Like [`Client::login`], asking through `prompts` for what the account
-    /// needs and `opts` does not carry: a TOTP code, asked for after any
-    /// human verification so that it is fresh, and never for an account
-    /// without TOTP; and a separate mailbox password once the account
-    /// password is accepted.
-    pub async fn login_with_prompts(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
-        Self::login_inner(opts, prompts).await
-    }
-
-    async fn login_inner(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
-        validate_profile_name(&opts.profile)?;
-        let base_url = opts
-            .base_url
-            .as_deref()
-            .unwrap_or(DEFAULT_BASE_URL)
-            .to_owned();
-        let app_version = opts
-            .app_version
-            .as_deref()
-            .unwrap_or(DEFAULT_APP_VERSION)
-            .to_owned();
-        let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
-        let mut http = api_client(&base_url, &app_version, opts.user_agent.as_deref()).await?;
-        if let Some(resolver) = &opts.hv {
-            http.set_hv_resolver(resolver.clone());
-        }
-
-        let login = auth::login_with_prompt(
-            &http,
-            &opts.username,
-            &opts.password,
-            opts.totp.as_ref().map(ExposeSecret::expose_secret),
-            prompts.totp.as_ref(),
-        )
-        .await?;
-        let opened = Self::open_logged_in(
-            &http,
-            &login,
-            &opts,
-            &prompts,
-            &base_url,
-            app_version,
-            store.clone(),
-        );
-        let (keys, paths, cache_identity) = auth::or_end_session(&http, opened).await?;
-
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
-        Ok(Client {
-            http,
-            keys,
-            paths,
-            profile: opts.profile,
-            session_uid: login.tokens.uid,
-            cache_identity,
-            store,
-            sender_cache: Mutex::new(SenderKeyCache::default()),
-        })
-    }
-
-    /// The rest of a login once Proton has accepted the password: unlocks the
-    /// account's keys and saves the session.
-    async fn open_logged_in(
-        http: &HttpClient,
-        login: &auth::LoginResult,
-        opts: &LoginOptions,
-        prompts: &LoginPrompts,
-        base_url: &str,
-        app_version: String,
-        store: Arc<dyn SecretStore>,
-    ) -> Result<(KeyStore, Paths, CacheIdentity)> {
-        let (salts, (user, addresses)) =
-            tokio::try_join!(api::keys::get_key_salts(http), account(http))?;
-        let cache_identity = CacheIdentity::new(base_url, &user.id)?;
-        let user_id = user.id.clone();
-
-        let mut asked = None;
-        let mailbox_pw = if login.password_mode == password_mode::TWO_PASSWORDS {
-            mailbox_password(
-                opts.mailbox_password.as_ref(),
-                prompts.mailbox_password.as_ref(),
-                &mut asked,
-            )
-            .await?
-        } else {
-            &opts.password
-        };
-
-        tracing::debug!(target: "ruston_core::mail", addresses = addresses.len(), password_mode = login.password_mode, "login: fetched salts + user + addresses; unlocking keys");
-        // Each key's passphrase is derived with bcrypt, slow by design, so the
-        // unlocking runs where it holds no async worker; resuming does too.
-        let mailbox_pw = mailbox_pw.clone();
-        let (keys, skp) = off_thread(move || {
-            crypto::keys::unlock(&crypto::provider(), &user, &addresses, &mailbox_pw, &salts)
-        })
-        .await?;
-
-        let session = Session {
-            uid: login.tokens.uid.clone(),
-            app_version,
-            base_url: base_url.to_owned(),
-            password_mode: login.password_mode,
-            user_agent: opts.user_agent.clone(),
-            user_id: Some(user_id),
-        };
-        let paths = Paths::system()?;
-        let (saved_in, profile, tokens) =
-            (paths.clone(), opts.profile.clone(), login.tokens.clone());
-        off_thread(move || session.save(&saved_in, &profile, store.as_ref(), &tokens, &skp))
-            .await?;
-        Ok((keys, paths, cache_identity))
-    }
-
-    /// Opens the session saved under `profile`, unlocking the account's keys
-    /// with the key passphrase saved beside it.
-    pub async fn resume(profile: &str) -> Result<Client> {
-        validate_profile_name(profile)?;
-        let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
-        Self::resume_from(profile, Paths::system()?, store).await
-    }
-
-    /// `resume`, with the session's files and secrets where the caller says.
-    async fn resume_from(
-        profile: &str,
-        paths: Paths,
-        store: Arc<dyn SecretStore>,
-    ) -> Result<Client> {
-        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
-        // The credential store may wait for the person to unlock it, and the
-        // profile lock for another process.
-        let loaded = {
-            let (paths, profile, store) = (paths.clone(), profile.to_owned(), store.clone());
-            off_thread(move || Session::load(&paths, &profile, store.as_ref())).await?
-        }
-        .ok_or(Error::Unauthorized)?;
-        tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
-
-        let mut http = api_client(
-            &loaded.session.base_url,
-            &loaded.session.app_version,
-            loaded.session.user_agent.as_deref(),
-        )
-        .await?;
-        let Tokens {
-            uid,
-            access,
-            refresh,
-        } = loaded.tokens;
-        http.set_tokens(uid, access, refresh).await;
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), profile);
-
-        let (user, addresses) = account(&http).await?;
-        let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
-        let user_id = user.id.clone();
-        let skp = loaded.skp;
-        let keys = off_thread(move || {
-            crypto::keys::unlock_with_skp(&crypto::provider(), &user, &addresses, &skp)
-        })
-        .await?;
-        if loaded.session.user_id.as_deref() != Some(user_id.as_str()) {
-            // A session saved without its account ID records it now, so its
-            // cache opens offline next time. Nothing else depends on it.
-            let (paths, profile) = (paths.clone(), profile.to_owned());
-            let uid = loaded.session.uid.clone();
-            let recorded =
-                off_thread(move || Session::record_user_id(&paths, &profile, &uid, &user_id)).await;
-            if let Err(error) = recorded {
-                tracing::debug!(target: "ruston_core::mail", %error, "resume: account ID not recorded");
-            }
-        }
-
-        Ok(Client {
-            http,
-            keys,
-            paths,
-            profile: profile.to_string(),
-            session_uid: loaded.session.uid,
-            cache_identity,
-            store,
-            sender_cache: Mutex::new(SenderKeyCache::default()),
-        })
-    }
-
-    /// Clear the saved session, then attempt remote revocation for up to 30 seconds.
-    /// Local cleanup runs on a blocking worker and continues if this future is
-    /// cancelled after it starts. Remote failures do not undo cleanup; local
-    /// storage failures are returned to the caller. Returns whether Proton
-    /// confirmed that the session ended.
-    pub async fn logout(&self) -> Result<bool> {
-        let paths = self.paths.clone();
-        let profile = self.profile.clone();
-        let session_uid = self.session_uid.clone();
-        let store = self.store.clone();
-        let cleanup = tokio::task::spawn_blocking(move || {
-            Session::clear_if_current(&paths, &profile, store.as_ref(), &session_uid)
-        })
-        .await
-        .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?;
-
-        // Only revocation has a deadline. A timeout must never cancel local cleanup.
-        let revoked = matches!(
-            tokio::time::timeout(LOGOUT_REVOCATION_TIMEOUT, auth::logout(&self.http)).await,
-            Ok(Ok(()))
-        );
-        cleanup.map(|()| revoked)
-    }
-
-    /// Remove a profile's saved session without resuming it, for when it can
-    /// no longer be resumed: offline, revoked, after a password change, or
-    /// bound to another API address. Proton is not contacted, so a server
-    /// session that still exists is not revoked.
-    pub async fn forget_session(profile: &str) -> Result<()> {
-        validate_profile_name(profile)?;
-        let profile = profile.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let store = KeyringStore::new(profile.clone());
-            Session::clear(&Paths::system()?, &profile, &store)
-        })
-        .await
-        .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
-    }
-
-    /// Whether `profile` has a saved session to resume, judged by its
-    /// metadata file alone: the keychain is not asked, so the answer comes
-    /// at once, and a session whose secrets are gone still counts.
-    pub fn has_saved_session(profile: &str) -> bool {
-        Paths::system().is_ok_and(|paths| Session::is_saved(&paths, profile))
-    }
-
-    /// Waits until no token refresh is under way, so a program about to end
-    /// lets one finish saving the new tokens instead of losing the session.
-    pub async fn settle(&self) {
-        self.http.settled().await;
-    }
-
-    /// Waits until no token refresh of `profile`'s saved session is under
-    /// way, in this program or another: one holds the profile lock from
-    /// sending the old refresh token until the new pair is saved. A program
-    /// stopped from outside, as by Ctrl+C, can then end at once, with no
-    /// client at hand, and keep the session. Gives up with an error after as
-    /// long as any other wait for that lock.
-    pub async fn settle_session(profile: &str) -> Result<()> {
-        validate_profile_name(profile)?;
-        let profile = profile.to_owned();
-        tokio::task::spawn_blocking(move || Session::wait_unlocked(&Paths::system()?, &profile))
-            .await
-            .map_err(|error| Error::Session(format!("session wait task failed: {error}")))?
     }
 
     /// The email of the account's primary address, which new mail is sent
@@ -484,27 +143,6 @@ pub(crate) async fn off_thread<T: Send + 'static>(
     } else {
         work()
     }
-}
-
-/// The account and its addresses, asked for together: neither request needs
-/// the other, and every command that resumes a session waits for both.
-async fn account<D: Doer>(http: &D) -> Result<(crypto::keys::User, Vec<crypto::keys::Address>)> {
-    tokio::try_join!(api::keys::get_user(http), api::keys::get_addresses(http))
-}
-
-/// A client for the API at `base_url` that presents itself as `app_version`
-/// and, when there is one, `user_agent`: what signing in sets up, and what a
-/// resumed session sets up again from what it saved.
-async fn api_client(
-    base_url: &str,
-    app_version: &str,
-    user_agent: Option<&str>,
-) -> Result<HttpClient> {
-    let http = HttpClient::try_new(base_url, app_version)?;
-    if let Some(agent) = user_agent {
-        http.set_user_agent(agent.to_owned()).await;
-    }
-    Ok(http)
 }
 
 #[cfg(test)]

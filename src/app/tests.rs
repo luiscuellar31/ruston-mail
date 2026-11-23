@@ -15,6 +15,7 @@ mod pictures;
 mod reader;
 mod refresh;
 mod search;
+mod selection;
 mod session;
 mod settings;
 mod sign_in;

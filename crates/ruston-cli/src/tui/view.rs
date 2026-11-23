@@ -733,7 +733,8 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     // The first row of its list it shows.
     let first = match pane {
         Pane::Folders => {
-            let items = app.places.iter().map(|place| {
+            let row = |index: usize| {
+                let place = &app.places[index];
                 let mut spans = vec![Span::raw(format!(
                     "{}{}",
                     "  ".repeat(place.depth),
@@ -743,11 +744,11 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
                     spans.push(Span::styled(format!(" {}", place.unread), theme.accent));
                 }
                 ListItem::new(Line::from(spans))
-            });
+            };
             let scroll = &app.places_scroll;
             draw_list(
                 frame,
-                items,
+                (app.places.len(), row),
                 app.selected_place,
                 scroll,
                 focused,
@@ -783,16 +784,17 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
         }
         Pane::Conversations => {
             let width = usize::from(block.inner(area).width);
-            let items = app.conversations.iter().map(|conversation| {
+            let row = |index: usize| {
+                let conversation = &app.conversations[index];
                 let marked = app.marked.contains(&conversation.id);
                 let labels = app.row_labels(conversation);
                 conversation_row(conversation, marked, &labels, width, theme)
-            });
+            };
             // What the marks at the start of a row say, where they show.
             let legend = Line::styled(ROW_MARKS, Style::new().add_modifier(Modifier::DIM));
             draw_list(
                 frame,
-                items,
+                (app.conversations.len(), row),
                 app.selected_conversation,
                 &app.conversations_scroll,
                 focused,
@@ -808,15 +810,17 @@ fn draw_pane(frame: &mut Frame, app: &App, theme: &Theme, pane: Pane, area: Rect
     app.drawn.set(drawn);
 }
 
-/// A list with its selection on `selected`, shown inverted in the focused
-/// pane, which reads without colors too, and underlined elsewhere: bold
-/// says a conversation is unread. From where `scroll` says it was, it
-/// scrolls only as far as the selection needs; scrolled by the wheel, it
-/// stays there, the selection shown only where it falls, until the
-/// selection moves. Returns the first row it shows.
+/// A list of `count` rows, each made by `row`, with its selection on
+/// `selected`, shown inverted in the focused pane, which reads without
+/// colors too, and underlined elsewhere: bold says a conversation is
+/// unread. From where `scroll` says it was, it scrolls only as far as the
+/// selection needs; scrolled by the wheel, it stays there, the selection
+/// shown only where it falls, until the selection moves. Only the rows that
+/// show are made, since a list is drawn after every key and may hold
+/// thousands of conversations. Returns the first row it shows.
 fn draw_list<'a>(
     frame: &mut Frame,
-    items: impl Iterator<Item = ListItem<'a>>,
+    (count, row): (usize, impl Fn(usize) -> ListItem<'a>),
     selected: usize,
     scroll: &Cell<ListScroll>,
     focused: bool,
@@ -828,20 +832,50 @@ fn draw_list<'a>(
     } else {
         Style::new().add_modifier(Modifier::UNDERLINED)
     };
-    let rows = usize::from(block.inner(area).height);
+    let inner = block.inner(area);
+    let rows = usize::from(inner.height);
     let ListScroll { top, wheeled } = scroll.get();
     let wheeled = wheeled.filter(|at| *at == selected);
     let shown = wheeled.is_none() || (top..top + rows).contains(&selected);
-    let list = List::new(items).block(block).highlight_style(highlight);
-    let mut state = ListState::default()
-        .with_offset(top)
-        .with_selected(shown.then_some(selected));
+    let selected = shown.then(|| selected.min(count.saturating_sub(1)));
+    // A pane with no room shows nothing and keeps its place.
+    let (first, end) = if inner.is_empty() {
+        (top, top)
+    } else {
+        shown_rows(count, top, selected, rows)
+    };
+    let list = List::new((first..end).map(row))
+        .block(block)
+        .highlight_style(highlight);
+    let selected = selected.filter(|selected| (first..end).contains(selected));
+    let mut state = ListState::default().with_selected(selected.map(|selected| selected - first));
     frame.render_stateful_widget(list, area, &mut state);
     scroll.set(ListScroll {
-        top: state.offset(),
+        top: first,
         wheeled,
     });
-    state.offset()
+    first
+}
+
+/// The rows a list of `count` one-line rows shows `height` rows tall, from
+/// row `top` and with `selected` in sight, as ratatui works them out: the
+/// first and the one after the last.
+fn shown_rows(count: usize, top: usize, selected: Option<usize>, height: usize) -> (usize, usize) {
+    if count == 0 {
+        return (0, 0);
+    }
+    let mut first = top.min(count - 1);
+    let mut end = (first + height).min(count);
+    let at = selected.map_or(first, |selected| selected.min(count - 1));
+    if at >= end {
+        end = at + 1;
+        first = first.max(end.saturating_sub(height));
+    }
+    if at < first {
+        first = at;
+        end = end.min(first + height);
+    }
+    (first, end)
 }
 
 /// The open conversation, the labels it bears under its subject, the
@@ -914,10 +948,22 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         app.show_quotes,
     );
     // The rows the lines wrap to before each of them, and in all at the end.
+    // A line of the text as it was written wraps the same at every frame of
+    // this width, and is counted once.
     let mut row_of = vec![0];
-    for (_, line) in &lines {
-        let wrapped = Paragraph::new(line.clone()).wrap(Wrap { trim: false });
-        row_of.push(row_of[row_of.len() - 1] + wrapped.line_count(inner.width));
+    for (shows, line) in &lines {
+        let wrap = || {
+            Paragraph::new(line.clone())
+                .wrap(Wrap { trim: false })
+                .line_count(inner.width)
+        };
+        let rows = match shows {
+            Some(at) if as_written(line, &reading.lines[*at]) => {
+                reading.wrapped.rows(*at, inner.width, wrap)
+            }
+            _ => wrap(),
+        };
+        row_of.push(row_of[row_of.len() - 1] + rows);
     }
     let starts: Vec<(usize, usize)> = starts
         .into_iter()
@@ -929,10 +975,9 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
     // As the desktop lands on a message: unless it starts in the upper third
     // already, where a short conversation keeps its subject in view.
     if let Some(&(_, start)) = app.landing.take().and_then(|index| starts.get(index)) {
-        let scroll = usize::from(app.scroll.get());
+        let scroll = app.scroll.get();
         if start < scroll || start > scroll + height / 3 {
-            app.scroll
-                .set(u16::try_from(start.min(bottom)).unwrap_or(u16::MAX));
+            app.scroll.set(start.min(bottom));
         }
     }
     // As `z` keeps the place: the line at the top back there, as far into it
@@ -945,11 +990,10 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
             .rposition(|(shows, _)| shows.is_some_and(|shows| shows <= line));
         if let Some(at) = back {
             let into = if lines[at].0 == Some(line) { into } else { 0 };
-            let scroll = (row_of[at] + into).min(bottom);
-            app.scroll.set(u16::try_from(scroll).unwrap_or(u16::MAX));
+            app.scroll.set((row_of[at] + into).min(bottom));
         }
     }
-    let top = usize::from(app.scroll.get()).min(bottom);
+    let top = app.scroll.get().min(bottom);
     let line_at_top = row_of.partition_point(|&row| row <= top) - 1;
     app.top_line.set(
         lines
@@ -960,7 +1004,6 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
     app.in_view
         .set(at_top.or((!starts.is_empty()).then_some(0)));
     *app.message_rows.borrow_mut() = starts.iter().map(|&(_, own)| own).collect();
-    let bottom = u16::try_from(bottom).unwrap_or(u16::MAX);
     app.reader_bottom.set(bottom);
     app.reader_rows.set(inner.height.max(1));
     if (0..reading.messages.len()).any(|index| reading.folds(index)) {
@@ -971,15 +1014,26 @@ fn draw_reader(frame: &mut Frame, app: &App, mut block: Block, area: Rect) -> us
         };
         block = block.title_bottom(Line::styled(hint, dim));
     }
-    let lines: Vec<Line> = lines.into_iter().map(|(_, line)| line).collect();
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    frame.render_widget(
-        paragraph
-            .scroll((app.scroll.get().min(bottom), 0))
-            .block(block),
-        area,
-    );
+    // Only the lines that show are handed over: the widget wraps from the
+    // first line it is given down to the last row of the pane.
+    let after = row_of
+        .partition_point(|&row| row < top + height)
+        .min(lines.len());
+    let into = u16::try_from(top - row_of[line_at_top]).unwrap_or(u16::MAX);
+    let shown: Vec<Line> = lines
+        .drain(line_at_top..after.max(line_at_top))
+        .map(|(_, line)| line)
+        .collect();
+    let paragraph = Paragraph::new(shown).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph.scroll((into, 0)).block(block), area);
     top
+}
+
+/// Whether `line` is `text`, a line of the reading, as it is: not a fold
+/// that stands for it, nor a line cut to fit.
+fn as_written(line: &Line, text: &str) -> bool {
+    matches!(&line.spans[..], [span]
+        if std::ptr::eq(span.content.as_ptr(), text.as_ptr()) && span.content.len() == text.len())
 }
 
 /// Adds the lines `range` of `reading`, each quoted passage that starts

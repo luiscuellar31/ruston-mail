@@ -11,6 +11,12 @@ use skrifa::{FontRef, MetadataProvider, raw::TableProvider};
 const MAX_FILE_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_FALLBACK_BYTES: usize = 48 * 1024 * 1024;
 const APPLIED: &str = "ruston-font-policy";
+/// The name the system's interface face is registered under.
+const SYSTEM_UI_FONT: &str = "ruston-system-ui";
+/// The most faces of a collection looked through for a regular one.
+const MAX_COLLECTION_FACES: u32 = 32;
+/// The weight of a regular face, the one a collection's is chosen nearest.
+const REGULAR_WEIGHT: f32 = 400.0;
 
 static PRIMARY: OnceLock<Option<Arc<FontData>>> = OnceLock::new();
 static FALLBACKS: OnceLock<Vec<Arc<FontData>>> = OnceLock::new();
@@ -123,14 +129,12 @@ fn definitions(typeface: Typeface) -> FontDefinitions {
     if typeface == Typeface::System
         && let Some(Some(data)) = PRIMARY.get()
     {
-        fonts
-            .font_data
-            .insert("ruston-system-ui".into(), data.clone());
+        fonts.font_data.insert(SYSTEM_UI_FONT.into(), data.clone());
         fonts
             .families
             .get_mut(&FontFamily::Proportional)
             .unwrap()
-            .insert(0, "ruston-system-ui".into());
+            .insert(0, SYSTEM_UI_FONT.into());
     }
     for (index, data) in FALLBACKS.get().into_iter().flatten().enumerate() {
         let name = format!("ruston-language-{index}");
@@ -156,7 +160,7 @@ fn load(path: &Path) -> Option<FontData> {
     let count = skrifa::raw::CollectionRef::new(&bytes)
         .map(|collection| collection.len())
         .unwrap_or(1)
-        .min(32);
+        .min(MAX_COLLECTION_FACES);
     // Collections often start with a bold/light face. Choose a normal face
     // nearest regular weight, rather than assuming collection index zero.
     let index = (0..count)
@@ -171,7 +175,7 @@ fn load(path: &Path) -> Option<FontData> {
             {
                 return None;
             }
-            Some((index, (attributes.weight.value() - 400.0).abs()))
+            Some((index, (attributes.weight.value() - REGULAR_WEIGHT).abs()))
         })
         .min_by(|a, b| a.1.total_cmp(&b.1))?
         .0;

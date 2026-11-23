@@ -242,7 +242,7 @@ fn refresh_keeps_reader_when_row_is_absent_from_the_page() {
     mailbox.finish_page(request.id, page(&["a"], 1));
 
     assert_eq!(mailbox.reader_state(), &reader);
-    assert!(mailbox.reader_stamp.is_none());
+    assert!(!mailbox.reader_cacheable());
 
     // Typing keeps it too; folder navigation closes it.
     mailbox.set_search_query("no match".into());
@@ -368,7 +368,7 @@ fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
     archive_confirmed(&mut mailbox, &["p20"], 4);
     let undo = mailbox.take_undo().unwrap();
     let back = mailbox
-        .start_move_back(undo, 5)
+        .start_move_back(undo.rows.into_iter().next().unwrap(), 5)
         .and_then(|start| start.send)
         .unwrap();
     let _ = mailbox.finish_action(&back, Ok(()));

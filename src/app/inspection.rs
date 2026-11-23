@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use futures::future::{AbortHandle, AbortRegistration};
+use futures::future::{AbortHandle, AbortRegistration, Abortable};
 
 use super::mailbox::RequestId;
-use crate::mail::INSPECTION_CONCURRENCY;
+use super::{App, Effects, Message, SessionEpoch};
+use crate::mail::{ConversationSummary, Folder, INSPECTION_CONCURRENCY, MailboxError};
 
 /// One Proton page of best-effort work, including running inspections. Overflow
 /// keeps the server's conversation grouping instead of retaining more tasks.
@@ -78,6 +79,122 @@ impl Inspections {
 impl Drop for Inspections {
     fn drop(&mut self) {
         self.cancel();
+    }
+}
+
+impl App {
+    pub(super) fn inspect_candidates(&mut self, candidates: Vec<String>) -> Effects {
+        let Some(mailbox) = self.mailbox.as_ref() else {
+            return Effects::none();
+        };
+        if mailbox.shown_search_query().is_some() {
+            return Effects::none();
+        }
+        // The automatic refresh lists the same rows every minute: only those
+        // new or changed since they were last looked into are asked about.
+        self.inspections.enqueue(
+            candidates
+                .into_iter()
+                .filter(|id| mailbox.worth_inspecting(id)),
+        );
+        self.start_inspections()
+    }
+
+    pub(super) fn start_inspections(&mut self) -> Effects {
+        if !self.auth_state.is_authenticated() {
+            return Effects::none();
+        }
+        let (Some(backend), Some(mailbox)) = (self.backend.clone(), self.mailbox.as_ref()) else {
+            return Effects::none();
+        };
+        let epoch = self.session_epoch;
+        let folder = mailbox.folder().clone();
+        let revision = mailbox.inspection_revision();
+        let mut effects = Vec::new();
+        // Each inspection takes the next request ID itself, asked for only
+        // when there is one to start, so no ID goes unused.
+        while self.inspections.can_start() {
+            let request = self.next_request();
+            let Some((id, registration)) = self.inspections.start(request) else {
+                break;
+            };
+            // A queued row may have been moved or removed before its turn.
+            if !self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.has_inspection_target(&id))
+            {
+                self.inspections.finish(request, &id);
+                continue;
+            }
+            let backend = backend.clone();
+            let target_folder = folder.clone();
+            let callback_folder = folder.clone();
+            let conversation_id = id.clone();
+            let future = Abortable::new(
+                async move {
+                    backend
+                        .inspect_conversation(&conversation_id, &target_folder)
+                        .await
+                },
+                registration,
+            );
+            effects.push(Effects::perform(future, move |result| {
+                Message::ThreadInspected {
+                    epoch,
+                    request,
+                    revision,
+                    folder: callback_folder,
+                    conversation_id: id,
+                    result: result.unwrap_or(Ok(None)),
+                }
+            }));
+        }
+        Effects::batch(effects)
+    }
+
+    /// Splits the row an inspection looked into, or keeps it whole, while its
+    /// answer is still wanted, and starts the inspections waiting.
+    pub(super) fn finish_inspection(
+        &mut self,
+        epoch: SessionEpoch,
+        request: RequestId,
+        revision: u64,
+        folder: Folder,
+        conversation_id: String,
+        result: Result<Option<Vec<ConversationSummary>>, MailboxError>,
+    ) -> Effects {
+        // Finishing first frees the answer's place even when the folder was
+        // renamed meanwhile, which keeps the folder.
+        if !self.is_current_session(epoch)
+            || !self.inspections.finish(request, &conversation_id)
+            || !self
+                .mailbox
+                .as_ref()
+                .is_some_and(|mailbox| mailbox.shows(&folder))
+        {
+            return Effects::none();
+        }
+        match result {
+            Ok(Some(split_rows)) => {
+                if let Some(mailbox) = self.mailbox.as_mut()
+                    && mailbox.inspection_revision() == revision
+                {
+                    mailbox.split_conversation(&folder, &conversation_id, split_rows);
+                }
+            }
+            Ok(None) => {
+                if let Some(mailbox) = self.mailbox.as_mut()
+                    && mailbox.inspection_revision() == revision
+                {
+                    mailbox.keep_whole(&conversation_id);
+                }
+            }
+            Err(error) => {
+                self.end_session_if_expired(Some(error));
+            }
+        }
+        self.start_inspections()
     }
 }
 

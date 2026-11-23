@@ -31,8 +31,9 @@ fn a_rows_menu_acts_on_that_row_and_leaves_the_open_one_open() {
     let mailbox = app.mailbox().unwrap();
     assert_eq!(mailbox.selected_conversation(), Some("demo-0"));
     let undo = mailbox.undo().expect("its folder is known");
-    assert_eq!(undo.row_id, "demo-1");
-    assert_eq!(undo.from, Folder::INBOX);
+    assert_eq!(undo.rows.len(), 1);
+    assert_eq!(undo.rows[0].row_id, "demo-1");
+    assert_eq!(undo.rows[0].from, Folder::INBOX);
 }
 
 #[test]
@@ -218,7 +219,10 @@ fn a_move_proton_refuses_brings_the_row_back_with_the_list() {
     let has_row = |app: &App| app.mailbox().unwrap().has_row("demo-0");
     assert!(!has_row(&app));
 
-    let _ = app.update(Message::ActionFinished(request, Err(MailboxError::Service)));
+    let _ = app.update(Message::ActionFinished(
+        vec![request],
+        Err(MailboxError::Service),
+    ));
 
     let mailbox = app.mailbox().unwrap();
     assert_eq!(mailbox.action_error(), Some(MailboxError::Service));
@@ -280,7 +284,7 @@ fn demo_mail_marked_not_spam_goes_back_to_the_inbox() {
 
     assert!(!is_listed(&app, "demo-3"));
     let undo = app.mailbox().unwrap().undo().expect("an offer to undo");
-    assert_eq!(undo.from, sys(MailFolder::Spam));
+    assert_eq!(undo.rows[0].from, sys(MailFolder::Spam));
     assert_eq!(undo.to, Folder::INBOX);
 
     let _ = app.update(Message::SelectFolder(Folder::INBOX));

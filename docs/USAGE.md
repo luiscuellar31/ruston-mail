@@ -225,6 +225,21 @@ trackpad, for the same moves the reader offers it, **Mark as read** or **Mark as
 unread**, and **Add star** or **Remove star**. They act on that conversation
 without opening it, so it is not marked read, and the open one stays open.
 
+To act on several conversations at once, choose them in the list: click one
+with `Cmd` (`Ctrl` on Linux and Windows) to add it to those chosen or take it
+out, click with `Shift` to choose every conversation from the last one clicked,
+press `Shift` with `Up` or `Down` to choose the next ones from the open
+conversation, or press `Cmd`/`Ctrl` + `A` to choose every conversation listed.
+The reader then says how many are selected and offers the moves
+and flags for all of them: **Mark as read** while any is unread, and **Add
+star** unless all are starred; labels are applied one conversation at a time.
+Right-clicking one of them offers the same, and `Delete` moves them all to
+Trash. A move of several can be undone together, from the same notice. `Esc`
+clears the selection, and a plain click or arrow opens one conversation again.
+Conversations chosen together reach Proton in one request, up to 50 at a time;
+if Proton refuses it, all of them come back and the folder reloads.
+In one column, the selection is under **Reading**.
+
 Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
 Starred or a label, a conversation moved to another folder keeps its star and
@@ -534,7 +549,9 @@ always draw with OpenGL.
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
 | `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
-| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation to Trash |
+| `Shift` + `Down` or `Up` | Choose the next or previous conversation too |
+| `Cmd`/`Ctrl` + `A` | Choose every conversation listed, outside a text field |
+| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation, or all those chosen, to Trash |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has

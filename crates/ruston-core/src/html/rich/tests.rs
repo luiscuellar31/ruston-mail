@@ -804,3 +804,20 @@ fn plain_text_keeps_structure_one_block_per_line() {
         "Title\nHello\n• One\n[Image: Logo]\n---\n> Quoted\n> > let x = 1;\n> >   indented\n"
     );
 }
+
+#[test]
+fn spaces_after_hidden_text_cost_no_more_as_the_paragraph_grows() {
+    // Each space looked back over every hidden run before it for the last
+    // text shown, so a paragraph of them cost the square of their number.
+    let runs = 100_000;
+    let html = format!("<p>shown {}end</p>", "<b hidden>x</b> ".repeat(runs));
+    let started = std::time::Instant::now();
+    let body = parse(&html);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(10),
+        "{:?}",
+        started.elapsed()
+    );
+    // Left out, the hidden letters leave the one space that was shown.
+    assert_eq!(body.plain_text(), "shown end\n");
+}

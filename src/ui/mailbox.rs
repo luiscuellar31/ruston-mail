@@ -1,6 +1,6 @@
-use chrono::{DateTime, Datelike, Local, TimeZone};
 use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
+use jiff::ZonedDateTime;
 
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::accounts::MAX_ACCOUNTS;
@@ -188,7 +188,8 @@ fn show_compact(
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
         && app.compose().is_some_and(|draft| !draft.folded());
-    let reader_available = writing || mailbox.selected_conversation().is_some();
+    let reader_available =
+        writing || mailbox.selected_conversation().is_some() || !mailbox.selected_rows().is_empty();
     if state.compact_view == CompactView::Reader && !reader_available {
         state.compact_view = CompactView::Mail;
     }
@@ -399,7 +400,7 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
             email.unwrap_or("Proton Mail account")
         };
         let label = egui::RichText::new(account_label)
-            .size(12.0)
+            .size(theme::CAPTION_SIZE)
             .color(theme::colors(ui).muted);
         if app.is_demo_process() || signing_out {
             ui.add(egui::Label::new(label).truncate())
@@ -554,7 +555,7 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new("New message")
-                .size(15.0)
+                .size(theme::BODY_SIZE)
                 .color(theme::ON_ACCENT)
                 .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
             egui::Atom::grow(),
@@ -692,8 +693,13 @@ fn conversation_pane(
             refresh_button(ui, app, mailbox, messages);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                 ui.add(
-                    egui::Label::new(egui::RichText::new(title).heading().size(21.0).strong())
-                        .truncate(),
+                    egui::Label::new(
+                        egui::RichText::new(title)
+                            .heading()
+                            .size(theme::LIST_TITLE_SIZE)
+                            .strong(),
+                    )
+                    .truncate(),
                 );
             });
         });
@@ -954,7 +960,10 @@ fn notice_content(
 ) {
     match notice {
         BottomNotice::Undo(offer) => {
-            ui.label(format!("Moved to {}.", offer.to.name()));
+            ui.label(match offer.rows.len() {
+                1 => format!("Moved to {}.", offer.to.name()),
+                moved => format!("Moved {moved} conversations to {}.", offer.to.name()),
+            });
             // The move back waits while the list loads or loads more.
             let ready = mailbox.takes_actions();
             if ui
@@ -1111,8 +1120,7 @@ fn conversation_list(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
-    let now = Local::now();
-    let selected = mailbox.selected_conversation();
+    let now = ZonedDateTime::now();
     let visible_count = mailbox.visible_count();
     let total = visible_count + usize::from(ends_with_load_more(mailbox));
 
@@ -1163,7 +1171,7 @@ fn conversation_list(
                         load_more(ui, mailbox, messages);
                         continue;
                     };
-                    let chosen = selected == Some(conversation.id.as_str());
+                    let chosen = mailbox.is_chosen(&conversation.id);
                     list_row(ui, mailbox, conversation, chosen, &now, messages);
                 }
             });
@@ -1193,14 +1201,16 @@ fn scroll_row_into_view(ui: &mut egui::Ui, first: usize, index: usize) {
 }
 
 /// One conversation of the list: its row, the selection a click asks for,
-/// and its menu. As native lists do, the row a menu belongs to is outlined
-/// while the menu is open.
+/// and its menu. As native lists do, Command (Ctrl elsewhere) adds a row to
+/// those chosen or takes it out, Shift chooses the rows from the last one
+/// clicked, the menu of a row chosen with others acts on all of them, and the
+/// row a menu belongs to is outlined while the menu is open.
 fn list_row(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     conversation: &ConversationSummary,
     selected: bool,
-    now: &DateTime<Local>,
+    now: &ZonedDateTime,
     messages: &mut Vec<Message>,
 ) {
     let response = ui
@@ -1209,10 +1219,22 @@ fn list_row(
         })
         .inner;
     if response.clicked() {
-        messages.push(Message::SelectConversation(conversation.id.clone()));
+        let held = click_modifiers(ui);
+        let id = conversation.id.clone();
+        messages.push(if held.shift {
+            Message::SelectThrough(id)
+        } else if held.command {
+            Message::ToggleSelected(id)
+        } else {
+            Message::SelectConversation(id)
+        });
     }
     let menu = response.context_menu(|ui| {
-        reader::conversation_menu(ui, mailbox, conversation, messages);
+        if mailbox.selected_together(&conversation.id) {
+            reader::selection_menu(ui, mailbox, messages);
+        } else {
+            reader::conversation_menu(ui, mailbox, conversation, messages);
+        }
     });
     if menu.is_some() {
         ui.painter().rect_stroke(
@@ -1222,6 +1244,28 @@ fn list_row(
             egui::StrokeKind::Inside,
         );
     }
+}
+
+/// The keys held as this pass's click was made: those the main button went up
+/// with, since a key let go in the same pass is no longer held at its end. A
+/// click from the keyboard has only what is held now.
+fn click_modifiers(ui: &egui::Ui) -> egui::Modifiers {
+    ui.input(|input| {
+        input
+            .events
+            .iter()
+            .rev()
+            .find_map(|event| match event {
+                egui::Event::PointerButton {
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers,
+                    ..
+                } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or(input.modifiers)
+    })
 }
 
 /// Whether the virtualized list needs a trailing load-more row.
@@ -1258,7 +1302,7 @@ fn conversation_row(
     ui: &mut egui::Ui,
     conversation: &ConversationSummary,
     selected: bool,
-    now: &DateTime<Local>,
+    now: &ZonedDateTime,
 ) -> egui::Response {
     let correspondents = conversation
         .correspondents
@@ -1525,25 +1569,25 @@ fn device_index_label(why: DeviceIndex) -> &'static str {
     }
 }
 
-fn format_time<Tz: TimeZone>(timestamp: i64, now: &DateTime<Tz>) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    let Some(time) = now.timezone().timestamp_opt(timestamp, 0).single() else {
+/// When a row's mail came, as someone reading at `now` would say it, in the
+/// zone `now` is in. A time no date can hold shows nothing.
+fn format_time(timestamp: i64, now: &ZonedDateTime) -> String {
+    let Ok(time) = jiff::Timestamp::from_second(timestamp) else {
         return String::new();
     };
-    let today = now.date_naive();
-    if today.pred_opt() == Some(time.date_naive()) {
+    let time = time.to_zoned_datetime(now.time_zone().clone());
+    let today = now.date();
+    if today.yesterday().ok() == Some(time.date()) {
         return "Yesterday".to_owned();
     }
-    let format = if time.date_naive() == today {
+    let format = if time.date() == today {
         "%H:%M"
     } else if time.year() == now.year() {
         "%b %-d"
     } else {
         "%Y-%m-%d"
     };
-    time.format(format).to_string()
+    time.strftime(format).to_string()
 }
 
 #[cfg(test)]

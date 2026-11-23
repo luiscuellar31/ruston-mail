@@ -843,7 +843,7 @@ async fn failed_persistence_keeps_newer_in_memory_tokens_for_next_refresh() {
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,
@@ -1033,7 +1033,7 @@ async fn waiting_for_the_profile_outlasts_a_refresh_until_its_tokens_are_saved()
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,
@@ -1188,7 +1188,7 @@ async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,
@@ -1262,7 +1262,7 @@ async fn client_behind_its_saved_session(
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
-        user_id: None,
+        user_id: "user-1".into(),
     }
     .save(
         &paths,

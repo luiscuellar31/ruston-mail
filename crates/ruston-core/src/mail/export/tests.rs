@@ -245,3 +245,27 @@ fn invalid_address_and_mime_type_cannot_inject_headers() {
             .any(|window| window == b"Content-Type: application/octet-stream")
     );
 }
+
+#[test]
+fn the_date_header_is_the_message_s_time_in_utc() {
+    let date_of = |time: i64| {
+        let mut full = message();
+        full.meta.time = time;
+        let eml = EmlWriter::new(Vec::new(), &full, None)
+            .unwrap()
+            .finish()
+            .unwrap();
+        let text = String::from_utf8_lossy(&eml).into_owned();
+        text.lines()
+            .find_map(|line| line.strip_prefix("Date: ").map(str::to_owned))
+            .unwrap()
+    };
+    assert_eq!(date_of(1_700_000_000), "Tue, 14 Nov 2023 22:13:20 +0000");
+    // A day of one digit is written as one.
+    assert_eq!(date_of(1_701_388_800), "Fri, 1 Dec 2023 00:00:00 +0000");
+    assert_eq!(date_of(-1), "Wed, 31 Dec 1969 23:59:59 +0000");
+    // A time no date can hold is written as the epoch.
+    for beyond in [i64::MAX, i64::MIN] {
+        assert_eq!(date_of(beyond), "Thu, 1 Jan 1970 00:00:00 +0000");
+    }
+}

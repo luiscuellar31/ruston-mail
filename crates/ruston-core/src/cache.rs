@@ -11,6 +11,12 @@ use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+mod schema;
+
+use schema::{
+    FTS_COLUMNS, ensure_fts_secure_delete, migrate, needs_migration, needs_migration_to_write,
+};
+
 /// Any failure in the cache, its database or its files, as an
 /// [`Error::Cache`] with its message.
 fn cache_error<E: std::fmt::Display>(e: E) -> Error {
@@ -149,19 +155,36 @@ const STAGED_SQL: MetadataSql = MetadataSql {
     insert_label: "INSERT OR IGNORE INTO resync_labels(message_id, label_id, time) VALUES(?1, ?2, ?3)",
 };
 
+/// The statements a connection keeps compiled: every one the cache runs for
+/// each message, in either pair of tables, and for each list, count and
+/// search, with room to spare.
+const KEPT_STATEMENTS: usize = 32;
+
+/// Runs `sql` with `params`, compiled the first time and kept with the
+/// connection. A resync, a backfill and a batch of events run the same few
+/// statements for every message, and compiling one costs more than running
+/// it.
+fn execute(conn: &Connection, sql: &str, params: impl rusqlite::Params) -> Result<usize> {
+    conn.prepare_cached(sql)
+        .and_then(|mut statement| statement.execute(params))
+        .map_err(cache_error)
+}
+
 /// Writes `m`'s row and labels with `sql`, replacing the labels it had.
 fn write_metadata(conn: &Connection, sql: &MetadataSql, m: &MessageMetadata) -> Result<()> {
     let json = serde_json::to_string(m)?;
-    conn.execute(
+    execute(
+        conn,
         sql.upsert_message,
         rusqlite::params![m.id, m.time, m.unread, json],
-    )
-    .map_err(cache_error)?;
-    conn.execute(sql.clear_labels, [&m.id])
-        .map_err(cache_error)?;
+    )?;
+    execute(conn, sql.clear_labels, [&m.id])?;
     for label in &m.label_ids {
-        conn.execute(sql.insert_label, rusqlite::params![m.id, label, m.time])
-            .map_err(cache_error)?;
+        execute(
+            conn,
+            sql.insert_label,
+            rusqlite::params![m.id, label, m.time],
+        )?;
     }
     Ok(())
 }
@@ -170,46 +193,42 @@ fn upsert_metadata(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     write_metadata(conn, &CACHED_SQL, m)
 }
 
-fn upsert_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
+fn write_message(conn: &Connection, m: &MessageMetadata) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute(
+    execute(
+        conn,
         UPDATE_INDEX_SQL,
         rusqlite::params![m.id, m.subject, participants(m)],
-    )
-    .map_err(cache_error)?;
+    )?;
     Ok(())
 }
 
 fn replace_index(conn: &Connection, m: &MessageMetadata, body: Option<&str>) -> Result<()> {
     upsert_metadata(conn, m)?;
-    conn.execute(DELETE_INDEX_SQL, [&m.id])
-        .map_err(cache_error)?;
+    execute(conn, DELETE_INDEX_SQL, [&m.id])?;
     if let Some(body) = body {
-        conn.execute(
+        execute(
+            conn,
             "INSERT INTO msg_fts(id, subject, body, participants) VALUES(?1, ?2, ?3, ?4)",
             rusqlite::params![m.id, m.subject, body, participants(m)],
-        )
-        .map_err(cache_error)?;
-        conn.execute(
+        )?;
+        execute(
+            conn,
             "UPDATE msg_fts_rows SET as_text=1 WHERE message_id=?1",
             [&m.id],
-        )
-        .map_err(cache_error)?;
+        )?;
     }
     Ok(())
 }
 
-fn delete_message(conn: &Connection, id: &str) -> Result<()> {
+fn remove_message(conn: &Connection, id: &str) -> Result<()> {
     // The messages_delete_fts trigger removes the indexed body in this transaction.
-    let deleted = conn
-        .execute("DELETE FROM messages WHERE id=?1", [id])
-        .map_err(cache_error)?;
+    let deleted = execute(conn, "DELETE FROM messages WHERE id=?1", [id])?;
     if deleted == 0 {
         // A stray index row can still exist without cached metadata.
-        conn.execute(DELETE_INDEX_SQL, [id]).map_err(cache_error)?;
+        execute(conn, DELETE_INDEX_SQL, [id])?;
     }
-    conn.execute("DELETE FROM message_labels WHERE message_id=?1", [id])
-        .map_err(cache_error)?;
+    execute(conn, "DELETE FROM message_labels WHERE message_id=?1", [id])?;
     Ok(())
 }
 
@@ -221,11 +240,11 @@ fn apply_message_event(
 ) -> Result<()> {
     match (event.action, &event.message) {
         (action::DELETE, _) => {
-            delete_message(conn, &event.id)?;
+            remove_message(conn, &event.id)?;
             counts.deleted += 1;
         }
         (action::CREATE, Some(message)) => {
-            upsert_message(conn, message)?;
+            write_message(conn, message)?;
             counts.created += 1;
         }
         (action::UPDATE, message) => {
@@ -233,7 +252,7 @@ fn apply_message_event(
             conn.execute(DELETE_INDEX_SQL, [&event.id])
                 .map_err(cache_error)?;
             if let Some(message) = message {
-                upsert_message(conn, message)?;
+                write_message(conn, message)?;
                 counts.updated += 1;
             }
         }
@@ -247,235 +266,6 @@ fn apply_message_event(
         _ => {}
     }
     Ok(())
-}
-
-fn ensure_label_time_index(conn: &Connection) -> Result<()> {
-    // Serialize first-open migration across processes. A failed backfill leaves
-    // the old schema and cache contents intact.
-    let tx =
-        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
-    let has_time = {
-        let mut columns = tx
-            .prepare("PRAGMA table_info(message_labels)")
-            .map_err(cache_error)?;
-        let names = columns
-            .query_map([], |row| row.get::<_, String>(1))
-            .map_err(cache_error)?;
-        let mut has_time = false;
-        for name in names {
-            has_time |= name.map_err(cache_error)? == "time";
-        }
-        has_time
-    };
-    if !has_time {
-        tx.execute_batch(
-            "ALTER TABLE message_labels ADD COLUMN time INTEGER;
-             UPDATE message_labels SET time=(
-                 SELECT time FROM messages WHERE id=message_labels.message_id);",
-        )
-        .map_err(cache_error)?;
-    }
-    // The time index starts with label_id, so it serves every lookup the old
-    // label-only index did, which only cost writes and secure deletes.
-    tx.execute_batch(
-        "CREATE TRIGGER IF NOT EXISTS message_labels_insert_time
-         AFTER INSERT ON message_labels WHEN NEW.time IS NULL
-         BEGIN
-             UPDATE message_labels SET time=(
-                 SELECT time FROM messages WHERE id=NEW.message_id)
-             WHERE message_id=NEW.message_id AND label_id=NEW.label_id;
-         END;
-         CREATE TRIGGER IF NOT EXISTS messages_update_label_time
-         AFTER UPDATE OF time ON messages WHEN OLD.time IS NOT NEW.time
-         BEGIN
-             UPDATE message_labels SET time=NEW.time WHERE message_id=NEW.id;
-         END;
-         CREATE INDEX IF NOT EXISTS idx_ml_label_time
-         ON message_labels(label_id, time DESC, message_id);
-         DROP INDEX IF EXISTS idx_ml_label;",
-    )
-    .map_err(cache_error)?;
-    tx.commit().map_err(cache_error)
-}
-
-/// The full-text table's columns: the message ID, left out of the index, and
-/// the text searched.
-const FTS_COLUMNS: &str = "id UNINDEXED, subject, body, participants";
-
-/// The schema this version writes, kept in SQLite's `user_version`; a cache
-/// from before it was kept reads 0. Opening an older cache brings it up to
-/// date, and one a newer version wrote is refused: this version cannot know
-/// what that one expects of it.
-const SCHEMA_VERSION: i64 = 1;
-
-/// Whether opening has to migrate the cache: it is older than
-/// [`SCHEMA_VERSION`], or an older version put back the label-only index the
-/// migration drops. Only reads, so it never waits for a writer.
-fn needs_migration(conn: &Connection) -> Result<bool> {
-    let version = schema_version(conn)?;
-    if version < SCHEMA_VERSION {
-        return Ok(true);
-    }
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='index' AND name='idx_ml_label')",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(cache_error)
-}
-
-/// Whether opening to write has to migrate the cache: [`needs_migration`]
-/// says so, or its index rows cannot yet say which bodies were indexed as
-/// text, which only writing bodies needs, so a cache opened to read stays
-/// searchable without it.
-fn needs_migration_to_write(conn: &Connection) -> Result<bool> {
-    Ok(needs_migration(conn)? || !has_as_text_column(conn)?)
-}
-
-/// Whether the index rows say which bodies were indexed as text.
-fn has_as_text_column(conn: &Connection) -> Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('msg_fts_rows') WHERE name='as_text')",
-        [],
-        |row| row.get(0),
-    )
-    .map_err(cache_error)
-}
-
-/// Marks which indexed bodies hold text alone, as this version indexes an
-/// HTML body. Those indexed before held the HTML itself, with every address
-/// its links led to, and an older version still writes rows without the mark;
-/// both read 0, so `index` reads those bodies again, and until then they stay
-/// searchable. The schema version stays, so older versions keep opening it.
-fn ensure_as_text_column(conn: &Connection) -> Result<()> {
-    let tx =
-        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
-    if !has_as_text_column(&tx)? {
-        tx.execute_batch("ALTER TABLE msg_fts_rows ADD COLUMN as_text INTEGER NOT NULL DEFAULT 0")
-            .map_err(cache_error)?;
-    }
-    tx.commit().map_err(cache_error)
-}
-
-/// The cache's schema version, refusing one newer than this version's.
-fn schema_version(conn: &Connection) -> Result<i64> {
-    let version: i64 = conn
-        .query_row("PRAGMA user_version", [], |row| row.get(0))
-        .map_err(cache_error)?;
-    if version > SCHEMA_VERSION {
-        return Err(Error::Cache(format!(
-            "cache was written by a newer version of Ruston Mail (schema {version}); update Ruston Mail to use it"
-        )));
-    }
-    Ok(version)
-}
-
-/// Brings the cache to [`SCHEMA_VERSION`]. Each step looks at what it finds
-/// and holds the write lock only while it works, so processes opening the
-/// cache at once take turns, and a step that fails leaves what it found.
-fn migrate(conn: &Connection) -> Result<()> {
-    conn.execute_batch(&format!(
-        "CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
-         CREATE TABLE IF NOT EXISTS messages(id TEXT PRIMARY KEY, time INTEGER, unread INTEGER, json TEXT);
-         CREATE TABLE IF NOT EXISTS message_labels(message_id TEXT, label_id TEXT, time INTEGER, PRIMARY KEY(message_id, label_id));
-         CREATE VIRTUAL TABLE IF NOT EXISTS msg_fts USING fts5({FTS_COLUMNS});",
-    ))
-    .map_err(cache_error)?;
-    ensure_label_time_index(conn)?;
-    ensure_fts_rowid_index(conn)?;
-    ensure_as_text_column(conn)?;
-    ensure_fts_secure_delete(conn)?;
-    // A newer version may have migrated it further meanwhile.
-    let tx =
-        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
-    schema_version(&tx)?;
-    tx.execute_batch(&format!("PRAGMA user_version={SCHEMA_VERSION}"))
-        .map_err(cache_error)?;
-    tx.commit().map_err(cache_error)
-}
-
-/// FTS5 keeps a deleted body's words in its index until segments merge;
-/// secure-delete removes them with the row. FTS5 keeps the setting, so its
-/// settings table is only read here, to write the setting once.
-fn ensure_fts_secure_delete(conn: &Connection) -> Result<()> {
-    let enabled: Option<i64> = conn
-        .query_row(
-            "SELECT v FROM msg_fts_index_config WHERE k='secure-delete'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(cache_error)?;
-    if enabled != Some(1) {
-        conn.execute(
-            "INSERT INTO msg_fts_index(msg_fts_index, rank) VALUES('secure-delete', 1)",
-            [],
-        )
-        .map_err(cache_error)?;
-    }
-    Ok(())
-}
-
-fn ensure_fts_rowid_index(conn: &Connection) -> Result<()> {
-    let tx =
-        Transaction::new_unchecked(conn, TransactionBehavior::Immediate).map_err(cache_error)?;
-    let kind: String = tx
-        .query_row(
-            "SELECT type FROM sqlite_schema WHERE name='msg_fts'",
-            [],
-            |row| row.get(0),
-        )
-        .map_err(cache_error)?;
-    if kind == "view" {
-        return tx.commit().map_err(cache_error);
-    }
-
-    // Preserve existing FTS data and rowids. FTS5 does not allow table triggers,
-    // so a compatibility view keeps the ID/rowid map in sync for every writer,
-    // including a process using the previous schema. Do not modify shadow tables.
-    tx.execute_batch(
-        "DROP TRIGGER IF EXISTS messages_delete_fts;
-         ALTER TABLE msg_fts RENAME TO msg_fts_index;
-         CREATE TABLE msg_fts_rows(fts_rowid INTEGER PRIMARY KEY, message_id TEXT NOT NULL);
-         CREATE INDEX idx_fts_message_id ON msg_fts_rows(message_id);
-         INSERT INTO msg_fts_rows(fts_rowid, message_id) SELECT rowid, id FROM msg_fts_index;
-         CREATE VIEW msg_fts AS
-         SELECT rowid, id, subject, body, participants, rank, msg_fts_index AS msg_fts
-         FROM msg_fts_index;
-         CREATE TRIGGER msg_fts_insert INSTEAD OF INSERT ON msg_fts
-         WHEN NEW.msg_fts IS NULL
-         BEGIN
-             INSERT INTO msg_fts_index(rowid, id, subject, body, participants)
-             VALUES(NEW.rowid, NEW.id, NEW.subject, NEW.body, NEW.participants);
-             INSERT INTO msg_fts_rows(fts_rowid, message_id) VALUES(last_insert_rowid(), NEW.id);
-         END;
-         CREATE TRIGGER msg_fts_command INSTEAD OF INSERT ON msg_fts
-         WHEN NEW.msg_fts IS NOT NULL
-         BEGIN
-             INSERT INTO msg_fts_index(msg_fts_index, rank) VALUES(NEW.msg_fts, NEW.rank);
-         END;
-         CREATE TRIGGER msg_fts_update INSTEAD OF UPDATE ON msg_fts
-         BEGIN
-             UPDATE msg_fts_index
-             SET rowid=NEW.rowid, id=NEW.id, subject=NEW.subject,
-                 body=NEW.body, participants=NEW.participants
-             WHERE rowid=OLD.rowid;
-             UPDATE msg_fts_rows SET fts_rowid=NEW.rowid, message_id=NEW.id
-             WHERE fts_rowid=OLD.rowid;
-         END;
-         CREATE TRIGGER msg_fts_delete INSTEAD OF DELETE ON msg_fts
-         BEGIN
-             DELETE FROM msg_fts_index WHERE rowid=OLD.rowid;
-             DELETE FROM msg_fts_rows WHERE fts_rowid=OLD.rowid;
-         END;
-         CREATE TRIGGER messages_delete_fts AFTER DELETE ON messages
-         BEGIN
-             DELETE FROM msg_fts WHERE rowid IN (
-                 SELECT fts_rowid FROM msg_fts_rows WHERE message_id=OLD.id);
-         END;",
-    )
-    .map_err(cache_error)?;
-    tx.commit().map_err(cache_error)
 }
 
 /// The `meta` key the sync cursor is kept under.
@@ -644,6 +434,10 @@ fn create_cache_dir(dir: &Path) -> Result<()> {
 const COUNT_SQL: &str = "SELECT COUNT(*), COALESCE(SUM(m.unread),0) FROM messages m \
      JOIN message_labels l ON m.id=l.message_id WHERE l.label_id=?1";
 
+/// How many messages a label holds in the cache, which its index answers
+/// without reading a message.
+const LABEL_COUNT_SQL: &str = "SELECT COUNT(*) FROM message_labels WHERE label_id=?1";
+
 impl Cache {
     pub(crate) fn default_account_path(profile: &str, identity: &CacheIdentity) -> Result<PathBuf> {
         validate_profile_name(profile)?;
@@ -711,6 +505,7 @@ impl Cache {
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(cache_error)?;
+        conn.set_prepared_statement_cache_capacity(KEPT_STATEMENTS);
         if needs_migration(&conn)? {
             return Err(Error::Cache(
                 "the local index needs `ruston-cli sync` or `ruston-cli index` to update it".into(),
@@ -789,6 +584,7 @@ impl Cache {
         // Another CLI process may hold the write lock during sync or migration.
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(cache_error)?;
+        conn.set_prepared_statement_cache_capacity(KEPT_STATEMENTS);
         // Deleted and replaced rows, decrypted bodies among them, are
         // overwritten instead of lingering in the file's free space.
         conn.execute_batch("PRAGMA secure_delete=ON")
@@ -859,7 +655,7 @@ impl Cache {
         let tx = self
             .transaction_at_cursor(expected_cursor, "sync cursor changed during cache download")?;
         for m in messages {
-            upsert_message(&tx, m)?;
+            write_message(&tx, m)?;
         }
         tx.commit().map_err(cache_error)
     }
@@ -911,7 +707,7 @@ impl Cache {
     ) -> Result<Vec<MessageMetadata>> {
         let mut statement = self
             .conn
-            .prepare(&list_sql(unread_only))
+            .prepare_cached(&list_sql(unread_only))
             .map_err(cache_error)?;
         read_metadata(&mut statement, rusqlite::params![label_id, limit, offset])
     }
@@ -920,9 +716,25 @@ impl Cache {
     /// unread.
     pub fn count(&self, label_id: &str) -> Result<(i64, i64)> {
         self.conn
-            .query_row(COUNT_SQL, [label_id], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            .prepare_cached(COUNT_SQL)
+            .and_then(|mut statement| {
+                statement.query_row([label_id], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+                })
             })
+            .map_err(cache_error)
+    }
+
+    /// How many messages [`Self::list`] has to show of a label: all of them,
+    /// or the unread ones. All of them are counted on the label's index
+    /// alone; telling the unread means reading each message's row.
+    pub(crate) fn listed_count(&self, label_id: &str, unread_only: bool) -> Result<i64> {
+        if unread_only {
+            return Ok(self.count(label_id)?.1);
+        }
+        self.conn
+            .prepare_cached(LABEL_COUNT_SQL)
+            .and_then(|mut statement| statement.query_row([label_id], |row| row.get(0)))
             .map_err(cache_error)
     }
 
@@ -995,11 +807,52 @@ impl Cache {
     /// of `query`, best match first, at most `limit` of them. Nothing typed
     /// finds nothing.
     pub fn search(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
+        self.matches(query, limit, limit, |_| true)
+    }
+
+    /// Like [`Self::search`], keeping only the messages `keep` accepts and
+    /// reading no further once `limit` of them are kept. The matches are read
+    /// one at a time, best first, so a search narrowed by what the index
+    /// cannot tell, such as a sender or a date, holds no more than it returns.
+    pub fn search_where(
+        &self,
+        query: &str,
+        limit: u32,
+        keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
+        // How many matches `keep` passes over is unknown: all are ranked.
+        self.matches(query, u32::MAX, limit, keep)
+    }
+
+    /// The first `limit` of the `ranked` best matches of `query` that `keep`
+    /// accepts. One whose metadata no longer reads is left out, as
+    /// [`Self::list`] leaves it.
+    fn matches(
+        &self,
+        query: &str,
+        ranked: u32,
+        limit: u32,
+        mut keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
         let Some(expression) = match_expression(query) else {
             return Ok(Vec::new());
         };
-        let mut statement = self.conn.prepare(SEARCH_SQL).map_err(cache_error)?;
-        read_metadata(&mut statement, rusqlite::params![expression, limit])
+        let mut statement = self.conn.prepare_cached(SEARCH_SQL).map_err(cache_error)?;
+        let mut rows = statement
+            .query(rusqlite::params![expression, ranked])
+            .map_err(cache_error)?;
+        let mut found = Vec::new();
+        while found.len() < limit as usize
+            && let Some(row) = rows.next().map_err(cache_error)?
+        {
+            let json: String = row.get(0).map_err(cache_error)?;
+            if let Ok(message) = serde_json::from_str::<MessageMetadata>(&json)
+                && keep(&message)
+            {
+                found.push(message);
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -1018,7 +871,7 @@ impl Cache {
     /// current for a body that has already been indexed.
     pub(crate) fn upsert_message(&self, m: &MessageMetadata) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
-        upsert_message(&tx, m)?;
+        write_message(&tx, m)?;
         tx.commit().map_err(cache_error)?;
         Ok(())
     }
@@ -1035,7 +888,7 @@ impl Cache {
     /// Remove a message, its labels, and its active full-text index entry.
     pub(crate) fn delete_message(&self, id: &str) -> Result<()> {
         let tx = self.conn.unchecked_transaction().map_err(cache_error)?;
-        delete_message(&tx, id)?;
+        remove_message(&tx, id)?;
         tx.commit().map_err(cache_error)?;
         Ok(())
     }

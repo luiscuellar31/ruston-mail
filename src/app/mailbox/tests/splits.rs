@@ -42,7 +42,7 @@ fn load_more_and_read_completion_refresh_preserve_split_reader() {
     assert_eq!(mailbox.reader_state(), &reader);
     assert_eq!(mailbox.selected_conversation(), Some("m40-a"));
     assert!(mailbox.selected_summary().is_some());
-    assert!(mailbox.reader_stamp.is_some());
+    assert!(mailbox.reader_cacheable());
     mailbox.split_conversation(&Folder::INBOX, "p40", split);
     assert!(mailbox.selected_summary().is_some());
     assert_eq!(mailbox.reader_state(), &reader);
@@ -131,7 +131,7 @@ fn split_conversation_updates_cached_listing_when_folder_not_active() {
     let (mut mailbox, request) = open();
     mailbox.finish_page(request.id, page(&["c1"], 1));
 
-    // Navigating to Sent moves Inbox to cached_listings
+    // Navigating to Sent keeps the Inbox loaded behind it
     let sent_request = mailbox.select_folder(sys(MailFolder::Sent), 2).unwrap();
     mailbox.finish_page(sent_request.id, page(&["s1"], 1));
     assert_eq!(visible_ids(&mailbox), ["s1"]);
@@ -179,7 +179,7 @@ fn repeated_refresh_reuses_split_rows_and_reinspection_updates_without_duplicate
         mailbox.split_conversation(&Folder::INBOX, "p49", updated);
         assert_eq!(visible_ids(&mailbox), original);
         assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
-        assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
+        assert!(mailbox.indexes_its_rows());
         assert_eq!(
             mailbox.row("m49-b").unwrap().subject.as_deref(),
             Some(format!("fresh {request}").as_str())
@@ -198,8 +198,8 @@ fn changed_conversation_invalidates_its_split_members_even_below_the_page_bounda
     assert!(mailbox.has_row("p49"));
     assert!(!mailbox.has_row("m49-a"));
     assert!(!mailbox.has_row("m49-b"));
-    assert!(mailbox.groups.splits.is_empty());
-    assert!(mailbox.groups.parents.is_empty());
+    assert!(mailbox.split_parents().is_empty());
+    assert!(mailbox.split_members().is_empty());
 }
 
 #[test]
@@ -213,14 +213,15 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
     mailbox.finish_page(refresh.id, Ok(page));
     assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
     assert!(!mailbox.has_row("p49"));
-    assert!(mailbox.groups.splits["p49"].source.unread);
-    assert!(mailbox.groups.splits["p49"].source.starred);
+    let source = mailbox.split_source("p49").unwrap();
+    assert!(source.unread && source.starred);
     split[1].unread = true;
     split[1].starred = true;
     mailbox.split_conversation(&Folder::INBOX, "p49", split);
     assert!(mailbox.row("m49-b").unwrap().unread);
     assert!(mailbox.row("m49-b").unwrap().starred);
-    assert_eq!(mailbox.row_ids.len(), PAGE_SIZE as usize + 1);
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
+    assert!(mailbox.indexes_its_rows());
 }
 
 #[test]
@@ -232,7 +233,7 @@ fn overlapping_pages_keep_verified_groups_and_deduplicate_new_rows() {
     page.conversations.push(dated("p50", page_time(50)));
     mailbox.finish_page(next.id, Ok(page));
     assert_eq!(mailbox.visible_count(), 2 * PAGE_SIZE as usize + 1);
-    assert_eq!(mailbox.row_ids.len(), 2 * PAGE_SIZE as usize + 1);
+    assert!(mailbox.indexes_its_rows());
     assert!(!mailbox.has_row("p49"));
     assert!(mailbox.has_row("m49-b"));
 }
@@ -242,16 +243,16 @@ fn split_refresh_decisions_follow_cached_folders_and_are_pruned_with_their_rows(
     let (mut mailbox, _) = inspected_last_inbox();
     let sent = mailbox.select_folder(sys(MailFolder::Sent), 10).unwrap();
     mailbox.finish_page(sent.id, page(&["sent"], 1));
-    assert!(mailbox.groups.splits.is_empty());
+    assert!(mailbox.split_parents().is_empty());
     assert_eq!(mailbox.select_folder(Folder::INBOX, 11), None);
     let refresh = mailbox.refresh(12).unwrap();
     mailbox.finish_page(refresh.id, full_page(0, 120));
     assert!(mailbox.has_row("m49-b"));
-    assert_eq!(mailbox.groups.splits.len(), 1);
+    assert_eq!(mailbox.split_parents(), ["p49"]);
     let refresh = mailbox.refresh(13).unwrap();
     mailbox.finish_page(refresh.id, page(&[], 0));
-    assert!(mailbox.groups.splits.is_empty());
-    assert!(mailbox.groups.parents.is_empty());
+    assert!(mailbox.split_parents().is_empty());
+    assert!(mailbox.split_members().is_empty());
 }
 
 #[test]
@@ -292,8 +293,7 @@ fn inspection_replaces_old_members_and_duplicate_input_with_fresh_metadata() {
     );
     mailbox.split_conversation(&Folder::INBOX, "c1", vec![split_message("m3", 70)]);
     assert_eq!(ids(&mailbox), ["m3", "other"]);
-    assert_eq!(mailbox.groups.parents.len(), 1);
-    assert!(!mailbox.groups.parents.contains_key("m1"));
+    assert_eq!(mailbox.split_members(), [("m3", "c1")]);
 }
 
 #[test]
@@ -308,5 +308,5 @@ fn a_locally_removed_member_cannot_be_restored_from_a_cached_group() {
     let refresh = mailbox.refresh(10).unwrap();
     mailbox.finish_page(refresh.id, page(&["c1"], 1));
     assert_eq!(ids(&mailbox), ["c1"]);
-    assert!(mailbox.groups.splits.is_empty());
+    assert!(mailbox.split_parents().is_empty());
 }

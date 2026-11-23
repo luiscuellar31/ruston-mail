@@ -42,7 +42,7 @@ for exe in "${EXECUTABLES[@]}"; do
     [[ -x "$exe" ]] || die "Missing executable: $exe"
 done
 
-VERSION="$(grep -m 1 '^version = ' "$REPO_ROOT/Cargo.toml" | cut -d '"' -f 2)"
+VERSION="$("$REPO_ROOT/packaging/workspace-version.sh")"
 MINIMUM_MACOS="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$PLIST")"
 
 # "a is not newer than b", for dotted versions.

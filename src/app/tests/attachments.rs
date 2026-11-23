@@ -7,17 +7,25 @@ fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
     let _ = app.update(Message::AttachmentSaved(request, result));
 }
 
+/// The message that saves `attachment_id` of `message_id`.
+fn save(message_id: &str, attachment_id: &str) -> Message {
+    Message::SaveAttachment {
+        message_id: message_id.into(),
+        attachment_id: attachment_id.into(),
+    }
+}
+
 /// Whether the app neither confirms a saved file nor reports a failed save.
 fn nothing_said_about_saves(app: &App) -> bool {
     app.notice().is_none() && app.failed_save().is_none()
 }
 
 fn choose_attachment_destination(app: &mut App) -> AttachmentSaveRequest {
-    let effects = app.update(Message::SaveAttachmentAs(
-        "demo-0".into(),
-        "file".into(),
-        "../../report.pdf".into(),
-    ));
+    let effects = app.update(Message::SaveAttachmentAs {
+        message_id: "demo-0".into(),
+        attachment_id: "file".into(),
+        name: "../../report.pdf".into(),
+    });
     let mut effects = effects.into_iter();
     let Some(Effect::Ui(UiEffect::PickAttachmentDestination {
         request,
@@ -37,7 +45,7 @@ fn choose_attachment_destination(app: &mut App) -> AttachmentSaveRequest {
 #[test]
 fn a_save_in_flight_does_not_outlive_the_session() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let _ = app.update(save("demo-0", "file"));
     let previous_request = app.saving_attachment.as_ref().unwrap().request.clone();
     assert_eq!(app.saving_attachment(), Some("file"));
 
@@ -46,7 +54,7 @@ fn a_save_in_flight_does_not_outlive_the_session() {
     assert!(nothing_said_about_saves(&app));
 
     let _ = app.open_mailbox(MailBackend::demo(), None, None);
-    let _ = app.update(Message::SaveAttachment("demo-1".into(), "new-file".into()));
+    let _ = app.update(save("demo-1", "new-file"));
 
     // A late save from the previous session must not replace the new one.
     let _ = app.update(Message::AttachmentSaved(
@@ -65,7 +73,7 @@ fn a_sent_message_and_a_saved_file_are_confirmed_until_their_notice_goes() {
     assert_eq!(app.notice(), Some(&Notice::Sent));
 
     let saved = PathBuf::from("/tmp/report.pdf");
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let _ = app.update(save("demo-0", "file"));
     deliver_attachment(&mut app, Ok(saved.clone()));
     assert_eq!(app.notice(), Some(&Notice::Saved(saved.clone())));
     // The time of an older notice running out takes nothing newer with it.
@@ -75,7 +83,7 @@ fn a_sent_message_and_a_saved_file_are_confirmed_until_their_notice_goes() {
     assert_eq!(app.notice(), None);
 
     // A failed save is kept for its own file instead.
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let _ = app.update(save("demo-0", "file"));
     deliver_attachment(&mut app, Err(SaveError::Failed));
     assert_eq!(app.failed_save(), Some(("file", SaveError::Failed)));
     assert_eq!(app.notice(), None);
@@ -93,16 +101,16 @@ fn one_attachment_is_saved_at_a_time() {
     let mut app = loaded_demo_app();
 
     // A second press must not start a duplicate fetch.
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let _ = app.update(save("demo-0", "file"));
     assert_eq!(app.saving_attachment(), Some("file"));
 
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
+    let _ = app.update(save("demo-0", "other"));
     assert_eq!(app.saving_attachment(), Some("file"));
 
     deliver_attachment(&mut app, Err(SaveError::NotFetched));
     assert_eq!(app.saving_attachment(), None);
     // Once the first one is done, the next press is free to go.
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "other".into()));
+    let _ = app.update(save("demo-0", "other"));
     assert_eq!(app.saving_attachment(), Some("other"));
 }
 
@@ -110,11 +118,7 @@ fn one_attachment_is_saved_at_a_time() {
 fn cancelling_save_as_does_not_download_or_change_a_later_save() {
     let mut app = loaded_demo_app();
     let first = choose_attachment_destination(&mut app);
-    assert_eq!(
-        app.update(Message::SaveAttachment("demo-0".into(), "other".into()))
-            .units(),
-        0
-    );
+    assert_eq!(app.update(save("demo-0", "other")).units(), 0);
     assert_eq!(
         app.update(Message::AttachmentDestinationChosen(first.clone(), None))
             .units(),
@@ -206,7 +210,7 @@ fn save_as_dialog_results_after_sign_out_cannot_start_a_download() {
 #[test]
 fn an_attachment_save_that_finds_the_session_expired_signs_out() {
     let mut app = loaded_demo_app();
-    let _ = app.update(Message::SaveAttachment("demo-0".into(), "file".into()));
+    let _ = app.update(save("demo-0", "file"));
 
     deliver_attachment(&mut app, Err(SaveError::SessionExpired));
 
@@ -231,6 +235,6 @@ fn a_failed_download_says_why_the_file_was_not_saved() {
         (MailboxError::Service, SaveError::NotFetched),
         (MailboxError::Unavailable, SaveError::NotFetched),
     ] {
-        assert_eq!(super::unsaved(error), saved, "{error:?}");
+        assert_eq!(crate::app::attachments::unsaved(error), saved, "{error:?}");
     }
 }

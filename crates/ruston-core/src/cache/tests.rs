@@ -1,3 +1,4 @@
+use super::schema::SCHEMA_VERSION;
 use super::*;
 use crate::api::events::MessageEvent;
 use crate::model::enums::label_ids;
@@ -156,7 +157,6 @@ fn event_batch(event_id: &str, messages: Vec<MessageEvent>) -> EventBatch {
         more: false,
         refresh: false,
         messages,
-        counts: Vec::new(),
     }
 }
 
@@ -1815,4 +1815,77 @@ fn deleting_metadata_directly_removes_the_indexed_body() {
         })
         .unwrap();
     assert_eq!(remaining, 0);
+}
+
+#[test]
+fn a_label_is_counted_on_its_index_and_agrees_with_the_full_count() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for (id, label, unread) in [
+        ("a", label_ids::INBOX, true),
+        ("b", label_ids::INBOX, false),
+        ("c", label_ids::INBOX, true),
+        ("d", label_ids::ALL_MAIL, false),
+    ] {
+        let message = if unread {
+            unread_mail(id, label, 10)
+        } else {
+            mail(id, label, 10)
+        };
+        cache.upsert_message(&message).unwrap();
+    }
+    for label in [label_ids::INBOX, label_ids::ALL_MAIL, label_ids::TRASH] {
+        let (all, unread) = cache.count(label).unwrap();
+        assert_eq!(cache.listed_count(label, false).unwrap(), all, "{label}");
+        assert_eq!(cache.listed_count(label, true).unwrap(), unread, "{label}");
+    }
+    assert_eq!(cache.count(label_ids::INBOX).unwrap(), (3, 2));
+
+    // Counting every message of a label reads no message's row.
+    let plan = query_plan(&cache.conn, LABEL_COUNT_SQL, [label_ids::INBOX]);
+    assert!(
+        plan.iter()
+            .all(|step| step.contains("COVERING INDEX") && !step.contains("messages m")),
+        "{plan:?}"
+    );
+}
+
+#[test]
+fn a_narrowed_search_reads_matches_only_until_it_has_enough() {
+    let cache = Cache::open(Path::new(":memory:")).unwrap();
+    for n in 0..50 {
+        let message = MessageMetadata {
+            sender: Recipient::new(if n % 2 == 0 {
+                "even@example.test"
+            } else {
+                "odd@example.test"
+            }),
+            ..mail(&format!("m{n}"), label_ids::INBOX, n)
+        };
+        cache.index_message(&message, "quarterly figures").unwrap();
+    }
+    let mut asked = 0;
+    let found = cache
+        .search_where("quarterly", 5, |message| {
+            asked += 1;
+            message.sender.address == "even@example.test"
+        })
+        .unwrap();
+    assert_eq!(found.len(), 5);
+    assert!(
+        found
+            .iter()
+            .all(|message| message.sender.address == "even@example.test")
+    );
+    // Asked about the matches until five were kept, not about all fifty,
+    // and holding only those it returns.
+    assert!(asked < 20, "{asked}");
+    // Unnarrowed, it is the search it always was.
+    let ids = |found: Vec<MessageMetadata>| -> Vec<String> {
+        found.into_iter().map(|message| message.id).collect()
+    };
+    assert_eq!(
+        ids(cache.search_where("quarterly", 7, |_| true).unwrap()),
+        ids(cache.search("quarterly", 7).unwrap())
+    );
+    assert!(cache.search_where("", 5, |_| true).unwrap().is_empty());
 }

@@ -28,7 +28,7 @@ fn open_behind_the_draft(app: &mut App, id: &str) {
     assert!(app.draft_covers_reader());
     let _ = app.start_conversation_load(id.to_owned());
     deliver_selected_demo_detail(app);
-    assert!(app.defer_read(id));
+    assert!(app.postpone_read_while_covered(id));
 }
 
 #[test]
@@ -102,8 +102,38 @@ fn demo_selection_opens_reader_with_newest_message_expanded() {
     assert_eq!(reader.conversation_id(), "demo-0");
     assert_eq!(reader.detail().id, reader.conversation_id());
     assert_eq!(reader.detail().messages.len(), 3);
-    assert!(reader.is_expanded("demo-0-2", Reading::default()));
-    assert!(!reader.is_expanded("demo-0-0", Reading::default()));
+    assert!(reader.expands("demo-0-2", Reading::default()));
+    assert!(!reader.expands("demo-0-0", Reading::default()));
+}
+
+#[test]
+fn the_demo_leaves_a_conversation_unread_when_settings_say_to() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    deliver_latest_demo_page(&mut app, 0);
+    let unread: Vec<String> = app
+        .mailbox()
+        .unwrap()
+        .conversations()
+        .iter()
+        .filter(|row| row.unread)
+        .map(|row| row.id.clone())
+        .take(2)
+        .collect();
+    let [kept, marked] = &unread[..] else {
+        panic!("the demo lists two unread conversations: {unread:?}");
+    };
+    let is_unread = |app: &App, id: &str| {
+        let rows = app.mailbox().unwrap().conversations();
+        rows.iter().find(|row| row.id == id).unwrap().unread
+    };
+
+    let _ = app.update(Message::SetMarkReadOnOpen(false));
+    open_conversation(&mut app, kept);
+    assert!(is_unread(&app, kept), "opened with marking off");
+
+    let _ = app.update(Message::SetMarkReadOnOpen(true));
+    open_conversation(&mut app, marked);
+    assert!(!is_unread(&app, marked), "opened with marking on");
 }
 
 #[test]
@@ -114,8 +144,8 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
 
     let _ = app.update(Message::ToggleMessageExpanded("demo-0-0".into()));
     let reader = app.mailbox().unwrap().reader().unwrap();
-    assert!(reader.is_expanded("demo-0-0", Reading::default()));
-    assert!(reader.is_expanded("demo-0-2", Reading::default()));
+    assert!(reader.expands("demo-0-0", Reading::default()));
+    assert!(reader.expands("demo-0-2", Reading::default()));
 
     open_conversation(&mut app, "demo-2");
     let effects = app.update(Message::SelectConversation("demo-0".into()));
@@ -129,7 +159,7 @@ fn returning_to_a_conversation_restores_its_reader_without_loading() {
             .unwrap()
             .reader()
             .unwrap()
-            .is_expanded("demo-0-0", Reading::default())
+            .expands("demo-0-0", Reading::default())
     );
 }
 

@@ -608,13 +608,18 @@ mod tests {
             path(SettingsFile::Main).unwrap().parent()
         );
 
-        // Loading only reads; what was loaded is written back to its own file.
-        let demo = Settings::load(true);
+        // What is read remembers its file, to be written back there. Read
+        // from a folder of the test's own: the person's settings stay as
+        // they are, whatever state their file is in.
+        let folder = empty_folder("demo");
+        let demo = read(&folder.join(DEMO_FILE), SettingsFile::Demo);
         assert_eq!(demo.file, Some(SettingsFile::Demo));
-        assert_eq!(Settings::load(false).file, Some(SettingsFile::Main));
+        let main = read(&folder.join(FILE), SettingsFile::Main);
+        assert_eq!(main.file, Some(SettingsFile::Main));
         // Which file they came from is bookkeeping, and never reaches it.
         let text = serde_json::to_string(&demo).unwrap();
         assert!(!text.contains("demo") && !text.contains("\"file\""));
+        let _ = fs::remove_dir_all(folder);
     }
 
     #[test]

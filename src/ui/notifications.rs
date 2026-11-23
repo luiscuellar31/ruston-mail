@@ -8,13 +8,18 @@ mod macos;
 mod windows;
 
 use eframe::egui;
-use ruston_core::mail::attachments::is_invisible_mark;
+use ruston_core::text::is_invisible_mark;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU8, Ordering},
 };
 
 use crate::runtime::Runtime;
+
+/// The most characters of a sender a notification shows.
+const MAX_SENDER_CHARS: usize = 160;
+/// The most characters of a subject a notification shows.
+const MAX_SUBJECT_CHARS: usize = 240;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
@@ -174,8 +179,8 @@ impl Notifications {
         if !self.enabled.load(Ordering::Acquire) {
             return;
         }
-        let sender = display_text(sender, "Proton Mail", 160);
-        let subject = display_text(subject, "(No subject)", 240);
+        let sender = display_text(sender, "Proton Mail", MAX_SENDER_CHARS);
+        let subject = display_text(subject, "(No subject)", MAX_SUBJECT_CHARS);
         #[cfg(target_os = "macos")]
         {
             let _ = runtime;
@@ -275,20 +280,34 @@ mod tests {
 
     #[test]
     fn notification_headers_are_bounded_plain_text() {
-        assert_eq!(display_text("Alice\0\r\n\u{1b}", "fallback", 160), "Alice");
         assert_eq!(
-            display_text("Invoice \u{202e}fdp.exe\u{2066}", "fallback", 160),
+            display_text("Alice\0\r\n\u{1b}", "fallback", MAX_SENDER_CHARS),
+            "Alice"
+        );
+        assert_eq!(
+            display_text(
+                "Invoice \u{202e}fdp.exe\u{2066}",
+                "fallback",
+                MAX_SENDER_CHARS
+            ),
             "Invoice fdp.exe"
         );
-        assert_eq!(display_text("\0\n ", "fallback", 160), "fallback");
         assert_eq!(
-            display_text(&"á".repeat(1_000), "fallback", 160)
+            display_text("\0\n ", "fallback", MAX_SENDER_CHARS),
+            "fallback"
+        );
+        assert_eq!(
+            display_text(&"á".repeat(1_000), "fallback", MAX_SENDER_CHARS)
                 .chars()
                 .count(),
             160
         );
         assert_eq!(
-            display_text("<img src='https://example.com'>", "fallback", 160),
+            display_text(
+                "<img src='https://example.com'>",
+                "fallback",
+                MAX_SENDER_CHARS
+            ),
             "<img src='https://example.com'>"
         );
     }

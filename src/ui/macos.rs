@@ -227,13 +227,13 @@ impl Menu {
         let original_quit_target = quit.target();
         let renamed = name_after_bundle(&app);
         let target = RustonMenuTarget::new(marker, context);
-        let settings = action_item(marker, &target, "Settings…", ",", sel!(rustonSettings:));
+        let settings = action_item(marker, &target, "Settings…", sel!(rustonSettings:), ",");
         let separator = NSMenuItem::separatorItem(marker);
         app.insertItem_atIndex(&separator, 1);
         app.insertItem_atIndex(&settings, 2);
 
         let command = NSEventModifierFlags::Command;
-        let new_message = action_item(marker, &target, "New Message", "n", sel!(rustonNewMessage:));
+        let new_message = action_item(marker, &target, "New Message", sel!(rustonNewMessage:), "n");
         let file = submenu(
             marker,
             "File",
@@ -269,9 +269,9 @@ impl Menu {
             marker,
             "View",
             &[
-                action_item(marker, &target, "Actual Size", "0", sel!(rustonActualSize:)),
-                action_item(marker, &target, "Zoom In", "+", sel!(rustonZoomIn:)),
-                action_item(marker, &target, "Zoom Out", "-", sel!(rustonZoomOut:)),
+                action_item(marker, &target, "Actual Size", sel!(rustonActualSize:), "0"),
+                action_item(marker, &target, "Zoom In", sel!(rustonZoomIn:), "+"),
+                action_item(marker, &target, "Zoom Out", sel!(rustonZoomOut:), "-"),
                 NSMenuItem::separatorItem(marker),
                 standard_item(
                     marker,
@@ -298,12 +298,12 @@ impl Menu {
                 ),
             ],
         );
+        // AppKit lists the open windows at the end of this menu.
+        application.setWindowsMenu(window.submenu().as_deref());
         let menus = vec![file, edit, view, window];
         for (index, menu) in (1..).zip(&menus) {
             root.insertItem_atIndex(menu, index);
         }
-        // AppKit lists the open windows at the end of this menu.
-        application.setWindowsMenu(menus[3].submenu().as_deref());
         // SAFETY: the retained target implements this menu-action selector.
         unsafe {
             quit.setAction(Some(sel!(rustonQuit:)));
@@ -474,25 +474,19 @@ fn standard_item(
     item
 }
 
+/// An item of Ruston's own, sent to `target` with Command and `key`. It
+/// starts disabled, until the menu says the mailbox can take it.
 fn action_item(
     marker: MainThreadMarker,
     target: &RustonMenuTarget,
     title: &str,
-    key: &str,
     action: Sel,
+    key: &str,
 ) -> Retained<NSMenuItem> {
+    let item = standard_item(marker, title, action, key, NSEventModifierFlags::Command);
     // SAFETY: each selector names a matching action method on the retained
     // target; Menu owns the target for the lifetime of attached items.
-    let item = unsafe {
-        NSMenuItem::initWithTitle_action_keyEquivalent(
-            marker.alloc(),
-            &NSString::from_str(title),
-            Some(action),
-            &NSString::from_str(key),
-        )
-    };
     unsafe { item.setTarget(Some(target)) };
-    item.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
     item.setEnabled(false);
     item
 }

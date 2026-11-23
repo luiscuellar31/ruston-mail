@@ -1,8 +1,8 @@
 use std::collections::{HashMap, HashSet};
 
-use chrono::{Local, TimeZone};
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
+use jiff::tz::TimeZone;
 
 use super::mailbox::{detail, folder_icon};
 use super::{UiState, theme};
@@ -18,9 +18,9 @@ use crate::mail::{
 use crate::settings::Reading;
 use ruston_core::html::rich::TableRow;
 
-const SUBJECT_SIZE: f32 = 22.0;
+const SUBJECT_SIZE: f32 = 21.0;
 /// A sender's address beside their name.
-const ADDRESS_SIZE: f32 = 12.0;
+const ADDRESS_SIZE: f32 = 13.0;
 const MAX_QUOTE_DEPTH: u8 = 4;
 /// Deeper list items keep this level's indent, as in the CLI, so a deeply
 /// nested list cannot push its text out of the column.
@@ -76,6 +76,10 @@ pub(super) fn show(
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
+    let chosen = view.mailbox.selected_rows();
+    if !chosen.is_empty() {
+        return rows_chosen(ui, &chosen, view, state, messages);
+    }
     match view.mailbox.reader_state() {
         ReaderState::Empty => placeholder(ui, "Select a conversation to read it."),
         ReaderState::Loading { .. } => conversation_skeleton(ui, view, state),
@@ -116,6 +120,50 @@ pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option
         ],
         Message::DismissLink,
     )
+}
+
+/// What the reader shows for rows chosen together: how many, and what can be
+/// done to all of them at once.
+fn rows_chosen(
+    ui: &mut egui::Ui,
+    rows: &[&ConversationSummary],
+    view: &ReaderView<'_>,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
+    let mailbox = view.mailbox;
+    reader_scroll(ui, state, |ui| {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("{} conversations selected", rows.len()))
+                    .size(SUBJECT_SIZE)
+                    .strong(),
+            )
+            .wrap(),
+        );
+        detail(ui, "Press Escape to clear the selection.");
+        ui.add_space(8.0);
+        if view.actions_available {
+            ui.horizontal_wrapped(|ui| {
+                move_and_flag_buttons(
+                    ui,
+                    mailbox.selection_location(),
+                    mailbox.folder(),
+                    view.places,
+                    group_flags(rows),
+                    // An action asked for while another is on its way waits
+                    // its turn.
+                    mailbox.takes_actions(),
+                    messages,
+                );
+            });
+            if let Some(error) = mailbox.action_error() {
+                ui.label(
+                    egui::RichText::new(error.action_message()).color(theme::colors(ui).danger),
+                );
+            }
+        }
+    });
 }
 
 fn conversation(
@@ -433,49 +481,69 @@ fn action_toolbar(
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
-    let location = mailbox.selected_location();
     ui.horizontal_wrapped(|ui| {
-        for MoveButton {
-            icon,
-            label,
-            destination,
-            risky,
-        } in moves(location)
-        {
-            let mut button = theme::IconButton::new(icon, label);
-            if risky {
-                button = button.danger();
-            }
-            let response = ui.add_enabled(enabled, button);
-            if response.clicked() {
-                messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
-            }
-        }
-        move_menu(
+        move_and_flag_buttons(
             ui,
-            &move_destinations(location, mailbox.folder(), places),
+            mailbox.selected_location(),
+            mailbox.folder(),
+            places,
+            flags(summary.unread, summary.starred),
             enabled,
             messages,
         );
-
-        ui.separator();
-        for FlagButton {
-            icon,
-            label,
-            on,
-            action,
-        } in flags(summary)
-        {
-            if ui
-                .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
-                .clicked()
-            {
-                messages.push(Message::ApplyAction(action));
-            }
-        }
-
         label_menu(ui, carried_labels, places, enabled, messages);
     });
+}
+
+/// The moves out of `location` and the flags a toolbar offers, for the rows
+/// it acts on, listed in `view`.
+fn move_and_flag_buttons(
+    ui: &mut egui::Ui,
+    location: Option<&Folder>,
+    view: &Folder,
+    places: &[Folder],
+    flags: [FlagButton; 2],
+    enabled: bool,
+    messages: &mut Vec<Message>,
+) {
+    for MoveButton {
+        icon,
+        label,
+        destination,
+        risky,
+    } in moves(location)
+    {
+        let mut button = theme::IconButton::new(icon, label);
+        if risky {
+            button = button.danger();
+        }
+        let response = ui.add_enabled(enabled, button);
+        if response.clicked() {
+            messages.push(Message::ApplyAction(MailAction::MoveTo(destination)));
+        }
+    }
+    move_menu(
+        ui,
+        &move_destinations(location, view, places),
+        enabled,
+        messages,
+    );
+
+    ui.separator();
+    for FlagButton {
+        icon,
+        label,
+        on,
+        action,
+    } in flags
+    {
+        if ui
+            .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
+            .clicked()
+        {
+            messages.push(Message::ApplyAction(action));
+        }
+    }
 }
 
 /// A move out of where a conversation is, as a button and a menu item.
@@ -533,30 +601,36 @@ fn moves(location: Option<&Folder>) -> Vec<MoveButton> {
         .collect()
 }
 
-/// The read and star flags a conversation can be switched to.
-fn flags(summary: &ConversationSummary) -> [FlagButton; 2] {
+/// The read and star flags a conversation can be switched to, from `unread`
+/// and `starred`.
+fn flags(unread: bool, starred: bool) -> [FlagButton; 2] {
     [
         FlagButton {
             icon: theme::Icon::Mail,
-            label: if summary.unread {
+            label: if unread {
                 "Mark as read"
             } else {
                 "Mark as unread"
             },
-            on: summary.unread,
-            action: MailAction::SetUnread(!summary.unread),
+            on: unread,
+            action: MailAction::SetUnread(!unread),
         },
         FlagButton {
             icon: theme::Icon::Star,
-            label: if summary.starred {
-                "Remove star"
-            } else {
-                "Add star"
-            },
-            on: summary.starred,
-            action: MailAction::SetStarred(!summary.starred),
+            label: if starred { "Remove star" } else { "Add star" },
+            on: starred,
+            action: MailAction::SetStarred(!starred),
         },
     ]
+}
+
+/// The flags rows chosen together can be switched to: all read while any is
+/// unread, and all starred unless every one is.
+fn group_flags(rows: &[&ConversationSummary]) -> [FlagButton; 2] {
+    flags(
+        rows.iter().any(|row| row.unread),
+        rows.iter().all(|row| row.starred),
+    )
 }
 
 /// The menu a right click opens on a conversation in the list: the moves and
@@ -565,6 +639,39 @@ pub(super) fn conversation_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     row: &ConversationSummary,
+    messages: &mut Vec<Message>,
+) {
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.location_of(&row.id),
+        flags(row.unread, row.starred),
+        |action| Message::ApplyRowAction(row.id.clone(), action),
+        messages,
+    );
+}
+
+/// The menu a right click opens on a row chosen with others: what the reader
+/// offers for all of them.
+pub(super) fn selection_menu(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.selection_location(),
+        group_flags(&mailbox.selected_rows()),
+        Message::ApplyAction,
+        messages,
+    );
+}
+
+/// A list menu of the moves out of `location` and of `flags`, each asking
+/// for the message `act` makes of its action.
+fn action_menu(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    location: Option<&Folder>,
+    flags: [FlagButton; 2],
+    act: impl Fn(MailAction) -> Message,
     messages: &mut Vec<Message>,
 ) {
     ui.set_min_width(200.0);
@@ -576,7 +683,7 @@ pub(super) fn conversation_menu(
             .inner
             .clicked()
         {
-            messages.push(Message::ApplyRowAction(row.id.clone(), action));
+            messages.push(act(action));
             ui.close();
         }
     };
@@ -585,7 +692,7 @@ pub(super) fn conversation_menu(
         label,
         destination,
         ..
-    } in moves(mailbox.location_of(&row.id))
+    } in moves(location)
     {
         item(ui, icon, label, MailAction::MoveTo(destination));
     }
@@ -595,7 +702,7 @@ pub(super) fn conversation_menu(
         label,
         action,
         ..
-    } in flags(row)
+    } in flags
     {
         item(ui, icon, label, action);
     }
@@ -768,8 +875,7 @@ fn message_card(
         message_id: &message.id,
         attachments: &message.attachments,
     };
-    forget_textures(ui, images);
-    let expanded = reader.is_expanded(&message.id, reading);
+    let expanded = reader.is_expanded(message, reading);
     ui.push_id(&message.id, |ui| {
         theme::card(ui).show(ui, |ui| {
             let header = message_header(ui, message, preview, expanded);
@@ -935,7 +1041,7 @@ fn message_header(
     let painter = ui.painter_at(rect);
     let time = message
         .time
-        .map(|time| format_message_time(time, &Local))
+        .map(|time| format_message_time(time, &TimeZone::system()))
         .unwrap_or_default();
     // The date keeps the width it needs, up to half the header, so in a
     // narrow reader it is shortened instead of drawn over the sender.
@@ -1263,20 +1369,20 @@ fn attachment_row(
             )
             .clicked()
         {
-            messages.push(Message::SaveAttachment(
-                message_id.to_owned(),
-                attachment.id.clone(),
-            ));
+            messages.push(Message::SaveAttachment {
+                message_id: message_id.to_owned(),
+                attachment_id: attachment.id.clone(),
+            });
         }
         if ui
             .add_enabled(!saving, theme::compact_button("Save as…"))
             .clicked()
         {
-            messages.push(Message::SaveAttachmentAs(
-                message_id.to_owned(),
-                attachment.id.clone(),
-                attachment.name.clone(),
-            ));
+            messages.push(Message::SaveAttachmentAs {
+                message_id: message_id.to_owned(),
+                attachment_id: attachment.id.clone(),
+                name: attachment.name.clone(),
+            });
         }
     });
     // A failed save is told beside its own file, not above every
@@ -1467,9 +1573,11 @@ impl<'a> Pictures<'a> {
 struct Textures(HashMap<String, (usize, egui::TextureHandle)>);
 
 /// Lets go of the textures of pictures the app no longer keeps, as those of
-/// a conversation left.
-fn forget_textures(ui: &egui::Ui, images: &HashMap<String, InlineImage>) {
-    ui.data_mut(|data| {
+/// a conversation left. Called once a frame whatever the window shows: a
+/// reader with nothing open, Settings or the sign-in screen draw no message,
+/// and the pictures of the last one must not stay in the graphics card.
+pub(super) fn forget_textures(context: &egui::Context, images: &HashMap<String, InlineImage>) {
+    context.data_mut(|data| {
         data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
             .0
             .retain(|attachment, _| images.contains_key(attachment));
@@ -1483,9 +1591,12 @@ fn texture(
     picture: &std::sync::Arc<crate::pictures::Picture>,
 ) -> egui::TextureHandle {
     let made_from = std::sync::Arc::as_ptr(picture) as usize;
-    let kept = ui.data(|data| {
-        data.get_temp::<Textures>(egui::Id::NULL)
-            .and_then(|textures| textures.0.get(attachment).cloned())
+    // Looked up in place: `get_temp` would clone every picture's entry.
+    let kept = ui.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .get(attachment)
+            .cloned()
     });
     if let Some((from, texture)) = kept
         && from == made_from
@@ -1494,7 +1605,7 @@ fn texture(
     }
     let texture = ui.ctx().load_texture(
         format!("message-picture-{attachment}"),
-        egui::ColorImage::from_rgba_unmultiplied(picture.size, &picture.rgba),
+        egui::ColorImage::from_rgba_premultiplied(picture.size, &picture.rgba),
         egui::TextureOptions::LINEAR,
     );
     ui.data_mut(|data| {
@@ -1555,6 +1666,9 @@ struct Sight {
     heights: BlockHeights,
     /// Whether everything is laid out: for a screen reader, which reads what
     /// is out of sight too, and while the keyboard moves among the links.
+    /// Not while it types in a field: the keys go there, and the message
+    /// behind would be laid out whole at each one and each blink of the
+    /// cursor.
     all: bool,
     /// What a height depends on besides the block: the width it wraps in,
     /// the scale, and the choices in Settings that change what shows.
@@ -1582,7 +1696,7 @@ impl Sight {
                 data.get_temp_mut_or_default::<BlockHeights>(egui::Id::NULL)
                     .clone()
             }),
-            all: ui.memory(|memory| memory.focused().is_some())
+            all: (ui.memory(|memory| memory.focused().is_some()) && !ui.ctx().text_edit_focused())
                 || ui
                     .ctx()
                     .accesskit_node_builder(ui.unique_id(), |_| ())
@@ -1651,15 +1765,67 @@ fn text_stamp(block: &RichBlock) -> u64 {
         BlockKind::Preformatted(text) => (0, text.len()),
         BlockKind::Image { description, .. } => (0, description.len()),
         BlockKind::Rule => (0, 0),
-        BlockKind::Table(rows) => (
-            rows.len(),
-            rows.iter()
-                .flat_map(|row| &row.cells)
-                .map(|cell| texts(cell).1)
-                .sum(),
-        ),
+        BlockKind::Table(rows) => return rows_stamp(rows),
     };
     (runs as u64).rotate_left(40) ^ bytes as u64
+}
+
+/// [`text_stamp`] of a table: how many rows it has and how much text.
+fn rows_stamp(rows: &[TableRow]) -> u64 {
+    let bytes: usize = rows
+        .iter()
+        .flat_map(|row| &row.cells)
+        .flatten()
+        .map(|span| span.text.len())
+        .sum();
+    (rows.len() as u64).rotate_left(40) ^ bytes as u64
+}
+
+/// What tables of data took when last laid out whole, by where their rows
+/// are kept. A table is one block, so a long one in sight was laid out row
+/// by row at every frame; once its rows' heights and its columns' widths are
+/// known, the rows far from sight only leave their room, and those drawn
+/// keep the columns as wide as the whole table made them.
+#[derive(Clone, Default)]
+struct TableLayouts(
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, TableLayout>>>,
+);
+
+/// The most tables whose layout is remembered; past it they are forgotten
+/// and measured again.
+const MAX_TABLE_LAYOUTS: usize = 256;
+
+#[derive(Clone, Default)]
+struct TableLayout {
+    /// What the layout depended on, as [`Sight::stamp`] and [`rows_stamp`].
+    stamp: u64,
+    /// The height of each row, without the space after it.
+    rows: Vec<f32>,
+    /// The width of each column, as a grid of data: its widest cell.
+    columns: Vec<f32>,
+}
+
+impl TableLayouts {
+    fn of(ui: &egui::Ui) -> Self {
+        ui.data_mut(|data| data.get_temp_mut_or_default::<Self>(egui::Id::NULL).clone())
+    }
+
+    fn get(&self, key: usize, stamp: u64) -> Option<TableLayout> {
+        let layouts = self.0.lock().ok()?;
+        layouts
+            .get(&key)
+            .filter(|layout| layout.stamp == stamp)
+            .cloned()
+    }
+
+    fn keep(&self, key: usize, layout: TableLayout) {
+        if let Ok(mut layouts) = self.0.lock() {
+            if layouts.len() >= MAX_TABLE_LAYOUTS {
+                layouts.clear();
+            }
+            layouts.insert(key, layout);
+        }
+    }
 }
 
 fn quote_box(ui: &mut egui::Ui, content: impl FnOnce(&mut egui::Ui)) {
@@ -1711,7 +1877,7 @@ fn block(
         BlockKind::Preformatted(content) => {
             egui::Frame::new()
                 .fill(theme::colors(ui).code_fill)
-                .corner_radius(6)
+                .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -1738,7 +1904,7 @@ fn block(
                     let shown = ui.add(
                         egui::Image::new(&texture)
                             .fit_to_exact_size(egui::vec2(width, size.y * width / size.x))
-                            .corner_radius(4),
+                            .corner_radius(theme::PICTURE_CORNER_RADIUS),
                     );
                     if !description.is_empty() {
                         shown.on_hover_text(description);
@@ -1764,7 +1930,7 @@ fn block(
             // in for one, as a placeholder rather than a footnote.
             egui::Frame::new()
                 .stroke(Stroke::new(1.0, theme::colors(ui).border))
-                .corner_radius(6)
+                .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
                     ui.add(
@@ -1788,11 +1954,35 @@ fn block(
 /// A table of data, its columns lined up and its row of headings in the
 /// bold ink, scrolling sideways if it is wider than the reader; or, when
 /// Settings ask for it, its rows as lines of text, as before.
+///
+/// The first time, and whenever what it depends on changes, the table is
+/// laid out whole and its shape kept; after that only the rows near sight
+/// are, the first always, so the columns keep their widths.
 fn table(ui: &mut egui::Ui, rows: &[TableRow], reading: Reading, messages: &mut Vec<Message>) {
+    let sight = Sight::new(ui, reading);
+    let layouts = TableLayouts::of(ui);
+    let key = rows.as_ptr() as usize;
+    let stamp = sight.stamp ^ rows_stamp(rows);
+    let known = (!sight.all).then(|| layouts.get(key, stamp)).flatten();
+    let mut measured = TableLayout {
+        stamp,
+        ..TableLayout::default()
+    };
+    // The room `index` takes when it is far from sight, if it is known. The
+    // first and last rows are always laid out: they hold the table's edges.
+    let skipped = |ui: &egui::Ui, index: usize| {
+        let height = *known.as_ref()?.rows.get(index)?;
+        let edge = index == 0 || index + 1 == rows.len();
+        (!edge && out_of_sight(ui.cursor().top(), height, ui.clip_rect())).then_some(height)
+    };
     if !reading.data_tables {
         for (index, row) in rows.iter().enumerate() {
             if index > 0 {
                 ui.add_space(8.0);
+            }
+            if let Some(height) = skipped(ui, index) {
+                ui.allocate_space(egui::vec2(ui.available_width(), height));
+                continue;
             }
             let mut line = Vec::new();
             for cell in &row.cells {
@@ -1804,38 +1994,67 @@ fn table(ui: &mut egui::Ui, rows: &[TableRow], reading: Reading, messages: &mut 
                 }
                 line.extend(cell.iter().cloned());
             }
-            rich_line(ui, &line, None, false, reading, messages);
+            let drawn = ui.scope(|ui| rich_line(ui, &line, None, false, reading, messages));
+            measured.rows.push(drawn.response.rect.height());
         }
-        return;
-    }
-    egui::ScrollArea::horizontal()
-        .id_salt(ui.next_auto_id())
-        .show(ui, |ui| {
-            egui::Grid::new(ui.next_auto_id())
-                .striped(true)
-                .spacing([16.0, 6.0])
-                .show(ui, |ui| {
-                    for row in rows {
-                        for cell in &row.cells {
-                            let header: Vec<RichSpan>;
-                            let spans = if row.header {
-                                header = cell
-                                    .iter()
-                                    .map(|span| RichSpan {
-                                        strong: true,
-                                        ..span.clone()
+    } else {
+        egui::ScrollArea::horizontal()
+            .id_salt(ui.next_auto_id())
+            .show(ui, |ui| {
+                egui::Grid::new(ui.next_auto_id())
+                    .striped(true)
+                    .spacing([16.0, 6.0])
+                    .show(ui, |ui| {
+                        for (index, row) in rows.iter().enumerate() {
+                            if let Some(height) = skipped(ui, index) {
+                                ui.allocate_space(egui::vec2(0.0, height));
+                                ui.end_row();
+                                continue;
+                            }
+                            let mut tallest: f32 = 0.0;
+                            for (column, cell) in row.cells.iter().enumerate() {
+                                let header: Vec<RichSpan>;
+                                let spans = if row.header {
+                                    header = cell
+                                        .iter()
+                                        .map(|span| RichSpan {
+                                            strong: true,
+                                            ..span.clone()
+                                        })
+                                        .collect();
+                                    &header
+                                } else {
+                                    cell
+                                };
+                                let width = known
+                                    .as_ref()
+                                    .and_then(|known| known.columns.get(column).copied());
+                                let drawn = ui
+                                    .horizontal(|ui| {
+                                        if let Some(width) = width {
+                                            ui.set_min_width(width);
+                                        }
+                                        rich_spans(ui, spans, None, reading, messages);
                                     })
-                                    .collect();
-                                &header
-                            } else {
-                                cell
-                            };
-                            ui.horizontal(|ui| rich_spans(ui, spans, None, reading, messages));
+                                    .response
+                                    .rect;
+                                tallest = tallest.max(drawn.height());
+                                if measured.columns.len() <= column {
+                                    measured.columns.resize(column + 1, 0.0);
+                                }
+                                measured.columns[column] =
+                                    measured.columns[column].max(drawn.width());
+                            }
+                            measured.rows.push(tallest);
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
-                });
-        });
+                    });
+            });
+    }
+    // Only a table laid out whole knows all its rows.
+    if known.is_none() {
+        layouts.keep(key, measured);
+    }
 }
 
 /// A line of text, wrapped. One the sender's style centers is centered when
@@ -1898,8 +2117,7 @@ fn rich_spans(
         rest = after;
         let mut job = span_layout(ui, span, heading, reading);
         if let Some(link) = &span.link
-            && span.button
-            && reading.sender_text_styles
+            && drawn_as_button(span, reading)
         {
             // A link the sender drew as a button is one, whatever styles its
             // text has, and still goes through the prompt that says where.
@@ -1931,6 +2149,12 @@ fn rich_spans(
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
     }
+}
+
+/// Whether `span` is drawn as a button: a link its sender drew as one, while
+/// the reader uses the sender's text styles.
+fn drawn_as_button(span: &RichSpan, reading: Reading) -> bool {
+    span.link.is_some() && span.button && reading.sender_text_styles
 }
 
 /// Whether `next` is more of the button `span` starts: the same link, drawn
@@ -1998,8 +2222,8 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
         } else {
             FontId::proportional(size)
         },
-        // A link's colour is the one thing left to `Link`, which fills in
-        // the placeholder with the hyperlink colour and underlines on hover.
+        // A link's colour is left to `Link`, which fills in the placeholder
+        // with the hyperlink colour.
         color: if span.link.is_some() {
             Color32::PLACEHOLDER
         } else {
@@ -2011,6 +2235,11 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
     if span.code {
         format.background = theme::colors(ui).code_fill;
         format.expand_bg = CODE_PADDING;
+    }
+    // Underlined at rest, not only on hover as `Link` does, so a link stands
+    // out from the text by more than its colour; a button needs none.
+    if span.link.is_some() && !drawn_as_button(span, reading) {
+        format.underline = Stroke::new(1.0, Color32::PLACEHOLDER);
     }
     if struck {
         let rule = if span.link.is_some() {
@@ -2024,10 +2253,11 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
 }
 
 fn heading_size(level: u8) -> f32 {
+    let [first, second, rest] = theme::BODY_HEADING_SIZES;
     match level {
-        1 => 24.0,
-        2 => 20.0,
-        _ => 17.0,
+        1 => first,
+        2 => second,
+        _ => rest,
     }
 }
 
@@ -2094,13 +2324,15 @@ fn recipients_label(recipients: &[MailAddress]) -> String {
         .join(", ")
 }
 
-fn format_message_time<Tz: TimeZone>(timestamp: i64, zone: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
-    zone.timestamp_opt(timestamp, 0)
-        .single()
-        .map(|time| time.format("%b %-d, %Y at %H:%M").to_string())
+/// The day and time a message came, in `zone`. A time no date can hold
+/// shows nothing.
+fn format_message_time(timestamp: i64, zone: &TimeZone) -> String {
+    jiff::Timestamp::from_second(timestamp)
+        .map(|time| {
+            time.to_zoned_datetime(zone.clone())
+                .strftime("%b %-d, %Y at %H:%M")
+                .to_string()
+        })
         .unwrap_or_default()
 }
 

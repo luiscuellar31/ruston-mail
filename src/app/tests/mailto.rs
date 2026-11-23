@@ -167,8 +167,5 @@ fn a_demo_process_refuses_an_email_link_once_its_mailbox_is_closed() {
         0,
         "no sign-in could ever open it"
     );
-    assert!(
-        app.mailto_error()
-            .is_some_and(|error| error.contains("RUSTON_DEMO"))
-    );
+    assert_eq!(app.mailto_error(), Some(MailtoError::Demo));
 }

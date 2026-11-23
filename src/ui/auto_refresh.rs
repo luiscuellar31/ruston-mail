@@ -47,8 +47,9 @@ pub(super) const SIGNED_OUT: Conditions = Conditions {
     ..BACKGROUND
 };
 
-/// Schedules mailbox refreshes using egui's monotonic clock. Network work
-/// still belongs to `App`; this only decides when to ask for it.
+/// Schedules mailbox refreshes by the clock it is handed, the window's own,
+/// which runs while the window is hidden. Network work still belongs to
+/// `App`; this only decides when to ask for it.
 #[derive(Debug, Default)]
 pub(super) struct AutoRefresh {
     active: bool,

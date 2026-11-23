@@ -1,3 +1,4 @@
+use super::files::{FREE_NAME_ATTEMPTS, MAX_NAME_BYTES, free_names, write_new_file_with};
 use super::*;
 use crate::crypto::{AddressKeys, StoredKey};
 use crate::mail::test_support;
@@ -9,6 +10,8 @@ use proton_crypto::crypto::{
     PGPProviderSync,
 };
 use secrecy::SecretString;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -278,6 +281,40 @@ async fn attachments_inside_a_pgp_mime_body_list_and_download_by_position() {
 }
 
 #[tokio::test]
+async fn the_attachments_inside_a_pgp_mime_body_come_from_one_download_of_it() {
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    let message = pgp_mime_message(&client);
+    serve_message(&server, &message).await;
+
+    let mut received = Vec::new();
+    client
+        .for_each_attachment("message", true, |name, bytes| {
+            received.push((name, bytes));
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let logo = STANDARD.decode("iVBORw0KGgo=").unwrap();
+    assert_eq!(
+        received,
+        [
+            ("report.pdf".to_owned(), b"%PDF-1.4\n".to_vec()),
+            ("attachment-2".to_owned(), logo)
+        ]
+    );
+    let requests = server.received_requests().await.unwrap();
+    let asked = |route: &str| {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == route)
+            .count()
+    };
+    assert_eq!(asked("/mail/v4/messages/message"), 1);
+    assert_eq!(asked("/core/v4/keys/all"), 1);
+}
+
+#[tokio::test]
 async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() {
     // Signed with a key that is not the sender's: invalid, so refused.
     let server = MockServer::start().await;
@@ -320,6 +357,12 @@ async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() 
     assert!(matches!(
         client
             .download_listed_attachment(&read.meta, &read.attachments[0])
+            .await,
+        Err(Error::AttachmentVerificationFailed)
+    ));
+    assert!(matches!(
+        client
+            .for_each_attachment("message", true, |_, _| Ok(()))
             .await,
         Err(Error::AttachmentVerificationFailed)
     ));
@@ -710,6 +753,78 @@ async fn an_export_stops_at_its_maximum_inside_a_page() {
         .filter(|path| path.starts_with("/mail/v4/messages/"))
         .collect();
     assert_eq!(fetched, ["/mail/v4/messages/first"]);
+}
+
+#[tokio::test]
+async fn an_export_asks_for_no_keys_to_check_a_body_it_does_not_vouch_for() {
+    let server = MockServer::start().await;
+    let (client, attachment) = attachment_client(&server).await;
+    let address = client.keys().primary_address().unwrap();
+    let mut message = message_with_attachment(attachment);
+    message.attachments.clear();
+    message.body = crypto::encrypt_self_draft(&crypto::provider(), address, "body").unwrap();
+    message.mime_type = "text/plain".into();
+    serve_folder(&server, &[message]).await;
+    let folder = export_directory("export-no-keys");
+
+    let written = client.export_folder("inbox", &folder, 10).await;
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(written.unwrap(), 1);
+    // The file says nothing of who signed the body, so nobody is asked: a
+    // lookup for each of ten thousand messages is what gets an export refused.
+    let lookups = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/core/v4/keys/all")
+        .count();
+    assert_eq!(lookups, 0);
+}
+
+#[tokio::test]
+async fn an_export_carries_the_attachments_inside_a_pgp_mime_body() {
+    let server = MockServer::start().await;
+    let (client, _) = attachment_client(&server).await;
+    serve_folder(&server, &[pgp_mime_message(&client)]).await;
+    let folder = export_directory("export-pgp-mime");
+
+    let written = client.export_folder("inbox", &folder, 10).await;
+    // "message" in hex.
+    let eml = std::fs::read(folder.join("message-6d657373616765.eml"));
+    std::fs::remove_dir_all(&folder).unwrap();
+
+    assert_eq!(written.unwrap(), 1);
+    let eml = eml.unwrap();
+    let parsed = mail_parser::MessageParser::default().parse(&eml).unwrap();
+    assert_eq!(parsed.body_text(0).as_deref(), Some("See the report."));
+    let attachments: Vec<_> = parsed
+        .attachments()
+        .map(|part| {
+            use mail_parser::MimeHeaders as _;
+            let name = part.attachment_name().unwrap_or_default().to_owned();
+            (name, part.contents().to_vec())
+        })
+        .collect();
+    let logo = STANDARD.decode("iVBORw0KGgo=").unwrap();
+    assert_eq!(
+        attachments,
+        [
+            ("report.pdf".to_owned(), b"%PDF-1.4\n".to_vec()),
+            ("attachment-2".to_owned(), logo)
+        ]
+    );
+    // Taken from the body opened for the file, with no keys asked for.
+    let requests = server.received_requests().await.unwrap();
+    let asked = |route: &str| {
+        requests
+            .iter()
+            .filter(|request| request.url.path() == route)
+            .count()
+    };
+    assert_eq!(asked("/mail/v4/messages/message"), 1);
+    assert_eq!(asked("/core/v4/keys/all"), 0);
 }
 
 #[tokio::test]

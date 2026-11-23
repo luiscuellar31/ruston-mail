@@ -396,8 +396,7 @@ fn cached_page(
     page_size: u32,
 ) -> Result<(u32, Vec<MessageMetadata>)> {
     let label = resolve_folder(folder);
-    let (all, unread_count) = cache.count(&label)?;
-    let total = if unread { unread_count } else { all };
+    let total = cache.listed_count(&label, unread)?;
     // A page past the end of what a u32 can address is past the cache too.
     let messages = cache.list(&label, unread, page_size, page.saturating_mul(page_size))?;
     Ok((u32::try_from(total).unwrap_or(u32::MAX), messages))
@@ -410,37 +409,26 @@ pub struct LocalCache {
 }
 
 impl LocalCache {
-    /// Opens the cache of the account saved under `profile`. Only a session
-    /// saved before its account ID was recorded needs Proton: it is resumed
-    /// once, which records the ID for next time.
-    pub async fn open(profile: &str) -> Result<Self> {
+    /// Opens the cache of the account saved under `profile`, which the
+    /// saved session names, without asking Proton.
+    pub fn open(profile: &str) -> Result<Self> {
         validate_profile_name(profile)?;
         let store = KeyringStore::new(profile.to_owned());
-        let saved = Self::open_saved(&Paths::system()?, &store, profile, |identity| {
+        Self::open_saved(&Paths::system()?, &store, profile, |identity| {
             Cache::default_account_path(profile, identity)
-        })?;
-        match saved {
-            Some(cache) => Ok(cache),
-            None => Ok(Self {
-                cache: Client::resume(profile).await?.open_cache()?,
-            }),
-        }
+        })
     }
 
-    /// `None` when the saved session does not name its account.
     fn open_saved(
         paths: &Paths,
         store: &dyn SecretStore,
         profile: &str,
         path: impl FnOnce(&CacheIdentity) -> Result<PathBuf>,
-    ) -> Result<Option<Self>> {
+    ) -> Result<Self> {
         let loaded = Session::load(paths, profile, store)?.ok_or(Error::Unauthorized)?;
-        let Some(user_id) = loaded.session.user_id.as_deref() else {
-            return Ok(None);
-        };
-        let identity = CacheIdentity::new(&loaded.session.base_url, user_id)?;
+        let identity = CacheIdentity::new(&loaded.session.base_url, &loaded.session.user_id)?;
         let cache = Cache::open_for_account(&path(&identity)?, &identity)?;
-        Ok(Some(Self { cache }))
+        Ok(Self { cache })
     }
 
     /// One page of a folder, with how many cached messages it holds: unread
@@ -530,9 +518,15 @@ impl Client {
 
     /// Searches the full-text index on this device, which holds the decrypted
     /// bodies, so the query never reaches Proton: up to `limit` messages
-    /// holding every word of `query`, best match first.
-    pub fn search_local(&self, query: &str, limit: u32) -> Result<Vec<MessageMetadata>> {
-        self.open_cache()?.search(query, limit)
+    /// holding every word of `query` that `keep` accepts, best match first.
+    /// See [`Cache::search_where`].
+    pub fn search_local(
+        &self,
+        query: &str,
+        limit: u32,
+        keep: impl FnMut(&MessageMetadata) -> bool,
+    ) -> Result<Vec<MessageMetadata>> {
+        self.open_cache()?.search_where(query, limit, keep)
     }
 
     /// Full-text search of the local index without changing it, for a

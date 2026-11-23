@@ -196,7 +196,7 @@ fn asking_for_every_message_reaches_the_open_conversation() {
     assert!(reader.detail().messages.len() > 1);
     for message in &reader.detail().messages {
         assert!(
-            reader.is_expanded(&message.id, reading),
+            reader.expands(&message.id, reading),
             "{} stayed folded",
             message.id
         );
@@ -284,7 +284,7 @@ fn resizing_panels_only_changes_layout() {
     assert_eq!(mailbox.conversations().len(), demo::PAGE_SIZE as usize);
     let reader = mailbox.reader().unwrap();
     assert_eq!(reader.conversation_id(), "demo-0");
-    assert!(reader.is_expanded("demo-0-0", Reading::default()));
+    assert!(reader.expands("demo-0-0", Reading::default()));
 }
 
 #[test]

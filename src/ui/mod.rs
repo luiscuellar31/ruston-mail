@@ -151,6 +151,8 @@ struct DesktopApp {
     /// Revision and time used to debounce settings writes.
     settings_seen: u64,
     settings_seen_at: f64,
+    /// When this window opened, which [`Self::clock`] counts from.
+    opened: std::time::Instant,
     /// Last window size dispatched, avoiding busy-loop repainting when window size is unchanged.
     last_window_size: Option<Window>,
     /// Waits for the requested window size before resetting egui's cached pane widths.
@@ -181,6 +183,23 @@ struct DesktopApp {
 enum SettingsExit {
     Navigate(Box<Message>),
     CloseWindow,
+}
+
+/// What the screen drawn in one pass asks of the shell.
+#[derive(Default)]
+struct ScreenPass {
+    messages: Vec<Message>,
+    /// The step the zoom keys of the composer's own window ask for.
+    composer_zoom: Option<settings::ZoomStep>,
+    /// Files dropped where the draft is.
+    dropped: Vec<std::path::PathBuf>,
+}
+
+/// The answers given in one pass to the prompts then open.
+struct PromptAnswers {
+    settings_exit: Option<settings::ExitDecision>,
+    discard: Option<Message>,
+    wait: Option<close::WaitDecision>,
 }
 
 impl DesktopApp {
@@ -220,6 +239,7 @@ impl DesktopApp {
             deferred_leave: close::DeferredLeave::default(),
             settings_seen: 0,
             settings_seen_at: 0.0,
+            opened: std::time::Instant::now(),
             last_window_size: None,
             layout_reset_at: None,
             main_window: None,
@@ -262,17 +282,14 @@ impl DesktopApp {
         if self.file_dialog_open
             && matches!(
                 &message,
-                Message::PickComposeAttachments | Message::SaveAttachmentAs(_, _, _)
+                Message::PickComposeAttachments | Message::SaveAttachmentAs { .. }
             )
         {
             return;
         }
         let message = if self.app.showing_settings() {
             match message {
-                Message::KeyPressed(press)
-                    if (press.key == Key::Escape && !press.command && !press.other_modifier)
-                        || (press.key == Key::Character(',') && press.command) =>
-                {
+                Message::KeyPressed(press) if press.leaves_settings() => {
                     Message::ShowSettings(false)
                 }
                 other => other,
@@ -338,7 +355,7 @@ impl DesktopApp {
             return;
         }
 
-        let now = context.input(|input| input.time);
+        let now = self.clock();
         let submitted_or_cancelled = matches!(&message, Message::Submit | Message::CancelChallenge);
         if matches!(&message, Message::RefreshMailbox) {
             self.auto_refresh.postpone(now);
@@ -352,9 +369,7 @@ impl DesktopApp {
         let compact_destination = match &message {
             Message::SelectFolder(_) => Some(mailbox::CompactView::Mail),
             Message::SelectConversation(_) => Some(mailbox::CompactView::Reader),
-            Message::KeyPressed(press)
-                if press.key == Key::Enter && !press.command && !press.other_modifier =>
-            {
+            Message::KeyPressed(press) if press.opens_conversation() => {
                 Some(mailbox::CompactView::Reader)
             }
             _ => None,
@@ -650,11 +665,15 @@ impl DesktopApp {
                 UiEffect::PickComposeAttachments(id) => {
                     self.file_dialog_open = true;
                     let parent = self.main_window.clone();
-                    let task = dialogs::open(
-                        parent.as_ref(),
-                        self.app.settings().compose_placement == ComposePlacement::Window,
-                        |dialog| dialog.set_title("Attach files").pick_files(),
-                    );
+                    let owner = if self.app.settings().compose_placement == ComposePlacement::Window
+                    {
+                        dialogs::DialogOwner::ActiveWindow
+                    } else {
+                        dialogs::DialogOwner::Root
+                    };
+                    let task = dialogs::open(parent.as_ref(), owner, |dialog| {
+                        dialog.set_title("Attach files").pick_files()
+                    });
                     self.runtime.spawn_message(async move {
                         let _keep_parent_alive = parent;
                         let files = task.await;
@@ -672,12 +691,13 @@ impl DesktopApp {
                 } => {
                     self.file_dialog_open = true;
                     let parent = self.main_window.clone();
-                    let task = dialogs::open(parent.as_ref(), false, |dialog| {
-                        dialog
-                            .set_title("Save attachment as (choose a new filename)")
-                            .set_file_name(suggested_name)
-                            .save_file()
-                    });
+                    let task =
+                        dialogs::open(parent.as_ref(), dialogs::DialogOwner::Root, |dialog| {
+                            dialog
+                                .set_title("Save attachment as (choose a new filename)")
+                                .set_file_name(suggested_name)
+                                .save_file()
+                        });
                     self.runtime.spawn_message(async move {
                         let _keep_parent_alive = parent;
                         let destination = task.await.map(|file| file.path().to_path_buf());
@@ -826,6 +846,8 @@ impl DesktopApp {
         let presses = context.input(|input| {
             let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
             let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
+            // Shift and an arrow choose rows along the list.
+            let shift_only = !command && !input.modifiers.alt && input.modifiers.shift;
             let mut presses = Vec::new();
             if command && input.key_pressed(egui::Key::R) {
                 presses.push(KeyPress::with_command(Key::Character('r')));
@@ -842,6 +864,21 @@ impl DesktopApp {
             if command && input.key_pressed(egui::Key::Enter) {
                 presses.push(KeyPress::with_command(Key::Enter));
             }
+            // Outside a text field, which takes it for its text, Command and A
+            // choose every conversation. Read from the key's own event: the
+            // macOS Edit menu's Select All sends it when clicked, with no key
+            // held.
+            let select_all = input.events.iter().any(|event| {
+                matches!(event, egui::Event::Key {
+                    key: egui::Key::A,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if modifiers.command && !modifiers.alt && !modifiers.shift)
+            });
+            if select_all && !typing {
+                presses.push(KeyPress::with_command(Key::Character('a')));
+            }
             if !menu_open && input.key_pressed(egui::Key::Escape) {
                 presses.push(KeyPress::plain(Key::Escape));
             }
@@ -856,6 +893,10 @@ impl DesktopApp {
                 presses.push(KeyPress::plain(Key::Enter));
             } else if plain && !wants_text && input.key_pressed(egui::Key::Delete) {
                 presses.push(KeyPress::plain(Key::Delete));
+            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
+                presses.push(KeyPress::with_shift(Key::ArrowDown));
+            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
+                presses.push(KeyPress::with_shift(Key::ArrowUp));
             } else if plain && !typing {
                 let letter = input.events.iter().find_map(|event| match event {
                     egui::Event::Text(text) => text
@@ -903,8 +944,15 @@ impl DesktopApp {
             && context.input_for(compose::viewport_id(), |input| input.focused)
     }
 
-    fn refresh_automatically(&mut self, context: &egui::Context) {
-        let now = context.input(|input| input.time);
+    /// Seconds since this window opened, by the system's clock. egui's own
+    /// time stands still while the window is minimized or covered, when no
+    /// pass is drawn, and mail goes on being checked and settings written
+    /// then.
+    fn clock(&self) -> f64 {
+        self.opened.elapsed().as_secs_f64()
+    }
+
+    fn refresh_automatically(&mut self, now: f64, context: &egui::Context) {
         let focused = self.app_has_focus(context);
         let active = self.app.auth_state().is_authenticated()
             && self.app.mailbox().is_some()
@@ -952,9 +1000,8 @@ impl DesktopApp {
     }
 
     /// Writes settled settings and schedules the frame that performs it.
-    fn save_settled_settings(&mut self, context: &egui::Context) {
+    fn save_settled_settings(&mut self, now: f64, context: &egui::Context) {
         let revision = self.app.settings_revision();
-        let now = context.input(|input| input.time);
         if revision != self.settings_seen {
             self.settings_seen = revision;
             self.settings_seen_at = now;
@@ -1069,6 +1116,120 @@ impl DesktopApp {
     fn activation_blocked(&self) -> bool {
         self.window_close_approved || self.prompt_open()
     }
+
+    /// Drops the settings draft, and the exit waiting on it, once the
+    /// settings pane is gone.
+    fn forget_hidden_settings_draft(&mut self) {
+        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
+            self.settings_draft = None;
+            self.pending_settings_exit = None;
+        }
+    }
+
+    /// Draws the screen the sign-in state calls for, and the composer's own
+    /// window, gathering what they ask for in this pass.
+    fn draw_screen(&mut self, ui: &mut egui::Ui, context: &egui::Context) -> ScreenPass {
+        let mut pass = ScreenPass::default();
+        email_link_notice(ui, &self.app, &mut pass.messages);
+        match self.app.auth_state() {
+            AuthState::CheckingSession if self.app.opening_saved_session() => {
+                mailbox::show_opening(ui, &self.app);
+            }
+            AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
+            AuthState::SignedOut
+            | AuthState::SigningIn(_)
+            | AuthState::NeedsTotp
+            | AuthState::NeedsMailboxPassword
+            | AuthState::NeedsHumanVerification { .. } => {
+                login::show(
+                    ui,
+                    &mut self.app,
+                    &mut self.ui.show_password,
+                    &mut pass.messages,
+                );
+            }
+            AuthState::Authenticated { .. } => {
+                if self.app.mailbox().is_some() {
+                    let draft = if self.app.showing_settings() {
+                        Some(
+                            self.settings_draft
+                                .get_or_insert_with(|| self.app.settings().clone()),
+                        )
+                    } else {
+                        None
+                    };
+                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut pass.messages);
+                } else {
+                    status_view(ui, "Opening mailbox…");
+                }
+
+                if self.app.settings().compose_placement == ComposePlacement::Window
+                    && let Some(writing) = self.app.compose()
+                {
+                    let window = compose::show_window(
+                        context,
+                        writing,
+                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
+                        std::mem::take(&mut self.composer_edits),
+                        &mut self.composer_title_bar,
+                    );
+                    pass.messages.extend(window.messages);
+                    pass.composer_zoom = window.zoom;
+                    pass.dropped = window.dropped;
+                } else if self.app.compose().is_some() && !self.app.showing_settings() {
+                    // The draft is in this window's reading pane.
+                    pass.dropped = dropped_paths(context);
+                }
+            }
+            AuthState::SigningOut => {
+                if self.app.mailbox().is_some() {
+                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut pass.messages);
+                } else {
+                    status_view(ui, "Signing out…");
+                }
+            }
+        }
+        pass
+    }
+
+    /// Draws the prompts open now and reads their answers.
+    fn ask_prompts(&self, context: &egui::Context) -> PromptAnswers {
+        PromptAnswers {
+            settings_exit: self
+                .pending_settings_exit
+                .as_ref()
+                .and_then(|_| settings::confirm_exit(context)),
+            discard: self
+                .pending_discard
+                .and_then(|leaving| close::confirm_discard(context, leaving)),
+            wait: self.deferred_leave.waiting().and_then(|leaving| {
+                let holding = self.holding(leaving)?;
+                close::confirm_wait(context, leaving, holding)
+            }),
+        }
+    }
+
+    fn apply_prompt_answers(&mut self, answers: PromptAnswers, context: &egui::Context) {
+        if let Some(decision) = answers.settings_exit {
+            self.resolve_settings_exit(decision, context);
+        }
+        if let Some(decision) = answers.discard {
+            self.resolve_discard(decision, context);
+        }
+        match answers.wait {
+            Some(close::WaitDecision::Stay) => {
+                self.deferred_leave.cancel();
+                self.pending_account = None;
+            }
+            // Asking again while it waits goes ahead at once.
+            Some(close::WaitDecision::GoNow) => {
+                if let Some(leaving) = self.deferred_leave.waiting() {
+                    self.leave(leaving, context);
+                }
+            }
+            None => {}
+        }
+    }
 }
 
 impl eframe::App for DesktopApp {
@@ -1108,8 +1269,9 @@ impl eframe::App for DesktopApp {
         self.zoom_shortcuts(context);
         self.keyboard_shortcuts(context);
         self.forget_finished_draft(context);
-        self.refresh_automatically(context);
-        self.save_settled_settings(context);
+        let now = self.clock();
+        self.refresh_automatically(now, context);
+        self.save_settled_settings(now, context);
         self.update_title(context);
         self.update_unread_badge();
     }
@@ -1127,116 +1289,31 @@ impl eframe::App for DesktopApp {
             return;
         }
         let context = ui.ctx().clone();
-        let mut messages = Vec::new();
-        let mut composer_zoom = None;
-        let mut dropped = Vec::new();
-        email_link_notice(ui, &self.app, &mut messages);
-        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
-            self.settings_draft = None;
-            self.pending_settings_exit = None;
-        }
-        match self.app.auth_state() {
-            AuthState::CheckingSession if self.app.opening_saved_session() => {
-                mailbox::show_opening(ui, &self.app);
-            }
-            AuthState::CheckingSession => status_view(ui, "Opening Ruston Mail…"),
-            AuthState::SignedOut
-            | AuthState::SigningIn(_)
-            | AuthState::NeedsTotp
-            | AuthState::NeedsMailboxPassword
-            | AuthState::NeedsHumanVerification { .. } => {
-                login::show(ui, &mut self.app, &mut self.ui.show_password, &mut messages);
-            }
-            AuthState::Authenticated { .. } => {
-                if self.app.mailbox().is_some() {
-                    let draft = if self.app.showing_settings() {
-                        Some(
-                            self.settings_draft
-                                .get_or_insert_with(|| self.app.settings().clone()),
-                        )
-                    } else {
-                        None
-                    };
-                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut messages);
-                } else {
-                    status_view(ui, "Opening mailbox…");
-                }
-
-                if self.app.settings().compose_placement == ComposePlacement::Window
-                    && let Some(writing) = self.app.compose()
-                {
-                    let window = compose::show_window(
-                        &context,
-                        writing,
-                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
-                        std::mem::take(&mut self.composer_edits),
-                        &mut self.composer_title_bar,
-                    );
-                    messages.extend(window.messages);
-                    composer_zoom = window.zoom;
-                    dropped = window.dropped;
-                } else if self.app.compose().is_some() && !self.app.showing_settings() {
-                    // The draft is in this window's reading pane.
-                    dropped = dropped_paths(&context);
-                }
-            }
-            AuthState::SigningOut => {
-                if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut messages);
-                } else {
-                    status_view(ui, "Signing out…");
-                }
-            }
-        }
-
+        reader::forget_textures(&context, self.app.inline_images());
+        self.forget_hidden_settings_draft();
+        let mut pass = self.draw_screen(ui, &context);
         if let Some(link) = self.app.pending_link() {
-            messages.extend(reader::link_dialog(&context, link));
+            pass.messages.extend(reader::link_dialog(&context, link));
         }
         // The discard confirmation owns the decision even if input for the
         // same frame was already queued in a pane or the child composer.
         if self.pending_discard.is_some() {
-            messages.clear();
+            pass.messages.clear();
         }
-        let exit_decision = self
-            .pending_settings_exit
-            .as_ref()
-            .and_then(|_| settings::confirm_exit(&context));
-        let discard_decision = self
-            .pending_discard
-            .and_then(|leaving| close::confirm_discard(&context, leaving));
-        let wait_decision = self.deferred_leave.waiting().and_then(|leaving| {
-            let holding = self.holding(leaving)?;
-            close::confirm_wait(&context, leaving, holding)
-        });
+        // No test drives this pass, so mind its order: the prompts are
+        // answered before the messages are dispatched, and act after them.
+        let answers = self.ask_prompts(&context);
         theme::paint_focus_ring(&context);
         self.keep_secure_input(&context);
-        if let Some(step) = composer_zoom {
+        if let Some(step) = pass.composer_zoom {
             self.step_zoom(step, &context);
         }
-        self.attach_dropped(dropped, &context);
-        let has_messages = !messages.is_empty();
-        for message in messages {
+        self.attach_dropped(pass.dropped, &context);
+        let has_messages = !pass.messages.is_empty();
+        for message in pass.messages {
             self.dispatch(message, &context);
         }
-        if let Some(decision) = exit_decision {
-            self.resolve_settings_exit(decision, &context);
-        }
-        if let Some(decision) = discard_decision {
-            self.resolve_discard(decision, &context);
-        }
-        match wait_decision {
-            Some(close::WaitDecision::Stay) => {
-                self.deferred_leave.cancel();
-                self.pending_account = None;
-            }
-            // Asking again while it waits goes ahead at once.
-            Some(close::WaitDecision::GoNow) => {
-                if let Some(leaving) = self.deferred_leave.waiting() {
-                    self.leave(leaving, &context);
-                }
-            }
-            None => {}
-        }
+        self.apply_prompt_answers(answers, &context);
         if has_messages {
             context.request_repaint();
         }
@@ -1320,7 +1397,11 @@ fn system_reduces_motion() -> bool {
 fn status_view(root: &mut egui::Ui, message: &str) {
     egui::CentralPanel::default().show(root, |ui| {
         theme::centered_group(ui, |ui| {
-            ui.heading(egui::RichText::new("Ruston Mail").size(36.0).strong());
+            ui.heading(
+                egui::RichText::new("Ruston Mail")
+                    .size(theme::DISPLAY_SIZE)
+                    .strong(),
+            );
             ui.add_space(16.0);
             ui.label(message);
             ui.add_space(12.0);
@@ -1354,7 +1435,7 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
         .show(root, |ui| {
             if let Some(error) = app.mailto_error() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(error);
+                    ui.label(error.message());
                     if ui.button("Dismiss").clicked() {
                         messages.push(Message::DismissMailtoError);
                     }

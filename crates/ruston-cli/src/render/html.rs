@@ -202,32 +202,40 @@ fn table(rows: &[TableRow]) -> String {
                 .unwrap_or(0)
         })
         .collect();
-    let mut lines = Vec::new();
+    let mut text = String::new();
     for (index, row) in cells.iter().enumerate() {
+        // Every row is as wide as the widest cell of each column, a link's
+        // address included, so the rows stop where the output would cut them.
+        if text.len() > MAX_CONTENT_BYTES {
+            break;
+        }
+        if index > 0 {
+            text.push('\n');
+        }
         // A cell that spanned several columns leaves the last ones empty.
-        let mut line = String::from("|");
+        text.push('|');
         for (column, width) in widths.iter().enumerate() {
             let cell = row.get(column).map_or("", String::as_str);
-            line.push(' ');
-            line.push_str(cell);
-            line.push_str(&" ".repeat(width - cell.width()));
-            line.push_str(" |");
+            text.push(' ');
+            text.push_str(cell);
+            text.push_str(&" ".repeat(width - cell.width()));
+            text.push_str(" |");
         }
-        lines.push(line);
         if index == 0 && rows[0].header {
-            let rule: String = widths
-                .iter()
-                .map(|width| format!("{}|", "-".repeat(width + 2)))
-                .collect();
-            lines.push(format!("|{rule}"));
+            text.push_str("\n|");
+            for width in &widths {
+                text.push_str(&"-".repeat(width + 2));
+                text.push('|');
+            }
         }
     }
-    lines.join("\n")
+    text
 }
 
 /// `spans` as Markdown: each word within its style's markers, and each run of
 /// one link within its brackets, line by line, with the spaces around it left
-/// outside.
+/// outside. A link's address is written again on each line of its words, so
+/// the writing stops once it passes what the output keeps.
 fn markdown(spans: &[RichSpan]) -> String {
     let shown: Vec<RichSpan> = spans.iter().filter(|span| !span.hidden).cloned().collect();
     let mut out = String::new();
@@ -263,6 +271,9 @@ fn markdown(spans: &[RichSpan]) -> String {
                     out.push_str(&target);
                     out.push(')');
                     out.push_str(&line[start + words.len()..]);
+                    if out.len() > MAX_CONTENT_BYTES {
+                        return out;
+                    }
                 }
             }
             None => out.push_str(&text),
@@ -324,6 +335,31 @@ fn pieces(text: &str) -> impl Iterator<Item = &str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_link_is_not_written_out_past_what_the_output_keeps() {
+        // The output is cut at a megabyte, but each piece was written whole
+        // first: a link's address once for every line of its words, and a
+        // table's rows each as wide as its widest cell.
+        let address = format!("https://example.test/{}", "p".repeat(50_000));
+        let lines = format!("<p><a href=\"{address}\">{}</a></p>", "a<br>".repeat(2_000));
+        let body = rich::parse(&lines);
+        let BlockKind::Paragraph(spans) = &body.blocks[0].kind else {
+            panic!("not a paragraph");
+        };
+        assert!(markdown(spans).len() < 2 * MAX_OUTPUT_BYTES);
+
+        let rows = format!(
+            "<table><tr><th>Item</th><th>Link</th></tr>\
+             <tr><td>first</td><td><a href=\"{address}\">a</a></td></tr>{}</table>",
+            "<tr><td>next</td><td>b</td></tr>".repeat(2_000)
+        );
+        let body = rich::parse(&rows);
+        let BlockKind::Table(rows) = &body.blocks[0].kind else {
+            panic!("not a table");
+        };
+        assert!(table(rows).len() < 4 * MAX_OUTPUT_BYTES);
+    }
 
     #[test]
     fn blocks_start_where_the_desktop_reader_starts_them() {

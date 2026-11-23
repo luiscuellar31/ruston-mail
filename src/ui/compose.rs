@@ -204,7 +204,11 @@ fn title_and_actions(
     messages: &mut Vec<Message>,
 ) {
     ui.horizontal_wrapped(|ui| {
-        ui.heading(egui::RichText::new(heading(compose)).size(24.0).strong());
+        ui.heading(
+            egui::RichText::new(heading(compose))
+                .size(theme::PAGE_TITLE_SIZE)
+                .strong(),
+        );
         ui.with_layout(
             Layout::right_to_left(Align::Center).with_main_wrap(true),
             |ui| {

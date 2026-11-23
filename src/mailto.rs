@@ -9,23 +9,34 @@ const MAX_RECIPIENTS: usize = 100;
 #[derive(Clone, PartialEq, Eq)]
 #[cfg_attr(test, derive(Debug))]
 pub struct Request {
-    to: String,
+    recipients: Vec<String>,
     subject: String,
     body: String,
 }
 
 impl Request {
-    pub fn into_fields(self) -> (String, String, String) {
-        (self.to, self.subject, self.body)
+    /// The addresses it writes to, as the composer takes them.
+    pub fn recipients(&self) -> &[String] {
+        &self.recipients
+    }
+
+    /// Its recipients as the composer's To field shows them.
+    pub fn to(&self) -> String {
+        self.recipients.join(", ")
+    }
+
+    pub fn subject(&self) -> &str {
+        &self.subject
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
     }
 
     /// Whether `input` is a mailto link at all, whether or not it can be
     /// opened: the scheme test [`parse`](Self::parse) starts with.
     pub fn is_mailto(input: &str) -> bool {
-        input
-            .trim()
-            .split_once(':')
-            .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("mailto"))
+        after_scheme(input).is_some()
     }
 
     pub fn parse(input: &str) -> Option<Self> {
@@ -33,8 +44,8 @@ impl Request {
         if input.len() > MAX_URL_BYTES || input.chars().any(char::is_control) {
             return None;
         }
-        let (scheme, rest) = input.trim().split_once(':')?;
-        if !scheme.eq_ignore_ascii_case("mailto") || rest.starts_with("//") || rest.contains('#') {
+        let rest = after_scheme(input)?;
+        if rest.starts_with("//") || rest.contains('#') {
             return None;
         }
         let (path, query) = rest.split_once('?').unwrap_or((rest, ""));
@@ -80,11 +91,17 @@ impl Request {
             return None;
         }
         Some(Self {
-            to: recipients.accepted.join(", "),
+            recipients: recipients.accepted,
             subject,
             body,
         })
     }
+}
+
+/// What follows the `mailto:` of `input`, if it is a mail link.
+fn after_scheme(input: &str) -> Option<&str> {
+    let (scheme, rest) = input.trim().split_once(':')?;
+    scheme.eq_ignore_ascii_case("mailto").then_some(rest)
 }
 
 fn set_once(slot: &mut Option<String>, value: String) -> Option<()> {
@@ -118,13 +135,13 @@ mod tests {
     #[test]
     fn recipients_utf8_and_body_are_decoded_once_without_form_plus_rules() {
         let request = Request::parse("MAILTO:alice+work@example.org?TO=bob%40example.org&Subject=Reuni%C3%B3n+%26+notas&body=Hola%0D%0A%2520%20%3Cb%3E").unwrap();
-        assert_eq!(request.to, "alice+work@example.org, bob@example.org");
+        assert_eq!(request.to(), "alice+work@example.org, bob@example.org");
         assert_eq!(request.subject, "Reunión+&+notas");
         assert_eq!(request.body, "Hola\n%20 <b>");
         assert!(
             Request::parse("mailto:?subject=Hello")
                 .unwrap()
-                .to
+                .recipients
                 .is_empty()
         );
     }
@@ -162,7 +179,7 @@ mod tests {
             format!("mailto:{}", to.join(","))
         };
         let request = Request::parse(&link(MAX_RECIPIENTS)).unwrap();
-        assert_eq!(request.to.matches('@').count(), MAX_RECIPIENTS);
+        assert_eq!(request.recipients.len(), MAX_RECIPIENTS);
         assert!(Request::parse(&link(MAX_RECIPIENTS + 1)).is_none());
         // The same address twice is one recipient.
         let repeated = format!("{}?to=PERSON0@example.org", link(MAX_RECIPIENTS));
@@ -172,7 +189,7 @@ mod tests {
     #[test]
     fn unsupported_fields_cannot_inject_sender_attachments_or_hidden_recipients() {
         let request = Request::parse("mailto:a@example.org?from=other@example.org&bcc=hidden@example.org&attach=/etc/passwd&subject=Hello").unwrap();
-        assert_eq!(request.to, "a@example.org");
+        assert_eq!(request.to(), "a@example.org");
         assert_eq!(request.subject, "Hello");
         assert!(request.body.is_empty());
     }

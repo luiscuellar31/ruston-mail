@@ -3,6 +3,13 @@ use super::*;
 use crate::mailbox::OutgoingKind;
 use ruston_core::model::ConversationLabel;
 
+/// The IDs of the marked conversations, sorted: marks keep no order.
+fn marked(app: &App) -> Vec<&str> {
+    let mut ids: Vec<&str> = app.marked.iter().map(String::as_str).collect();
+    ids.sort_unstable();
+    ids
+}
+
 fn key(code: KeyCode) -> Event {
     Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
 }
@@ -157,6 +164,7 @@ fn reading(lines: usize) -> Reading {
         attachments: Vec::new(),
         messages: Vec::new(),
         answer: None,
+        wrapped: Default::default(),
     }
 }
 
@@ -502,9 +510,9 @@ fn proton_mail_keys_move_between_panes_mark_and_open_commands() {
     });
     // x marks as Space does; Ctrl+A marks all, then none.
     press(&mut app, KeyCode::Char('x'));
-    assert_eq!(app.marked, ["a"]);
+    assert_eq!(marked(&app), ["a"]);
     ctrl(&mut app, KeyCode::Char('a'));
-    assert_eq!(app.marked, ["a", "b"]);
+    assert_eq!(marked(&app), ["a", "b"]);
     ctrl(&mut app, KeyCode::Char('a'));
     assert!(app.marked.is_empty());
     // i moves to the Inbox; m, Ctrl+K and Ctrl+F open the command line.
@@ -1085,14 +1093,14 @@ fn space_marks_conversations_and_an_action_acts_on_all_marked() {
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Down);
     press(&mut app, KeyCode::Char(' '));
-    assert_eq!(app.marked, ["a", "c"]);
+    assert_eq!(marked(&app), ["a", "c"]);
     assert_eq!(app.selected_conversation, 2);
     // Space on a marked one takes its mark away.
     press(&mut app, KeyCode::Char('k'));
     press(&mut app, KeyCode::Char('k'));
     press(&mut app, KeyCode::Char(' '));
     press(&mut app, KeyCode::Char(' '));
-    assert_eq!(app.marked, ["c", "b"]);
+    assert_eq!(marked(&app), ["b", "c"]);
 
     // Marked: all are marked read, in the list's order.
     assert_eq!(
@@ -1455,7 +1463,7 @@ fn deleting_forever_asks_first_and_only_a_yes_deletes() {
     );
     assert!(press(&mut app, KeyCode::Esc).is_empty());
     assert_eq!(app.question, None);
-    assert_eq!(app.marked, ["x", "y"]);
+    assert_eq!(marked(&app), ["x", "y"]);
     // A yes deletes them, and the list loads again.
     assert!(command(&mut app, "delete").is_empty());
     assert_eq!(

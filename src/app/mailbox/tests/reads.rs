@@ -3,10 +3,23 @@
 use super::*;
 
 fn opened_unread(ids: &[&str], opened: &str) -> Mailbox {
+    opened_unread_rows(ids.iter().map(|id| unread(id)).collect(), opened)
+}
+
+/// One unread row, `a`, listed as `kind`, open in the reader.
+fn opened_unread_of_kind(kind: SummaryKind) -> Mailbox {
+    let row = ConversationSummary {
+        kind,
+        ..unread("a")
+    };
+    opened_unread_rows(vec![row], "a")
+}
+
+fn opened_unread_rows(rows: Vec<ConversationSummary>, opened: &str) -> Mailbox {
     let (mut mailbox, request) = open();
     // Fixtures issue IDs from 80, clear of the 3, 4 and on that tests issue.
-    let rows = ids.iter().map(|id| unread(id)).collect();
-    mailbox.finish_page(request.id, page_of(rows, ids.len() as u32));
+    let total = rows.len() as u32;
+    mailbox.finish_page(request.id, page_of(rows, total));
     let load = mailbox.start_conversation_load(opened.into(), 82).unwrap();
     mailbox.finish_conversation(&load, Ok(detail(opened, &["message"])));
     mailbox
@@ -327,8 +340,7 @@ fn explicit_unread_wins_over_an_automatic_read() {
     // A conversation row and a message split out of one wait alike: the
     // explicit request is held until the automatic read is confirmed.
     for kind in [SummaryKind::Conversation, SummaryKind::Message] {
-        let mut mailbox = opened_unread(&["a"], "a");
-        mailbox.conversations[0].kind = kind;
+        let mut mailbox = opened_unread_of_kind(kind);
         let read = mailbox.start_mark_read(3).unwrap();
         assert_eq!(
             mailbox.start_action(MailAction::SetUnread(true), 4),

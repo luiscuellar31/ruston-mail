@@ -26,9 +26,7 @@ function Write-Step([string]$Message) { Write-Host "[package] $Message" }
 $repository = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).ProviderPath
 if (-not $Dist) { $Dist = Join-Path $repository 'dist' }
 $target = @{ x86_64 = 'x86_64-pc-windows-msvc'; arm64 = 'aarch64-pc-windows-msvc' }[$Architecture]
-$versionLine = Get-Content -LiteralPath (Join-Path $repository 'Cargo.toml') |
-    Where-Object { $_ -match '^version = "' } | Select-Object -First 1
-$version = $versionLine.Split('"')[1]
+$version = & (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace-version.ps1')
 
 if (-not $InnoSetup) {
     $InnoSetup = @(
@@ -88,6 +86,7 @@ try {
 Write-Step 'Compiling the installer'
 & $InnoSetup /Q "/DVersion=$version" "/DArch=$Architecture" "/DSourceDir=$stage" "/DOutputDir=$Dist" (Join-Path $PSScriptRoot 'ruston-mail.iss')
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+# The name OutputBaseFilename in ruston-mail.iss gives the installer.
 $setup = Join-Path $Dist "$name-setup-UNSIGNED.exe"
 if (-not (Test-Path -LiteralPath $setup)) { throw "Missing $setup" }
 

@@ -98,7 +98,50 @@ pub(crate) struct Reading {
     /// What an answer to it answers, when it has a message that is not a
     /// draft; boxed, as the reading travels in a message to the loop.
     pub(crate) answer: Option<Box<Answerable>>,
+    /// The rows its lines wrap to, kept by the pane that draws it.
+    pub(crate) wrapped: WrappedRows,
 }
+
+/// The rows each line of a reading wraps to at one width, counted the first
+/// time it is drawn and kept from one frame to the next: wrapping a whole
+/// conversation again at every key is what made a long one slow to move in.
+/// It is no part of what the conversation says, so it compares equal to any
+/// other and a copy starts without it.
+#[derive(Debug, Default)]
+pub(crate) struct WrappedRows(std::cell::RefCell<(u16, Vec<u32>)>);
+
+impl WrappedRows {
+    /// The rows line `at` takes `width` columns wide, counted with `wrap`
+    /// unless it was already.
+    pub(crate) fn rows(&self, at: usize, width: u16, wrap: impl FnOnce() -> usize) -> usize {
+        let mut kept = self.0.borrow_mut();
+        if kept.0 != width {
+            *kept = (width, Vec::new());
+        }
+        if kept.1.len() <= at {
+            kept.1.resize(at + 1, 0);
+        }
+        // Kept as one more than the rows, so that zero says not counted yet.
+        if kept.1[at] == 0 {
+            kept.1[at] = u32::try_from(wrap()).unwrap_or(u32::MAX - 1) + 1;
+        }
+        (kept.1[at] - 1) as usize
+    }
+}
+
+impl Clone for WrappedRows {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl PartialEq for WrappedRows {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for WrappedRows {}
 
 impl Reading {
     /// The reader's view of `conversation` and its `messages`, oldest first;
@@ -190,6 +233,7 @@ impl Reading {
             links,
             attachments,
             answer: answerable(messages, own).map(Box::new),
+            wrapped: WrappedRows::default(),
         }
     }
 
@@ -331,13 +375,18 @@ fn web_links(text: &str) -> Vec<String> {
             .unwrap_or(rest.len());
         from = start + end.max(1);
         let mut address = &rest[..end];
+        // Counted once: counting again at each bracket taken off would cost
+        // the square of a run of them, which a sender can make as long as
+        // the body.
+        let opening = address.matches('(').count();
+        let mut closing = address.matches(')').count();
         while let Some(last) = address.chars().last() {
             // A closing bracket ends the address unless it closes one of its own.
-            let unopened =
-                last == ')' && address.matches('(').count() < address.matches(')').count();
+            let unopened = last == ')' && opening < closing;
             if !(unopened || matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | ']' | '}' | '*')) {
                 break;
             }
+            closing -= usize::from(last == ')');
             address = &address[..address.len() - last.len_utf8()];
         }
         if !(address.starts_with("http://") || address.starts_with("https://")) {
@@ -663,6 +712,17 @@ mod tests {
                 "https://en.wikipedia.org/wiki/Rust_(programming_language)",
             ]
         );
+    }
+
+    #[test]
+    fn a_long_run_of_brackets_after_an_address_costs_its_length() {
+        // Counting the brackets again at each one taken off took over a
+        // second for 40,000 of them, and the square of that for more.
+        let run = 400_000;
+        let text = format!("https://example.test/a(b){} end", ")".repeat(run));
+        assert_eq!(web_links(&text), ["https://example.test/a(b)"]);
+        let mixed = format!("https://example.test/a{}", ").".repeat(run));
+        assert_eq!(web_links(&mixed), ["https://example.test/a"]);
     }
 
     #[test]

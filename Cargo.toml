@@ -9,7 +9,7 @@ members = [
 default-members = ["."]
 
 [workspace.package]
-version = "0.10.0"
+version = "0.10.1"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -40,7 +40,9 @@ async-trait = "0.1"
 secrecy = "0.10"
 zeroize = "1"
 getrandom = "0.4"
-chrono = "0.4"
+# Dates. Core reads and writes them in UTC; the desktop adds the features that
+# tell the system's own time zone.
+jiff = { version = "1.0.2", default-features = false, features = ["std"] }
 futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }
@@ -79,10 +81,10 @@ name = "ruston"
 path = "src/main.rs"
 
 [dependencies]
-chrono = { version = "0.4", default-features = false, features = ["clock"] }
 directories = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
+jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 # Decodes the pictures a message carries within it, and no other format.
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }

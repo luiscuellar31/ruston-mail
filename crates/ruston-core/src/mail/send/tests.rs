@@ -1,10 +1,19 @@
+use super::attachments::{
+    ATTACHMENT_SLOTS, attachment_work, guess_mime, prepare_attachment, read_attachment_bytes,
+};
+use super::packages::attachment_signatures;
 use super::*;
 use crate::mail::test_support;
-use crate::transport::{HttpClient, Request, Response};
+use crate::model::enums::package_type;
+use crate::model::message::{MessageMetadata, Recipient};
+use crate::transport::{Doer, HttpClient, Request, Response};
 use async_trait::async_trait;
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::de::DeserializeOwned;
+use std::fs::File;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

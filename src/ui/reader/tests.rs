@@ -1,6 +1,6 @@
 //! Tests of the reader pane: its layout, controls and messages.
 
-use chrono::Utc;
+use jiff::civil::date;
 
 use super::*;
 use crate::mail::ConversationDetail;
@@ -573,6 +573,50 @@ fn a_link_the_sender_drew_as_a_button_is_one_and_still_asks_where_it_goes() {
 }
 
 #[test]
+fn a_link_is_underlined_at_rest_and_one_drawn_as_a_button_is_not() {
+    let link = |text: &str, button: bool| RichSpan {
+        text: text.into(),
+        link: Some("https://example.test/".into()),
+        button,
+        ..RichSpan::default()
+    };
+    let plain = RichSpan {
+        text: "Read ".into(),
+        ..RichSpan::default()
+    };
+    let spans = [plain, link("the report", false), link("Buy", true)];
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        rich_spans(ui, &spans, None, Reading::default(), &mut Vec::new());
+    });
+    let underlined: Vec<(String, bool)> = output
+        .shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => Some((
+                text.galley.text().to_owned(),
+                text.galley
+                    .job
+                    .sections
+                    .iter()
+                    .all(|section| section.format.underline != egui::Stroke::NONE),
+            )),
+            _ => None,
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    assert_eq!(
+        underlined,
+        [
+            ("Read ".to_owned(), false),
+            ("the report".to_owned(), true),
+            ("Buy".to_owned(), false)
+        ]
+    );
+}
+
+#[test]
 fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     let span = RichSpan {
         text: "the agenda".into(),
@@ -888,14 +932,26 @@ fn address(name: Option<&str>, email: &str) -> MailAddress {
 
 #[test]
 fn message_times_are_complete() {
-    let timestamp = Utc
-        .with_ymd_and_hms(2026, 9, 11, 9, 42, 0)
-        .unwrap()
-        .timestamp();
+    let at = |d, h, min| {
+        date(2026, 9, d)
+            .at(h, min, 0, 0)
+            .to_zoned_datetime(TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .as_second()
+    };
     assert_eq!(
-        format_message_time(timestamp, &Utc),
+        format_message_time(at(11, 9, 42), &TimeZone::UTC),
         "Sep 11, 2026 at 09:42"
     );
+    // A day of one digit is written as one, in the reader's own zone.
+    let east = jiff::tz::offset(2).to_time_zone();
+    assert_eq!(
+        format_message_time(at(8, 23, 30), &east),
+        "Sep 9, 2026 at 01:30"
+    );
+    // A time no date can hold shows nothing.
+    assert_eq!(format_message_time(i64::MAX, &TimeZone::UTC), "");
 }
 
 #[test]
@@ -1150,7 +1206,10 @@ fn assert_reader_geometry(
     let sender = text_rect(loaded, "Alex Rivera");
     let sender_bar = bar_at("sender", egui::Rect::left_top, sender.left_top());
     assert!((sender_bar.height() - sender.height()).abs() * scale <= 0.5);
-    let date = text_rect(loaded, &format_message_time(1_791_327_600, &Local));
+    let date = text_rect(
+        loaded,
+        &format_message_time(1_791_327_600, &TimeZone::system()),
+    );
     bar_at("date", egui::Rect::right_top, date.right_top());
     if expanded {
         for label in ["alex@example.com", "To: team@example.org"] {
@@ -1859,7 +1918,7 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
         message_count: 1,
         has_attachments: false,
     };
-    let row_flags: Vec<(&str, bool, MailAction)> = flags(&row)
+    let row_flags: Vec<(&str, bool, MailAction)> = flags(row.unread, row.starred)
         .into_iter()
         .map(|button| (button.label, button.on, button.action))
         .collect();
@@ -2243,7 +2302,7 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
                         reader.toggle("message");
                     }
                     assert_eq!(
-                        reader.is_expanded("message", Reading::default()),
+                        reader.is_expanded(&reader.detail().messages[0], Reading::default()),
                         expanded,
                         "{case}"
                     );
@@ -2731,7 +2790,338 @@ fn a_picture_the_message_carries_is_asked_for_shown_and_let_go() {
     );
     assert!(messages.is_empty());
     assert!(says(&shapes, "Image not loaded: Logo"));
-    // The picture left with its conversation, and so does its texture.
-    let _ = frame(&none, Reading::default());
+    // The picture left with its conversation, and so does its texture, at
+    // the window's next frame.
+    forget_textures(&context, &none);
     assert!(!has_texture());
+}
+
+#[test]
+fn textures_go_with_the_pictures_the_app_no_longer_keeps() {
+    let context = egui::Context::default();
+    let texture = context.load_texture(
+        "message-picture-logo",
+        egui::ColorImage::filled([1, 1], egui::Color32::WHITE),
+        egui::TextureOptions::LINEAR,
+    );
+    context.data_mut(|data| {
+        data.get_temp_mut_or_default::<Textures>(egui::Id::NULL)
+            .0
+            .insert("logo".into(), (0, texture));
+    });
+    let kept = |context: &egui::Context| {
+        context.data(|data| {
+            data.get_temp::<Textures>(egui::Id::NULL)
+                .map_or(0, |all| all.0.len())
+        })
+    };
+
+    let images = HashMap::from([("logo".to_owned(), InlineImage::Loading)]);
+    forget_textures(&context, &images);
+    assert_eq!(kept(&context), 1);
+    // Nothing open, as after closing the reader or signing out.
+    forget_textures(&context, &HashMap::new());
+    assert_eq!(kept(&context), 0);
+}
+
+#[test]
+fn typing_in_another_field_does_not_lay_the_whole_message_out() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Whether a message drawn under a field and a button is laid out whole,
+    // once the focus has settled where `focus` puts it.
+    let whole = |focus: Option<bool>| {
+        let mut whole = false;
+        for _ in 0..3 {
+            context
+                .run_ui(egui::RawInput::default(), |ui| {
+                    let mut typed = String::new();
+                    let field = ui.add(egui::TextEdit::singleline(&mut typed).id_salt("search"));
+                    let button = ui.button("Archive");
+                    match focus {
+                        Some(true) => field.request_focus(),
+                        Some(false) => button.request_focus(),
+                        None => ui.memory_mut(|memory| memory.surrender_focus(button.id)),
+                    }
+                    whole = Sight::new(ui, Reading::default()).all;
+                })
+                .drop_without_applying_deltas();
+        }
+        whole
+    };
+    assert!(!whole(None));
+    // Focus on a button may move into the message with Tab, which reaches
+    // only what is laid out.
+    assert!(whole(Some(false)));
+    // The cursor in the search field blinks and takes every key: the message
+    // behind it stays as it was.
+    assert!(!whole(Some(true)));
+}
+
+#[test]
+fn a_long_table_lays_out_only_the_rows_near_sight_and_keeps_its_shape() {
+    let mut html = String::from("<table><tr><th>Item</th><th>Count</th><th>Price</th></tr>");
+    for row in 0..400 {
+        html.push_str(&format!(
+            "<tr><td>item {row}</td><td>{}</td><td>${row}.00</td></tr>",
+            row % 7
+        ));
+    }
+    html.push_str("</table>");
+    let mut message = header_message(Some("Alex Rivera"));
+    message.body = MessageBody::Rich(ruston_core::html::rich::parse(&html));
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: vec![message],
+    });
+    // A frame of the message in a pane 700 points square scrolled to
+    // `offset`, with a button below it that has the keyboard's focus when
+    // `focused`, which has everything laid out: the message's length, where
+    // each cell painted is, how many texts were laid out, and whether egui
+    // asked for another frame at once.
+    let frame = |context: &egui::Context, offset: f32, reading: Reading, focused: bool| {
+        let mut length = 0.0;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(700.0, 700.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                length = egui::ScrollArea::vertical()
+                    .vertical_scroll_offset(offset)
+                    .show(ui, |ui| {
+                        message_card(
+                            ui,
+                            &reader.detail().messages[0],
+                            reader.preview_at(0),
+                            &reader,
+                            AttachmentSaves::default(),
+                            reading,
+                            &mut Vec::new(),
+                        );
+                    })
+                    .content_size
+                    .y;
+                let button = ui.button("Archive");
+                if focused {
+                    button.request_focus();
+                }
+            },
+        );
+        let cells: HashMap<String, egui::Pos2> = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) if text.galley.text().starts_with("item ") => {
+                    Some((text.galley.text().to_owned(), text.pos))
+                }
+                _ => None,
+            })
+            .collect();
+        let again = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .is_some_and(|viewport| viewport.repaint_delay.is_zero());
+        output.drop_without_applying_deltas();
+        // The texts the frame used, which it laid out or took from the cache.
+        let texts = context.fonts(|fonts| fonts.num_galleys_in_cache());
+        (length, cells, texts, again)
+    };
+    // The scroll bars and the table's shape settle over a few frames, a
+    // bar's animation over a quarter of a second of them.
+    let settled = |context: &egui::Context, offset: f32, reading: Reading, focused: bool| {
+        let mut last = frame(context, offset, reading, focused);
+        for _ in 0..30 {
+            last = frame(context, offset, reading, focused);
+        }
+        last
+    };
+
+    for reading in [
+        Reading::default(),
+        Reading {
+            data_tables: false,
+            ..Reading::default()
+        },
+    ] {
+        // With the keyboard's focus on a button every row is laid out, which
+        // gives the whole shape.
+        let whole = egui::Context::default();
+        theme::install(&whole);
+        let near = egui::Context::default();
+        theme::install(&near);
+        let (length, _, _, _) = settled(&whole, 0.0, reading, true);
+        let middle = length / 2.0;
+        let (whole_length, all, every_text, _) = settled(&whole, middle, reading, true);
+        let (near_length, painted, texts, again) = settled(&near, middle, reading, false);
+
+        assert!(painted.contains_key("item 200"), "{reading:?}");
+        assert!(
+            texts * 3 < every_text,
+            "{texts} texts laid out near sight, {every_text} with the whole table"
+        );
+        assert!(
+            (near_length - whole_length).abs() < 1.0,
+            "{near_length} with the rows near sight, {whole_length} with all"
+        );
+        // The rows in sight are where they are with the whole table laid
+        // out, its columns as wide.
+        assert_eq!(painted.len(), all.len(), "{reading:?}");
+        for (cell, at) in &painted {
+            let whole_at = all[cell];
+            assert!(
+                (at.x - whole_at.x).abs() < 0.5 && (at.y - whole_at.y).abs() < 0.5,
+                "{cell} at {at:?}, {whole_at:?} with the whole table"
+            );
+        }
+        // Nothing keeps asking for another frame once it has settled.
+        assert!(!again, "{reading:?}");
+    }
+}
+
+/// A row of the Inbox, starred, and unread or not.
+fn starred_row(id: &str, unread: bool) -> ConversationSummary {
+    ConversationSummary {
+        id: id.into(),
+        kind: crate::mail::SummaryKind::Conversation,
+        subject: Some(id.into()),
+        correspondents: None,
+        participants: Vec::new(),
+        preview: None,
+        time: None,
+        unread,
+        starred: true,
+        message_count: 1,
+        has_attachments: false,
+    }
+}
+
+/// The Inbox listing "a", "b" and "c", with "a" and "b" chosen together.
+fn two_chosen() -> Mailbox {
+    let (mut mailbox, page) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    mailbox.finish_page(
+        page.id,
+        Ok(crate::mail::ConversationPage {
+            conversations: vec![
+                starred_row("a", true),
+                starred_row("b", false),
+                starred_row("c", false),
+            ],
+            total: 3,
+            inspect_candidates: Vec::new(),
+        }),
+    );
+    assert_eq!(mailbox.select_through("a"), Some("a".to_owned()));
+    let _ = mailbox.start_conversation_load("a".into(), 3);
+    assert_eq!(mailbox.select_through("b"), None);
+    mailbox
+}
+
+#[test]
+fn rows_chosen_together_show_how_many_and_what_can_be_done_to_all() {
+    let mailbox = two_chosen();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(540.0, 950.0),
+        )),
+        ..Default::default()
+    };
+    let (shapes, _) = reader_frame(
+        &context,
+        &mailbox,
+        &[],
+        Reading::default(),
+        &mut state,
+        input.clone(),
+    );
+
+    assert!(visible_text_rect(&shapes, "2 conversations selected").is_some());
+    // Archive, Spam and Trash, then read and star, as for one conversation;
+    // the labels menu shows only for one.
+    let toolbar = buttons(&shapes);
+    assert_eq!(toolbar.len(), 5, "{toolbar:?}");
+    let (_, messages) = reader_frame(
+        &context,
+        &mailbox,
+        &[],
+        Reading::default(),
+        &mut state,
+        click_at(&input, toolbar[0].center()),
+    );
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::ApplyAction(MailAction::MoveTo(to))]
+            if *to == Folder::System(MailFolder::Archive)
+    ));
+}
+
+#[test]
+fn rows_chosen_together_are_read_while_any_is_unread_and_starred_unless_all_are() {
+    let switches = |rows: &[ConversationSummary]| -> Vec<(&'static str, bool, MailAction)> {
+        let rows: Vec<&ConversationSummary> = rows.iter().collect();
+        group_flags(&rows)
+            .into_iter()
+            .map(|button| (button.label, button.on, button.action))
+            .collect()
+    };
+
+    assert_eq!(
+        switches(&[starred_row("a", false), starred_row("b", true)]),
+        [
+            ("Mark as read", true, MailAction::SetUnread(false)),
+            ("Remove star", true, MailAction::SetStarred(false)),
+        ]
+    );
+    let mut plain = starred_row("b", false);
+    plain.starred = false;
+    assert_eq!(
+        switches(&[starred_row("a", false), plain]),
+        [
+            ("Mark as unread", false, MailAction::SetUnread(true)),
+            ("Add star", false, MailAction::SetStarred(true)),
+        ]
+    );
+}
+
+#[test]
+fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
+    let mailbox = two_chosen();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let input = egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(
+            egui::Pos2::ZERO,
+            egui::vec2(540.0, 950.0),
+        )),
+        ..Default::default()
+    };
+    let frame = |input: egui::RawInput| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(input, |ui| {
+            selection_menu(ui, &mailbox, &mut messages);
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(input.clone());
+    // Both are starred, so the menu takes the star away from both.
+    assert!(visible_text_rect(&shapes, "Remove star").is_some());
+    let (_, messages) = frame(click_at(&input, text_rect(&shapes, "Archive").center()));
+
+    assert!(matches!(
+        messages.as_slice(),
+        [Message::ApplyAction(MailAction::MoveTo(to))]
+            if *to == Folder::System(MailFolder::Archive)
+    ));
 }

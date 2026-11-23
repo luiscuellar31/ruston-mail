@@ -1,6 +1,7 @@
 //! Tests of the mailbox pane: folders, the conversation list, search and the undo notice.
 
-use chrono::Utc;
+use jiff::civil::date;
+use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
@@ -1909,12 +1910,14 @@ fn search_scope_says_what_the_list_is_showing() {
 
 #[test]
 fn times_are_formatted_relative_to_now() {
-    let now = Utc.with_ymd_and_hms(2026, 9, 11, 18, 0, 0).unwrap();
-    let at = |y, m, d, h, min| {
-        Utc.with_ymd_and_hms(y, m, d, h, min, 0)
+    let utc = |y, m, d, h, min| {
+        date(y, m, d)
+            .at(h, min, 0, 0)
+            .to_zoned_datetime(TimeZone::UTC)
             .unwrap()
-            .timestamp()
     };
+    let now = utc(2026, 9, 11, 18, 0);
+    let at = |y, m, d, h, min| utc(y, m, d, h, min).timestamp().as_second();
     assert_eq!(format_time(at(2026, 9, 11, 9, 5), &now), "09:05");
     assert_eq!(format_time(at(2026, 9, 10, 23, 59), &now), "Yesterday");
     assert_eq!(format_time(at(2026, 9, 10, 0, 0), &now), "Yesterday");
@@ -1922,18 +1925,29 @@ fn times_are_formatted_relative_to_now() {
     assert_eq!(format_time(at(2026, 3, 2, 9, 5), &now), "Mar 2");
     assert_eq!(format_time(at(2025, 12, 31, 9, 5), &now), "2025-12-31");
     // Yesterday wins over last year's date on the first of January.
-    let new_year = Utc.with_ymd_and_hms(2027, 1, 1, 8, 0, 0).unwrap();
+    let new_year = utc(2027, 1, 1, 8, 0);
     assert_eq!(format_time(at(2026, 12, 31, 22, 0), &new_year), "Yesterday");
+
+    // The day is the reader's own: late on the 10th in UTC is already the
+    // 11th two hours to the east.
+    let now_east = now.with_time_zone(jiff::tz::offset(2).to_time_zone());
+    assert_eq!(format_time(at(2026, 9, 10, 23, 30), &now_east), "01:30");
+    assert_eq!(format_time(at(2026, 9, 9, 23, 30), &now_east), "Yesterday");
+    // A time no date can hold shows nothing.
+    assert_eq!(format_time(i64::MAX, &now), "");
 }
 
 #[test]
 fn a_bottom_notice_expires_and_a_new_one_gets_its_own_time() {
-    let offer = crate::app::UndoMove {
-        row_id: "first".into(),
+    let moved = |row_id: &str| crate::app::MovedRow {
+        row_id: row_id.into(),
         kind: crate::mail::SummaryKind::Conversation,
         from: Folder::INBOX,
-        to: Folder::System(MailFolder::Trash),
         row: None,
+    };
+    let offer = crate::app::UndoMove {
+        rows: vec![moved("first")],
+        to: Folder::System(MailFolder::Trash),
     };
     let undo = BottomNotice::Undo(Box::new(offer.clone()));
     let mut state = UiState::default();
@@ -1952,7 +1966,7 @@ fn a_bottom_notice_expires_and_a_new_one_gets_its_own_time() {
     assert_eq!(remaining(&mut state, &undo, 16.0), None);
 
     let next = BottomNotice::Undo(Box::new(crate::app::UndoMove {
-        row_id: "second".into(),
+        rows: vec![moved("second")],
         ..offer
     }));
     assert_eq!(
@@ -2134,7 +2148,7 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
         has_attachments: true,
     };
     let context = egui::Context::default();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let mut height = 0.0;
     context
         .run_ui(egui::RawInput::default(), |ui| {
@@ -2151,9 +2165,9 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
 #[test]
 fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
     let name = "A sender whose name runs on and on, well past the time";
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     // A full date, and the longest word the time column shows.
-    let yesterday = (now - chrono::Duration::days(1)).timestamp();
+    let yesterday = now.timestamp().as_second() - 86_400;
     for timestamp in [1_700_000_000, yesterday] {
         let mut conversation = pagination_row("A subject", timestamp);
         conversation.correspondents = Some(name.into());
@@ -2182,7 +2196,7 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
 
 #[test]
 fn unread_rows_are_brighter_than_rows_already_read() {
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     for appearance in [
         crate::settings::Appearance::Dark,
         crate::settings::Appearance::Light,
@@ -2265,7 +2279,7 @@ fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
     let context = egui::Context::default();
     theme::install(&context);
     context.enable_accesskit();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let render = |input| {
         let mut rect = egui::Rect::NOTHING;
         let output = context.run_ui(input, |ui| {
@@ -2331,7 +2345,7 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
         has_attachments: false,
     };
     let context = egui::Context::default();
-    let now = Local::now();
+    let now = ZonedDateTime::now();
     let render = |input| {
         let mut result = (egui::Rect::NOTHING, false);
         context
@@ -2429,4 +2443,218 @@ fn subfolders_sit_under_their_parent_and_labels_wear_their_color() {
         label_color(crate::mail::PlaceLook::default()),
         theme::ACCENT
     );
+}
+
+/// The demo listing "demo-3" and "demo-4". Opening one leaves it unread, so
+/// the demo keeps this listing instead of its own.
+fn two_demo_rows() -> App {
+    let mut settings = Settings::default();
+    settings.mark_read_on_open = false;
+    let (mut app, _) = App::boot(true, settings);
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(ConversationPage {
+            conversations: vec![
+                pagination_row("demo-3", 1000),
+                pagination_row("demo-4", 900),
+            ],
+            total: 2,
+            inspect_candidates: Vec::new(),
+        }),
+    ));
+    app
+}
+
+/// A click at `pos` with `modifiers` held, as the window reports it: egui
+/// keeps the keys held from the last change it was told of.
+fn click_with(
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+    modifiers: egui::Modifiers,
+) -> egui::RawInput {
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers,
+    };
+    egui::RawInput {
+        events: vec![
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::PointerMoved(pos),
+            press(true),
+            press(false),
+        ],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn command_and_shift_clicks_choose_a_row_together_with_others() {
+    let app = two_demo_rows();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
+
+    let command = egui::Modifiers {
+        command: true,
+        ..Default::default()
+    };
+    let (asked, _) = frame(click_with(
+        row.center(),
+        egui::PointerButton::Primary,
+        command,
+    ));
+    assert!(matches!(asked.as_slice(), [Message::ToggleSelected(id)] if id == "demo-4"));
+    let shift = egui::Modifiers {
+        shift: true,
+        ..Default::default()
+    };
+    let (asked, _) = frame(click_with(
+        row.center(),
+        egui::PointerButton::Primary,
+        shift,
+    ));
+    assert!(matches!(asked.as_slice(), [Message::SelectThrough(id)] if id == "demo-4"));
+    let (asked, _) = frame(click_with(
+        row.center(),
+        egui::PointerButton::Primary,
+        egui::Modifiers::NONE,
+    ));
+    assert!(matches!(asked.as_slice(), [Message::SelectConversation(id)] if id == "demo-4"));
+}
+
+#[test]
+fn rows_chosen_together_are_highlighted_and_their_menu_acts_on_all() {
+    let mut app = two_demo_rows();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let (_, shapes) = frame(Default::default());
+
+    for id in ["demo-3", "demo-4"] {
+        let row = visible_text_rect(&shapes, id).expect("a row chosen");
+        let highlighted = shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::Rect(rect)
+                if rect.rect.contains(row.center()) && rect.fill != Color32::TRANSPARENT)
+        });
+        assert!(highlighted, "{id} is not highlighted");
+    }
+    assert!(
+        visible_text_rect(&shapes, "2 conversations selected").is_some(),
+        "the reader says how many are chosen"
+    );
+
+    let row = visible_text_rect(&shapes, "demo-4").unwrap();
+    let (asked, _) = frame(click_with(
+        row.center(),
+        egui::PointerButton::Secondary,
+        egui::Modifiers::NONE,
+    ));
+    assert!(asked.is_empty(), "a right click chooses nothing");
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        shapes = frame(Default::default()).1;
+    }
+    // The reader has an Archive too; the menu is drawn above it, last.
+    let archive = shapes
+        .iter()
+        .rev()
+        .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, "Archive"))
+        .expect("the menu offers Archive");
+    let (asked, _) = frame(click_with(
+        archive.center(),
+        egui::PointerButton::Primary,
+        egui::Modifiers::NONE,
+    ));
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyAction(crate::mail::MailAction::MoveTo(to))]
+                if *to == Folder::System(MailFolder::Archive)
+        ),
+        "the menu of a row chosen with others acts on all of them"
+    );
+}
+
+#[test]
+fn an_offer_to_undo_a_move_of_several_rows_says_how_many() {
+    let mut app = two_demo_rows();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+        Folder::System(MailFolder::Archive),
+    )));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    }
+
+    assert!(
+        visible_text_rect(&shapes, "Moved 2 conversations to Archive.").is_some(),
+        "the offer says how many it puts back"
+    );
+}
+
+#[test]
+fn one_column_can_show_the_rows_chosen_together() {
+    let mut app = two_demo_rows();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState {
+        compact_view: CompactView::Reader,
+        ..UiState::default()
+    };
+    let size = egui::vec2(480.0, 640.0);
+    let mut shapes = Vec::new();
+    for _ in 0..2 {
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    }
+
+    assert_eq!(
+        state.compact_view,
+        CompactView::Reader,
+        "the tab stays open"
+    );
+    assert!(visible_text_rect(&shapes, "2 conversations selected").is_some());
+}
+
+#[test]
+fn a_key_let_go_with_the_button_still_counts_for_the_click() {
+    let app = two_demo_rows();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
+
+    // Command goes up in the same pass as the button: the click was made
+    // with it held all the same.
+    let command = egui::Modifiers {
+        command: true,
+        ..Default::default()
+    };
+    let mut input = click_with(row.center(), egui::PointerButton::Primary, command);
+    input
+        .events
+        .push(egui::Event::ModifiersChanged(egui::Modifiers::NONE));
+    let (asked, _) = frame(input);
+
+    assert!(matches!(asked.as_slice(), [Message::ToggleSelected(id)] if id == "demo-4"));
 }

@@ -200,9 +200,18 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   a draft whose own window is still choosing files.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
-  defines the work requested by the state machine.
+  defines the work requested by the state machine. Its dispatch only names
+  the method each message goes to, beside the one that asked for it, in the
+  module of its part of the state: the list, its pages, a search, the
+  folders and the counts in [`listing.rs`](../src/app/listing.rs), saving an
+  attachment in [`attachments.rs`](../src/app/attachments.rs), a link waiting
+  to open in [`links.rs`](../src/app/links.rs), and inspections and new mail
+  in their own.
 - [`app/inspection.rs`](../src/app/inspection.rs) bounds best-effort conversation
   inspection to 50 distinct candidate IDs including at most four running tasks.
+  A conversation an inspection left as one is remembered as it was listed
+  then, with the folder's grouping, and is not asked about again while a
+  refresh lists it the same.
   Waiting IDs retain no backend or task; completion admits the next candidate.
   Only accepted page responses enqueue work, including already displayed splits;
   targets removed before admission are skipped. Folder changes, server search,
@@ -281,14 +290,28 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   last one was left at. Explicit reveal
   requests take precedence, and sign-out clears the anchors. No complete listing snapshot or
   persistent scroll data is added.
-  The reader's buttons act on the open row (`Message::ApplyAction`); a row's
+  The reader's buttons act on the rows chosen (`Message::ApplyAction`); a row's
   context menu names its row (`Message::ApplyRowAction`) and offers the same
   moves and flags, built by `reader::moves` and `reader::flags`. Both reach
-  `App::apply_row_action`, which acts through the demo service or
-  `Mailbox::start_action_on`, so a row acted on from its menu is never opened
-  or read automatically. A message header's context menu copies its sender's
-  or its recipients' addresses through `Message::CopyAddresses`, which `App`
-  joins with commas for the clipboard.
+  `App::apply_to_rows`, which acts through the demo service or
+  `Mailbox::start_actions_on`, so a row acted on from its menu is never opened
+  or read automatically. The mailbox also keeps the rows chosen together with
+  Command or Shift (`ToggleSelected`, `SelectThrough`, and Shift with an arrow
+  through `Mailbox::extend_selection`), with the row a Shift range starts from
+  and its far end. Two or more close the reader, which shows how many and
+  their moves and flags, and `Mailbox::rows_acted_on` names them, in list
+  order, instead of the open row; the menu of a row among them acts on all.
+  A change that leaves one row opens it, opening a row or `Esc` lets go of the
+  rest, and rows the list no longer shows drop out of the choice; Command and
+  A choose every row listed (`Mailbox::select_all`). Each row chosen keeps an
+  action of its own in the queue below, but those started together go to
+  Proton in one request of up to 50 (`Mailbox::request_group`), when they are
+  the same action on rows of one kind read in one folder and none waits for an
+  automatic read; Proton's answer settles each in turn, and a refused request
+  takes all of them back and reloads the list. A move of several offers one
+  undo for all of them, from which a refused row drops. A message header's
+  context menu copies its sender's or its recipients' addresses through
+  `Message::CopyAddresses`, which `App` joins with commas for the clipboard.
   An action shows as soon as it is asked for. A move out of the view takes the
   row away, offers its undo and names the row to open in its place. Starred and
   labels list mail wherever it sits, so a move to another folder keeps the row
@@ -297,7 +320,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   list carries the undo offer or, with none, `App`'s `Notice` of a message sent
   or a file saved; [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
-  `DismissNotice`, which drop it only if it is still current. The undo offer keeps the row as
+  `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its
   date puts it, even from a page a reload would not read; a refused move back
   takes it away again. When a confirmed move belongs in the view but its row is
@@ -534,7 +557,10 @@ once a message uncovers it, `App::update` marks the conversation opened behind
 the draft, if it is still the open one. Core's
 [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) converts sanitized
 HTML into the rich-body model both apps draw, which the desktop adapter keeps
-as `MessageBody::Rich`. The sanitizer keeps, of styles, only `display` and
+as `MessageBody::Rich`. Before it builds a tree, the sanitizer counts what the
+tree would cost, a step for each element open around each tag, and keeps a
+body over the limit (`MAX_TREE_WORK`) as its text alone, since elements opened
+tens of thousands deep would take seconds to parse. The sanitizer keeps, of styles, only `display` and
 `visibility`, and the `hidden` attribute, so `html::hides` can tell text the
 sender hid: the model keeps it, marked on its spans and blocks, and an
 element of the same name within the hidden one does not end it. It also keeps
@@ -548,7 +574,9 @@ always writes them as Markdown markers. The same stack notes an element with a
 background of its own, `background-color` or a cell's `bgcolor`, white aside:
 when it ends having held nothing but one link of at most 60 characters, the
 link's runs are marked `button`, and the reader draws them as one button that
-still goes through the link prompt, under the same setting. A table is read as the paragraphs of
+still goes through the link prompt, under the same setting. Any other link is
+underlined at rest, not only on hover as egui's `Link` is, so it stands out
+from the text by more than its colour. A table is read as the paragraphs of
 its rows, as before, while its cells are kept apart; at its end, one that
 holds data replaces those paragraphs with a `BlockKind::Table`: no table within
 it, no image, list, heading or other block, no text outside a cell, cells of at
@@ -564,8 +592,12 @@ attachment's headers. When the reader reaches one, it sends
 checks it is a part of the open conversation within the size limit, downloads
 it as it does an attachment to save, and decodes it on a blocking worker with
 [`pictures.rs`](../src/pictures.rs), which takes only PNG, JPEG, GIF and WebP,
-by the file's own bytes, refuses one too large before decoding it, and makes a
-wide one smaller. The pictures of the open conversation live in `App`, at most
+by the file's own bytes, refuses one too large before decoding it, makes a
+wide one smaller, and multiplies its colors by their alpha, as a texture takes
+them, so making the texture on the interface's thread only copies them. A
+message asks for all its pictures as it opens, so they take
+turns, two fetched and decoded at once, and none starts after the first that
+does not fit. The pictures of the open conversation live in `App`, at most
 96 MiB decoded, and go with it; the reader keeps one texture for each and lets
 go of those `App` no longer has. The terminal shows none. The reader
 leaves it out, or draws it in grey with **Show text the sender hid**
@@ -581,8 +613,12 @@ deeper content keeps the last indent, so text never leaves the column. A long
 message costs what is near the screen, not all it holds: `block_in_sight`
 remembers the height each block took, with the width, scale and Settings it
 depended on, and a block more than a screen away only leaves that room. A
-screen reader, which reads what is out of sight too, and keyboard focus, which
-moves among links, have everything laid out as before.
+table of data is one block, so `TableLayouts` keeps the same for its rows:
+laid out whole once, it remembers each row's height and each column's width,
+and after that only the rows near the screen are, with the columns as wide
+as the whole table made them, the first and last rows always. A screen
+reader, which reads what is out of sight too, and keyboard focus outside a
+text field, which moves among links, have everything laid out as before.
 
 The adapter maps the entire core `FullMessage` into `MailMessage`, preserving
 the body's `Verdict` through both conversation and individual message reads.
@@ -626,7 +662,9 @@ previous reference and release their slot; session expiry closes the mailbox.
 
 [`ui/auto_refresh.rs`](../src/ui/auto_refresh.rs) schedules 60-second foreground
 and 180-second background polls with one pending page request and backoff up to
-300 seconds. egui requests timed repaints while unfocused/minimized. Busy mailbox
+300 seconds. It is timed by the window's own clock (`DesktopApp::clock`), not
+egui's, which stands still while the window is minimized or covered and no
+pass is drawn; egui requests the timed wake-ups that run `logic` then. Busy mailbox
 or send operations defer polling. Returning after 30 seconds can refresh early
 if a recent success or failure backoff does not prevent it. Only accepted page
 responses update timing; stale successes cannot reset backoff. Navigation releases
@@ -663,7 +701,9 @@ Sending follows the same return path: [`ui/compose.rs`](../src/ui/compose.rs)
 collects input; [`app/compose.rs`](../src/app/compose.rs) manages the draft in
 memory; [`mail/outgoing.rs`](../src/mail/outgoing.rs) validates outgoing data;
 [`mail/proton.rs`](../src/mail/proton.rs) calls
-[`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs). The
+[`ruston-core`'s send operation](../crates/ruston-core/src/mail/send.rs), whose
+attachments, recipients, replies and packages each have a module under
+`mail/send/`. The
 result returns to the app as a message. A reply opens with To, and Cc for
 Reply all, filled in as core would address it; whatever the fields then hold
 is sent, as for a new message or a forward. One draft is open at a time: asking
@@ -692,7 +732,7 @@ which classifies the key lookup the way sending picks a package. It looks up
 four addresses at a time, in their order, and the whole batch shares one
 request deadline; an address still waiting when it runs out reads as a failed
 lookup. Only the first `PROTECTION_LOOKUP_LIMIT` addresses (100, from core's
-`mail/send.rs`) are asked about, and the notice counts the rest in one line
+`mail/send/recipients.rs`) are asked about, and the notice counts the rest in one line
 as not checked; the terminal interface's question before sending applies the
 same limit. Answers carry
 the session epoch and draft ID, and an address removed meanwhile is ignored.
@@ -718,7 +758,7 @@ reads their sizes on Tokio's blocking pool, and the draft keeps them for the
 composer to show: asking the file system on the interface thread would wait
 on a network share that stopped answering.
 
-Core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs) owns outgoing file
+Core [`mail/send/attachments.rs`](../crates/ruston-core/src/mail/send/attachments.rs) owns outgoing file
 validation, shared by the desktop backend and all SDK/CLI send paths. New local
 attachments must be regular readable files, at most 32 MiB each and 128 MiB in
 total. Core validates sizes before creating a draft, then checks each opened
@@ -802,7 +842,11 @@ instead of an unknown outcome.
   while Ctrl+Z suspends it where the shell has job control, and an async
   loop over crossterm's event stream, less the mouse moving, which asks for
   nothing and would cost a draw for every cell it crosses, and the answers
-  of the tasks it runs. A task that panics answers
+  of the tasks it runs. It draws again only after a message, a new size or
+  a resume: any other event asks for nothing and changes nothing. The
+  reader scrolls by `usize` rows and hands the widget only the lines that
+  show, so a conversation of any length can be read to its end. A task that
+  panics answers
   with a message the status bar shows, and its panic is not reported, so the
   interface keeps its screen. Quitting waits up to three seconds for the
   changes still on their way and then, through `Client::settle`, for a token
@@ -941,10 +985,12 @@ instead of an unknown outcome.
   finds belong to; it needs no connection, though opening a result does.
   Its line is read as `:search`'s is, by the same function, its folder found
   the same way; core's index finds by words alone, so `search_local` narrows
-  all it finds, rather than only the best matches a list holds, by each
+  what it finds, rather than only the best matches a list holds, by each
   message's sender, recipients, time and labels, matching people and days
   as the demo's searches do, and a line of filters alone is refused, saying
-  so.
+  so. Core's `Cache::search_where` reads the matches one at a time, best
+  first, and stops once a list of them passes the filters, so the search
+  holds no more than it shows.
   [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs) draws that state with
   ratatui: three panes side by side, or the focused one alone in a narrow
   terminal, a status bar and the list of keys, in the terminal's colors with
@@ -961,6 +1007,9 @@ instead of an unknown outcome.
   conversation opens or one just folded or opened, as the desktop lands on
   one: unless it starts in the upper third already. It also records where it
   drew each pane and the first row of each list it showed, for the mouse.
+  A list makes only the rows it shows, the ones ratatui would show of them
+  all, since it is drawn after every key and may hold thousands of
+  conversations.
   Every piece of text from the mail
   passes through `terminal.rs`'s `screen_line` or `screen_text`, which drop
   what output filtering drops and turn tabs, and on one line line breaks, into
@@ -994,7 +1043,7 @@ instead of an unknown outcome.
   errors, and diagnostics use its shared control filter. It processes formatted
   text in one pass, removing C0/C1 controls and DEL except line feeds and tabs,
   and the invisible direction and zero-width marks that core's
-  `is_invisible_mark` names. Human-readable output is filtered even when
+  `text::is_invisible_mark` names. Human-readable output is filtered even when
   redirected. JSON escapes these characters without changing the decoded
   values, and goes out while it serializes, so a large thread is not held a
   second time as text. Explicit `raw` and `html` bodies retain
@@ -1040,7 +1089,11 @@ instead of an unknown outcome.
   unless another is named; a draft with attachments, which are keyed to that
   address, cannot change it.
 - CLI [demo mode](../crates/ruston-cli/src/demo.rs) is dispatched before live
-  commands and saves its sample attachments as the live command does, with
+  commands, an area to a function in
+  [`demo/commands.rs`](../crates/ruston-cli/src/demo/commands.rs) as
+  `commands::run` has them, over the mail, people, labels and counts that
+  [`demo/data.rs`](../crates/ruston-cli/src/demo/data.rs) writes once each,
+  and saves its sample attachments as the live command does, with
   core's `save_under_free_name`: never over a file or through a link already
   there, and reported the same way. Its commands report through the same
   `render` functions, with the same action names, as the live ones, and
@@ -1087,7 +1140,9 @@ instead of an unknown outcome.
   reads a message listed on its own through `read_message_or_unreadable`, the
   same way; `read_message` still fails on one it cannot open.
 - [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) also
-  owns the filename policy and the writing shared by both frontends.
+  hands out, from its
+  [`files.rs`](../crates/ruston-core/src/mail/attachments/files.rs), the
+  filename policy and the writing shared by both frontends.
   `save_under_free_name` saves into a folder under the first free name,
   `report.pdf`, then `report (1).pdf` and so on, and `write_new_file` writes to
   a path the user chose. Both create the file exclusively, then mark it with
@@ -1119,16 +1174,18 @@ instead of an unknown outcome.
   A PGP/MIME body (a `multipart/` MIME type) carries attachments Proton cannot
   see. Reading one appends them to `FullMessage::attachments`, named `mime-`
   and their position in the body, with no key packets or signature, and
-  `list_attachments` and `for_each_attachment` open such a body, unverified,
-  to list them. Downloading one fetches and decrypts the message again with
-  the sender's keys and returns that part; only an `Invalid` body verdict
+  `list_attachments` opens such a body, unverified, to list them. Downloading
+  one fetches and decrypts the message again with the sender's keys and
+  returns that part, while `for_each_attachment` opens the body once with
+  them for all its parts, and export takes them from the body it opens for
+  the file, without keys; only an `Invalid` body verdict
   refuses it with `AttachmentVerificationFailed`, while an unsigned body, or
   one left unverified because no sender keys were found, lets it through, as
-  reading shows such a body. Every caller, export included, reaches them
-  through those methods.
+  reading shows such a body.
 - [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs) owns live CLI EML
   reconstruction. It decrypts one message and then downloads each attachment
-  using the same metadata, writing MIME parts sequentially to a hidden
+  using the same metadata, those inside a PGP/MIME body taken from the body
+  it decrypted, writing MIME parts sequentially to a hidden
   temporary file. Message-ID comes from Proton's `ExternalID`, and
   In-Reply-To and References from the message's raw `Header`; an ID that is
   not printable ASCII, or that holds a bracket, is left out rather than
@@ -1151,10 +1208,17 @@ instead of an unknown outcome.
   administrators, in place as the file is created, that inherits nothing from
   its folder. The EML export writes with it, and `mail::export` re-exports it
   for the CLI, which saves decrypted bodies with it.
+- [`text.rs`](../crates/ruston-core/src/text.rs) names the characters that
+  draw as nothing, `is_invisible_mark`: attachment file names, the CLI's
+  output and desktop notifications drop them.
 - [`api/`](../crates/ruston-core/src/api/) contains typed Proton endpoints.
-  Actions on several messages or conversations read the response Proton gives
-  for each ID (`Code` 1001 with `Responses`), and fail with an API error that
-  names the IDs it refused, instead of reporting all of them done;
+  Actions on several messages or conversations go in requests of at most
+  `api::MAX_IDS_PER_REQUEST` (50) IDs, one after another, since Proton refuses
+  more than its maximum for an endpoint (code 2024); a request that fails stops
+  the rest, and no IDs asks nothing. They read the response Proton gives for
+  each ID (`Code` 1001 with `Responses`), and fail with an API error that names
+  the IDs it refused in any of the requests, instead of reporting all of them
+  done;
   [`model/`](../crates/ruston-core/src/model/) contains API data types;
   [`transport/`](../crates/ruston-core/src/transport/) handles HTTP requests,
   authentication headers, token refresh, retries, bounded response bodies, and
@@ -1213,10 +1277,15 @@ instead of an unknown outcome.
   execution and response-body failures, so both frontends receive the same
   sanitized HTTP errors. Paths can still contain resource IDs; other logging
   targets and server-provided errors keep their existing behavior.
-- [`auth/`](../crates/ruston-core/src/auth/) handles sign-in. `Client::login_with_prompts`
+- [`auth/`](../crates/ruston-core/src/auth/) handles the SRP sign-in, and
+  [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs) a `Client`'s
+  session around it: signing in, resuming, settling and signing out, with the
+  options and prompts they take. `Client::login_with_prompts`
   asks through `LoginPrompts` for what the account needs and the options do not
   carry: a TOTP code once any human verification is done, and a separate mailbox
   password once the account password is accepted, so neither repeats the other.
+  The SRP proofs, which hash the password, are worked out on the blocking pool,
+  as the keys are unlocked.
   Once Proton has accepted the password, `auth::or_end_session` ends the session
   if the second factor, unlocking the keys or saving the session then fails.
   [`crypto/`](../crates/ruston-core/src/crypto/) unlocks keys and handles
@@ -1247,14 +1316,14 @@ instead of an unknown outcome.
 
 | Change or question | Start here | Follow the boundary into |
 | --- | --- | --- |
-| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), [`session/`](../crates/ruston-core/src/session/) |
-| CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
+| Desktop sign-in and prompts | [`src/app/auth.rs`](../src/app/auth.rs), [`src/ui/login.rs`](../src/ui/login.rs) | [`src/mail/auth.rs`](../src/mail/auth.rs), [`src/mail/proton/sign_in.rs`](../src/mail/proton/sign_in.rs), [`src/mail/proton.rs`](../src/mail/proton.rs), core [`auth/`](../crates/ruston-core/src/auth/), core [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs), [`session/`](../crates/ruston-core/src/session/) |
+| CLI sign-in and human verification | [`commands/auth.rs`](../crates/ruston-cli/src/commands/auth.rs), [`hv.rs`](../crates/ruston-cli/src/hv.rs) | Core [`auth/`](../crates/ruston-core/src/auth/), core [`mail/login.rs`](../crates/ruston-core/src/mail/login.rs), [`transport/`](../crates/ruston-core/src/transport/), [`session/`](../crates/ruston-core/src/session/) |
 | Mailbox lists, search, and thread grouping | [`src/app/mailbox.rs`](../src/app/mailbox.rs), [`src/mail/threading.rs`](../src/mail/threading.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`api/conversations.rs`](../crates/ruston-core/src/api/conversations.rs) |
 | Reading and HTML display | [`src/app/reader.rs`](../src/app/reader.rs), [`src/ui/reader.rs`](../src/ui/reader.rs) | Core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) and [`html.rs`](../crates/ruston-core/src/html.rs) |
 | Desktop email links and instance activation | [`src/mailto.rs`](../src/mailto.rs), [`src/launch.rs`](../src/launch.rs), [`src/app/mailto.rs`](../src/app/mailto.rs) | [`src/launch/macos.rs`](../src/launch/macos.rs), [`src/ui/mod.rs`](../src/ui/mod.rs), platform packaging |
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) and [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
-| Downloading received attachments | Desktop [`src/app/mod.rs`](../src/app/mod.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| Downloading received attachments | Desktop [`src/app/attachments.rs`](../src/app/attachments.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs), [`tui/compose.rs`](../crates/ruston-cli/src/tui/compose.rs), [`tui/editor.rs`](../crates/ruston-cli/src/tui/editor.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
@@ -1368,10 +1437,8 @@ skips `open_cache`: it opens an existing account database read-only, creating,
 migrating, binding and tightening nothing, refuses a symlink, a folder others
 could write and another account's database, and answers `None` when there is
 none, so a program that keeps no mail on disk can search an index the CLI
-built. SQLite runs on the blocking pool there. A session saved before the ID was kept is
-resumed once instead, which records it. Metadata writes replace the file with
-one rename under the profile lock, and a resume records the ID only for the
-session it loaded. It selects
+built. SQLite runs on the blocking pool there. Metadata writes replace the file with
+one rename under the profile lock. It selects
 `accounts/<profile>/<sha256-of-identity>.db` under the cache directory and checks
 the complete account identity stored in SQLite before using the database. A
 test pins the identity's JSON and the file name it yields: changing either
@@ -1408,7 +1475,9 @@ edited. On Unix, core creates the cache directory and database with
 private permissions and tightens older cache permissions before opening them;
 explicit cache paths require a private parent directory. Cache writes and index
 maintenance live in [`cache.rs`](../crates/ruston-core/src/cache.rs), which
-removes indexed bodies when messages are deleted. FTS maintenance resolves
+removes indexed bodies when messages are deleted; its tables, indexes and the
+migration that brings an older cache up to date are in
+[`cache/schema.rs`](../crates/ruston-core/src/cache/schema.rs). FTS maintenance resolves
 message IDs through the indexed `msg_fts_rows` table and targets FTS `rowid`s,
 avoiding a full scan for each deletion, invalidation, or header update. A
 header update skips rows whose subject and participants did not change, since
