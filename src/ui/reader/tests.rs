@@ -119,25 +119,23 @@ fn the_move_menu_lists_the_inbox_and_the_accounts_folders() {
     }
 }
 
+/// A click of `button` at `pos`: the pointer moves there, presses and lets go.
+fn click_events(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+}
+
 /// One frame's input with a click at `position`.
 fn click_at(input: &egui::RawInput, position: egui::Pos2) -> egui::RawInput {
-    let mut click = input.clone();
-    click.events = vec![
-        egui::Event::PointerMoved(position),
-        egui::Event::PointerButton {
-            pos: position,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: position,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
-    click
+    egui::RawInput {
+        events: click_events(position, egui::PointerButton::Primary),
+        ..input.clone()
+    }
 }
 
 #[test]
@@ -342,17 +340,7 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
     let open = open.expect("the prompt offers Open");
     assert!(screen.contains_rect(open), "Open is at {open:?}");
 
-    let press = |pressed| egui::Event::PointerButton {
-        pos: open.center(),
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    let (_, answer) = frame(vec![
-        egui::Event::PointerMoved(open.center()),
-        press(true),
-        press(false),
-    ]);
+    let (_, answer) = frame(click_events(open.center(), egui::PointerButton::Primary));
     assert!(matches!(answer, Some(Message::OpenLink)));
 }
 
@@ -646,19 +634,10 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
         output.drop_without_applying_deltas();
         (shapes, messages)
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
 
     let (shapes, _) = frame(Vec::new());
     let link = text_rect(&shapes, "the agenda");
-    let (_, asked) = frame(click(link.center(), egui::PointerButton::Secondary));
+    let (_, asked) = frame(click_events(link.center(), egui::PointerButton::Secondary));
     assert!(asked.is_empty(), "a right click follows nothing");
     let mut shapes = Vec::new();
     for _ in 0..3 {
@@ -666,7 +645,7 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     }
     text_rect(&shapes, "Open link…");
     let copy = text_rect(&shapes, "Copy link");
-    let (_, asked) = frame(click(copy.center(), egui::PointerButton::Primary));
+    let (_, asked) = frame(click_events(copy.center(), egui::PointerButton::Primary));
 
     assert!(
         matches!(
@@ -715,26 +694,20 @@ fn a_headers_menu_copies_the_senders_or_the_recipients_addresses() {
         output.drop_without_applying_deltas();
         (shapes, messages)
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
     let choose = |item: &str| {
         let (shapes, _) = frame(Vec::new());
         let header = text_rect(&shapes, "Preview");
-        let (_, asked) = frame(click(header.center(), egui::PointerButton::Secondary));
+        let (_, asked) = frame(click_events(
+            header.center(),
+            egui::PointerButton::Secondary,
+        ));
         assert!(asked.is_empty(), "a right click leaves the card as it is");
         let mut shapes = Vec::new();
         for _ in 0..3 {
             shapes = frame(Vec::new()).0;
         }
         let item = text_rect(&shapes, item);
-        frame(click(item.center(), egui::PointerButton::Primary)).1
+        frame(click_events(item.center(), egui::PointerButton::Primary)).1
     };
 
     assert!(matches!(
@@ -1411,22 +1384,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
     let reply = text_rect(&shapes, "Reply").center();
     let controls = buttons(&shapes);
     for position in [controls[0].center(), labels_button(&shapes).center(), reply] {
-        let mut click = input.clone();
-        click.events = vec![
-            egui::Event::PointerMoved(position),
-            egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ];
+        let click = click_at(&input, position);
         let (_, messages) = reader_frame(
             &context,
             &mailbox,
@@ -1446,22 +1404,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
         &mut state,
         input.clone(),
     );
-    let mut click = input;
-    click.events = vec![
-        egui::Event::PointerMoved(reply),
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
+    let click = click_at(&input, reply);
     let (_, messages) = reader_frame(
         &context,
         &mailbox,
@@ -1501,22 +1444,7 @@ fn an_unreadable_message_shows_a_notice_and_can_still_be_answered() {
     );
     text_rect(&shapes, UNREADABLE_NOTICE);
     let reply = text_rect(&shapes, "Reply").center();
-    let mut click = input;
-    click.events = vec![
-        egui::Event::PointerMoved(reply),
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
+    let click = click_at(&input, reply);
     let (_, messages) = reader_frame(
         &context,
         &mailbox,
