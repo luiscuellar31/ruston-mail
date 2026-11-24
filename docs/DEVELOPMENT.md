@@ -414,6 +414,26 @@ cp assets/icons/hicolor/128x128/apps/com.luiscuellar.ruston-mail.png assets/ui/r
 rm assets/macos/ruston-mail.icns   # the next package.sh run rebuilds it
 ```
 
+## README screenshots
+
+The README shows the main window from `assets/screenshots/`: the demo's inbox
+with a conversation open, dark and light, as macOS draws the window, with its
+rounded corners, colored buttons and shadow. When the window looks different,
+take them again on a Mac with a Retina display:
+
+```sh
+packaging/readme-screenshots.sh
+```
+
+It builds the app with the `readme-screenshots` feature, which no release turns
+on, in `target/readme-screenshots`, and starts the demo with a home directory of
+its own, so your settings stay as they are. The window takes the README's size,
+opens the conversation beside a sample folder and labels (the demo has none of
+its own), saves itself dark and then light with `screencapture`, keeping only
+each PNG's picture and color, and closes; the script then copies both over the
+old ones. Leave the window in front until it closes: one without focus shows
+gray buttons, and the script gives up after two minutes.
+
 ## Desktop installation (Linux)
 
 From the repository root, build and install the desktop client in the standard

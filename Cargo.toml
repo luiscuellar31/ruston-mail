@@ -80,6 +80,11 @@ default-run = "ruston"
 name = "ruston"
 path = "src/main.rs"
 
+[features]
+# Lets the demo take the README's screenshots, for packaging/readme-screenshots.sh.
+# Off by default, and no release turns it on.
+readme-screenshots = []
+
 [dependencies]
 directories = { workspace = true }
 futures = { workspace = true }

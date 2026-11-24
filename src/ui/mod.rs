@@ -13,6 +13,8 @@ mod macos;
 mod mailbox;
 mod notifications;
 mod reader;
+#[cfg(feature = "readme-screenshots")]
+mod readme_screenshots;
 mod settings;
 #[cfg(target_os = "windows")]
 mod taskbar;
@@ -180,6 +182,9 @@ struct DesktopApp {
     native_menu: Option<macos::Menu>,
     #[cfg(target_os = "macos")]
     secure_input: macos::SecureInput,
+    /// Takes the README's screenshots when the script asks for them.
+    #[cfg(feature = "readme-screenshots")]
+    readme_screenshots: Option<readme_screenshots::Session>,
 }
 
 enum SettingsExit {
@@ -258,6 +263,8 @@ impl DesktopApp {
             native_menu: None,
             #[cfg(target_os = "macos")]
             secure_input: macos::SecureInput::default(),
+            #[cfg(feature = "readme-screenshots")]
+            readme_screenshots: readme_screenshots::Session::from_env(demo),
         };
         desktop.execute(effects, context);
         desktop
@@ -1287,6 +1294,21 @@ impl eframe::App for DesktopApp {
         self.save_settled_settings(now, context);
         self.update_title(context);
         self.update_unread_badge();
+        #[cfg(feature = "readme-screenshots")]
+        if let Some(session) = self.readme_screenshots.as_mut() {
+            for message in session.frame(context, _frame, &self.app) {
+                self.dispatch(message, context);
+            }
+        }
+    }
+
+    /// While the README's screenshots are taken, the mouse and keys reach
+    /// nothing.
+    #[cfg(feature = "readme-screenshots")]
+    fn raw_input_hook(&mut self, _context: &egui::Context, raw_input: &mut egui::RawInput) {
+        if self.readme_screenshots.is_some() {
+            readme_screenshots::ignore_input(raw_input);
+        }
     }
 
     /// Closing is the one moment the settings must reach the file whether or

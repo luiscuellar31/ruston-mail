@@ -548,6 +548,13 @@ impl App {
         &self.folders
     }
 
+    /// Which sign-in is open: a message carrying it counts only while that
+    /// session lasts.
+    #[cfg(feature = "readme-screenshots")]
+    pub fn session_epoch(&self) -> SessionEpoch {
+        self.session_epoch
+    }
+
     /// How the sidebar shows `folder`: plain for Proton's own.
     pub fn place_look(&self, folder: &Folder) -> PlaceLook {
         folder

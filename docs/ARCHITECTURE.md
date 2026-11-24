@@ -132,6 +132,15 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   remembers the normal size and place, but nothing while the window is full
   screen or minimized, and on Windows and Linux keeps the normal size while it
   is maximized. On macOS, zoom is remembered as the larger frame it is.
+- [`ui/readme_screenshots.rs`](../src/ui/readme_screenshots.rs), built only
+  with the `readme-screenshots` feature that no release turns on, takes the
+  README's screenshots for
+  [`packaging/readme-screenshots.sh`](../packaging/readme-screenshots.sh). In
+  the demo, `logic` moves it a frame at a time: it hands the app a sample folder
+  and labels through `Message::FoldersLoaded`, opens the booking newsletter,
+  and saves the window dark and then light with macOS's `screencapture`, off
+  the interface thread, keeping only each PNG's picture and color chunks.
+  `raw_input_hook` keeps the mouse and keys away meanwhile.
 - On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
   traffic lights with eframe's `WindowChromeMetrics` on each logic pass.
   [`ui/theme.rs`](../src/ui/theme.rs) converts native points to egui points
