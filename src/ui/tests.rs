@@ -826,6 +826,153 @@ fn files_dropped_on_the_composer_window_reach_the_shell() {
     assert_eq!(dropped, [path]);
 }
 
+/// What the composer's own window makes of `input` for the draft open in
+/// `desktop`, `blocked` while a dialog of the mailbox window holds the app,
+/// and whether the window turned down a request to close it.
+fn composer_window_pass(
+    desktop: &DesktopApp,
+    context: &egui::Context,
+    input: egui::RawInput,
+    blocked: bool,
+) -> (compose::WindowPass, bool) {
+    let mut pass = None;
+    let output = context.run_ui(input, |ui| {
+        let compose = desktop.app.compose().unwrap();
+        pass = Some(compose::show_window(
+            ui.ctx(),
+            compose,
+            blocked,
+            Vec::new(),
+            &mut theme::TitleBar::default(),
+        ));
+    });
+    // Without a backend the window is drawn inside this one, so its commands
+    // go to this one.
+    let kept_open = output
+        .viewport_output
+        .get(&egui::ViewportId::ROOT)
+        .is_some_and(|viewport| {
+            viewport
+                .commands
+                .contains(&egui::ViewportCommand::CancelClose)
+        });
+    output.drop_without_applying_deltas();
+    (pass.unwrap(), kept_open)
+}
+
+/// `key` pressed with `modifiers` held, as the window reports it.
+fn key_with(key: egui::Key, modifiers: egui::Modifiers) -> egui::RawInput {
+    egui::RawInput {
+        events: vec![
+            egui::Event::ModifiersChanged(modifiers),
+            egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers,
+            },
+        ],
+        ..Default::default()
+    }
+}
+
+/// The system asking to close the window.
+fn close_request() -> egui::RawInput {
+    let mut input = egui::RawInput::default();
+    let viewport = input.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+    viewport.events.push(egui::ViewportEvent::Close);
+    input
+}
+
+#[test]
+fn escape_in_the_composer_window_closes_the_draft_or_keeps_writing() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    desktop.dispatch(Message::OpenCompose, &context);
+    let escape = || key_with(egui::Key::Escape, egui::Modifiers::NONE);
+
+    let (pass, _) = composer_window_pass(&desktop, &context, escape(), false);
+    assert!(matches!(pass.messages[..], [Message::CloseCompose]));
+
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::Body, "Hello".into()),
+        &context,
+    );
+    desktop.dispatch(Message::CloseCompose, &context);
+    assert!(desktop.app.compose().unwrap().confirming_discard());
+    let (pass, _) = composer_window_pass(&desktop, &context, escape(), false);
+    assert!(
+        !pass.messages.is_empty()
+            && pass
+                .messages
+                .iter()
+                .all(|message| matches!(message, Message::CancelDiscard))
+    );
+}
+
+#[test]
+fn command_enter_in_the_composer_window_sends_only_a_message_that_can_go() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    desktop.dispatch(Message::OpenCompose, &context);
+    let send = || key_with(egui::Key::Enter, egui::Modifiers::COMMAND);
+
+    let (pass, _) = composer_window_pass(&desktop, &context, send(), false);
+    assert!(pass.messages.is_empty(), "no recipient yet");
+
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::To, "team@example.org".into()),
+        &context,
+    );
+    let (pass, _) = composer_window_pass(&desktop, &context, send(), false);
+    assert!(matches!(pass.messages[..], [Message::Send]));
+
+    desktop.dispatch(Message::Send, &context);
+    assert!(desktop.app.compose().unwrap().in_flight());
+    let (pass, _) = composer_window_pass(&desktop, &context, send(), false);
+    assert!(pass.messages.is_empty(), "already on its way");
+}
+
+#[test]
+fn closing_the_composer_window_drops_only_what_needs_no_second_thought() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    desktop.dispatch(Message::OpenCompose, &context);
+
+    let (pass, kept_open) = composer_window_pass(&desktop, &context, close_request(), false);
+    assert!(matches!(pass.messages[..], [Message::DiscardCompose]) && !kept_open);
+
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::Body, "Hello".into()),
+        &context,
+    );
+    let (pass, kept_open) = composer_window_pass(&desktop, &context, close_request(), false);
+    assert!(matches!(pass.messages[..], [Message::CloseCompose]) && kept_open);
+
+    // Closing again while asked is the answer.
+    desktop.dispatch(Message::CloseCompose, &context);
+    let (pass, kept_open) = composer_window_pass(&desktop, &context, close_request(), false);
+    assert!(matches!(pass.messages[..], [Message::DiscardCompose]) && !kept_open);
+
+    // While a dialog of the mailbox window holds the app, nothing reaches
+    // the draft, a dropped file included.
+    let mut held = close_request();
+    held.dropped_files
+        .push(std::sync::Arc::new(DroppedFile("notes.txt".into())));
+    let (pass, kept_open) = composer_window_pass(&desktop, &context, held, true);
+    assert!(pass.messages.is_empty() && pass.dropped.is_empty() && kept_open);
+
+    desktop.dispatch(Message::CancelDiscard, &context);
+    desktop.dispatch(
+        Message::ComposeChanged(crate::app::ComposeField::To, "team@example.org".into()),
+        &context,
+    );
+    desktop.dispatch(Message::Send, &context);
+    let (pass, kept_open) = composer_window_pass(&desktop, &context, close_request(), false);
+    assert!(pass.messages.is_empty() && kept_open, "on its way");
+}
+
 #[test]
 fn dropped_files_join_the_draft_unless_a_file_dialog_is_open() {
     let context = egui::Context::default();

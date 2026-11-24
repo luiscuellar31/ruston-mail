@@ -540,6 +540,12 @@ impl Compose {
         self.check().err()
     }
 
+    /// Whether the message can go now: it is ready and not already on its
+    /// way.
+    pub fn can_send(&self) -> bool {
+        self.not_ready().is_none() && !self.in_flight()
+    }
+
     /// Whether the message may leave, without building it: nothing is copied
     /// unless something is wrong. Subjects are optional.
     fn check(&self) -> Result<(), NotReady> {

@@ -87,6 +87,10 @@ pub(super) fn show_window(
         theme::paint_focus_ring(root.ctx());
 
         if blocked {
+            // A confirmation or a file dialog of the mailbox window holds the
+            // app, and decides first: what this window asked is dropped, and
+            // so are the files dropped on it, so a drop never releases a
+            // dialog's slot.
             if root.input(|input| input.viewport().close_requested()) {
                 root.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -98,32 +102,12 @@ pub(super) fn show_window(
             };
         }
 
-        if root.input(|input| input.viewport().close_requested()) {
-            if compose.in_flight() {
-                root.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else if compose.is_untouched() || compose.confirming_discard() {
-                messages.push(Message::DiscardCompose);
-            } else {
-                root.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                messages.push(Message::CloseCompose);
-            }
-        } else if !egui::Popup::is_any_open(root.ctx())
-            && root.input(|input| input.key_pressed(egui::Key::Escape))
-        {
-            // An open menu takes Escape first, as in the mailbox window.
-            if compose.confirming_discard() {
-                messages.push(Message::CancelDiscard);
-            } else {
-                messages.push(Message::CloseCompose);
-            }
-        } else if root.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
-            && compose.not_ready().is_none()
-            && !compose.in_flight()
-        {
-            messages.push(Message::Send);
-        }
+        let answer = if root.input(|input| input.viewport().close_requested()) {
+            window_close(root.ctx(), compose)
+        } else {
+            window_shortcut(root, compose)
+        };
+        messages.extend(answer);
 
         WindowPass {
             messages,
@@ -131,6 +115,41 @@ pub(super) fn show_window(
             dropped,
         }
     })
+}
+
+/// What a request to close the window does to the draft, as
+/// `App::close_compose` decides for one in the pane: a message on its way
+/// keeps the window open; an untouched one, or one whose discard was already
+/// asked, goes; a written one keeps the window open and asks.
+fn window_close(context: &egui::Context, compose: &Compose) -> Option<Message> {
+    if compose.in_flight() {
+        context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        return None;
+    }
+    if compose.is_untouched() || compose.confirming_discard() {
+        return Some(Message::DiscardCompose);
+    }
+    context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    Some(Message::CloseCompose)
+}
+
+/// What the window's own keys ask of the draft. `App` takes only the
+/// mailbox window's keys (see `App::draft_in_window`), so these do here what
+/// `Shortcut::Dismiss` and `Shortcut::Send` do for a draft in the pane:
+/// Escape answers "Keep writing" to the discard question or closes the
+/// draft, and Command+Enter sends one that can go.
+fn window_shortcut(ui: &egui::Ui, compose: &Compose) -> Option<Message> {
+    // An open menu takes Escape first, as in the mailbox window.
+    if !egui::Popup::is_any_open(ui.ctx()) && ui.input(|input| input.key_pressed(egui::Key::Escape))
+    {
+        return Some(if compose.confirming_discard() {
+            Message::CancelDiscard
+        } else {
+            Message::CloseCompose
+        });
+    }
+    let send = ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter));
+    (send && compose.can_send()).then_some(Message::Send)
 }
 
 fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
@@ -214,10 +233,9 @@ fn title_and_actions(
             |ui| {
                 // Nothing is offered while the message is on its way: it is out
                 // of the sender's hands, and a second press must not send twice.
-                let ready = compose.not_ready().is_none();
                 if ui
                     .add_enabled(
-                        ready && !leaving,
+                        compose.can_send(),
                         theme::primary(egui::Button::new(send_label)),
                     )
                     .clicked()
