@@ -26,6 +26,13 @@ FIELD_SEP=$'\x1f'
 RECORD_SEP=$'\x1e'
 # The version bump is the release itself, not a change in it.
 VERSION_BUMP_PATTERN='^[[:space:]]*[Bb]ump version'
+# The oldest systems the downloads run on, as the notes state them. Each
+# repeats a value that decides the build, which names this script in turn:
+# change them together.
+MIN_MACOS=11   # LSMinimumSystemVersion in assets/macos/Info.plist
+MIN_GLIBC=2.35 # RUSTON_MAX_GLIBC_VERSION in .github/workflows/release-artifacts.yml,
+               # with the distributions the notes name beside it
+MIN_WINDOWS=10 # MinVersion in packaging/windows/ruston-mail.iss
 
 # The options.
 TAG=""
@@ -548,7 +555,7 @@ EOF
 
 ### macOS
 
-Download \`ruston-mail-${VERSION}-arm64-UNSIGNED.dmg\` on Apple Silicon or \`ruston-mail-${VERSION}-x86_64-UNSIGNED.dmg\` on Intel, open it, and drag Ruston Mail onto Applications. macOS 11 or later is required.
+Download \`ruston-mail-${VERSION}-arm64-UNSIGNED.dmg\` on Apple Silicon or \`ruston-mail-${VERSION}-x86_64-UNSIGNED.dmg\` on Intel, open it, and drag Ruston Mail onto Applications. macOS ${MIN_MACOS} or later is required.
 
 Ruston Mail is not signed with an Apple Developer ID, so macOS blocks the first launch and reports that it cannot check the app for malicious software. To allow it, open **System Settings → Privacy & Security**, scroll down to the Security section, click **Open Anyway** next to the message about Ruston Mail, and confirm. On macOS 12 and 13 the same setting lives in **System Preferences → Security & Privacy → General**. The DMG ships these steps as \`README.txt\`.
 
@@ -562,7 +569,7 @@ sudo ln -sf "/Applications/Ruston Mail.app/Contents/MacOS/ruston-cli" /usr/local
 
 ### Linux
 
-The AppImage runs on distributions with glibc 2.35 or newer, such as Ubuntu 22.04, Debian 12 and Fedora 36 or later:
+The AppImage runs on distributions with glibc ${MIN_GLIBC} or newer, such as Ubuntu 22.04, Debian 12 and Fedora 36 or later:
 
 \`\`\`bash
 chmod +x ruston-mail-${VERSION}-x86_64.AppImage
@@ -580,7 +587,7 @@ Replace \`x86_64\` with \`aarch64\` on ARM64 machines. Without FUSE, add \`--app
 
 ### Windows
 
-Run \`ruston-mail-${VERSION}-x86_64-setup-UNSIGNED.exe\`, or \`ruston-mail-${VERSION}-arm64-setup-UNSIGNED.exe\` on ARM64 PCs. It installs for your user without administrator rights, adds Ruston Mail to the Start menu, and can offer it for email links and put \`ruston-cli\` on your \`PATH\`. Windows 10 or later is required. To run Ruston Mail without installing it, extract \`ruston-mail-${VERSION}-x86_64-windows-UNSIGNED.zip\` (or the \`arm64\` one) and start \`ruston.exe\`; its \`README.txt\` covers email links and removal.
+Run \`ruston-mail-${VERSION}-x86_64-setup-UNSIGNED.exe\`, or \`ruston-mail-${VERSION}-arm64-setup-UNSIGNED.exe\` on ARM64 PCs. It installs for your user without administrator rights, adds Ruston Mail to the Start menu, and can offer it for email links and put \`ruston-cli\` on your \`PATH\`. Windows ${MIN_WINDOWS} or later is required. To run Ruston Mail without installing it, extract \`ruston-mail-${VERSION}-x86_64-windows-UNSIGNED.zip\` (or the \`arm64\` one) and start \`ruston.exe\`; its \`README.txt\` covers email links and removal.
 
 The files are not signed, so SmartScreen may say that it protected your PC: choose **More info**, then **Run anyway**. Windows with Smart App Control turned on does not run unsigned apps.
 

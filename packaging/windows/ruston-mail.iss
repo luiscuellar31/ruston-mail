@@ -51,6 +51,7 @@ DefaultDirName={autopf}\Ruston Mail
 DisableProgramGroupPage=yes
 ArchitecturesAllowed={#InnoArchitectures}
 ArchitecturesInstallIn64BitMode={#InnoArchitectures}
+; packaging/release-notes.sh states this minimum as MIN_WINDOWS: change both together.
 MinVersion=10.0
 ChangesEnvironment=yes
 CloseApplications=yes

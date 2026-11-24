@@ -161,6 +161,9 @@ jobs:
       APPIMAGE_UPDATE_INFORMATION: gh-releases-zsync|luiscuellar31|ruston-mail|latest|ruston-mail-*-${{ matrix.arch }}.AppImage.zsync
       # The name appimage.sh gives the AppImage; publish-assets names it again.
       APPIMAGE: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}.AppImage
+      # The newest glibc symbols the AppImage may need, so the oldest glibc it
+      # runs on: packaging/release-notes.sh states it as MIN_GLIBC, so change
+      # both together.
       RUSTON_MAX_GLIBC_VERSION: "2.35"
     strategy:
       fail-fast: false

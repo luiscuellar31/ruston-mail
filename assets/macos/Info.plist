@@ -26,6 +26,7 @@
     <key>CFBundleVersion</key>
     <string>__BUILD__</string>
 
+    <!-- packaging/release-notes.sh states this minimum as MIN_MACOS: change both together. -->
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
 
