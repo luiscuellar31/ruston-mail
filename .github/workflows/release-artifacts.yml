@@ -3,6 +3,10 @@ name: Release Artifacts (Main Preflight + Tag Publish)
 # Every push to main builds and checks the release artifacts without
 # publishing them, so packaging breaks show up early. A vX.Y.Z tag on a commit
 # of main builds them again and publishes a draft release to review.
+#
+# Outside Windows, a step runs with GitHub's `bash -e`. One that reads
+# variables or does more than list commands starts with `set -euo pipefail`
+# too, so an unset name or a failing command in a pipe stops it as well.
 on:
   push:
     branches:
@@ -318,10 +322,14 @@ jobs:
         run: |
           # Pin the release and check its digest, so the tool that builds the
           # installer cannot change under us. Installed for this user only.
-          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          $version = '6.7.3'
+          $sha256 = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          $file = "innosetup-$version.exe"
+          $tag = 'is-' + $version.Replace('.', '_')
+          $installer = Join-Path $env:RUNNER_TEMP $file
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/$tag/$file" -OutFile $installer
           $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
-          if ($digest -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') {
+          if ($digest -ne $sha256) {
             throw "Unexpected Inno Setup digest: $digest"
           }
           $folder = Join-Path $env:RUNNER_TEMP 'inno-setup'
