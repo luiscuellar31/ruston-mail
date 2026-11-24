@@ -1,15 +1,15 @@
 //! Fictional in-memory mailbox with reserved `example.*` addresses.
 //! It never touches Proton, the network, the keychain or disk.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use ruston_core::Quote;
 use ruston_core::model::enums::message_flag;
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
-    ConversationDetail, ConversationPage, ConversationSummary, Folder, MailAddress, MailFolder,
-    MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail, MailAddress,
+    MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 
 /// Small enough that the demo Inbox needs several pages.
@@ -120,11 +120,15 @@ const GARDEN_VOLUNTEERS: &[&str] = &[
     "spring-planting-weekend-volunteer-coordination-list@example.org",
 ];
 
+/// What joins a conversation's correspondents in [`Fixture::correspondents`].
+const CORRESPONDENT_SEPARATOR: &str = ", ";
+
 struct Fixture {
     folder: MailFolder,
     /// Whether the demo user sent the original conversation.
     outgoing: bool,
-    /// Senders, or recipients in Sent and Drafts. Empty means unknown.
+    /// Senders, or recipients in Sent and Drafts, joined by
+    /// [`CORRESPONDENT_SEPARATOR`]. Empty means unknown.
     correspondents: String,
     subject: String,
     /// Seconds before now.
@@ -160,6 +164,26 @@ impl DemoMailbox {
         }
     }
 
+    /// The fictional mail, held for one operation.
+    fn lock(&self) -> MutexGuard<'_, Vec<Fixture>> {
+        self.fixtures.lock().expect("demo mailbox lock poisoned")
+    }
+
+    /// The newest of the Inbox, as a check for new mail reads it.
+    pub fn recent_inbox(&self, limit: u32, now: i64) -> Vec<IncomingMail> {
+        list_from(&self.lock(), &Folder::INBOX, 0, limit, now)
+            .conversations
+            .into_iter()
+            .map(|row| IncomingMail {
+                id: row.id,
+                time: row.time.unwrap_or_default(),
+                unread: row.unread,
+                sender: row.correspondents.unwrap_or_default(),
+                subject: row.subject.unwrap_or_default(),
+            })
+            .collect()
+    }
+
     pub fn list_conversations(
         &self,
         folder: &Folder,
@@ -167,7 +191,7 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
-        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let fixtures = self.lock();
         Ok(list_from(&fixtures, folder, page, page_size, now))
     }
 
@@ -189,12 +213,12 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
-        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let fixtures = self.lock();
         Ok(search_from(&fixtures, query, page, page_size, now))
     }
 
     pub fn counts(&self) -> MailboxCounts {
-        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let fixtures = self.lock();
         counts_from(&fixtures)
     }
 
@@ -203,7 +227,7 @@ impl DemoMailbox {
         id: &str,
         now: i64,
     ) -> Result<ConversationDetail, MailboxError> {
-        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let fixtures = self.lock();
         detail_from(&fixtures, id, now).ok_or(MailboxError::Unavailable)
     }
 
@@ -213,7 +237,7 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> (ConversationPage, MailboxCounts) {
-        let fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let fixtures = self.lock();
         (
             list_from(&fixtures, folder, 0, page_size, now),
             counts_from(&fixtures),
@@ -222,7 +246,7 @@ impl DemoMailbox {
 
     /// Stores a sent message locally, subject to the demo cap.
     pub fn send(&self, outgoing: &Outgoing, now: i64) -> Result<(), SendError> {
-        let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let mut fixtures = self.lock();
         if fixtures.iter().filter(|fixture| fixture.composed).count() >= SEND_LIMIT {
             return Err(SendError::DemoLimitReached);
         }
@@ -258,7 +282,7 @@ impl DemoMailbox {
         fixtures.push(Fixture {
             folder: MailFolder::Sent,
             outgoing: true,
-            correspondents: everyone.join(", "),
+            correspondents: everyone.join(CORRESPONDENT_SEPARATOR),
             subject: answered.as_ref().map_or_else(
                 || outgoing.subject.clone(),
                 |parent| with_prefix(prefix, &parent.subject),
@@ -310,7 +334,7 @@ impl DemoMailbox {
         let Some(index) = fixture_index(id) else {
             return false;
         };
-        let mut fixtures = self.fixtures.lock().expect("demo mailbox lock poisoned");
+        let mut fixtures = self.lock();
         let Some(fixture) = fixtures.get_mut(index) else {
             return false;
         };
@@ -799,26 +823,12 @@ fn search_from(
     now: i64,
 ) -> ConversationPage {
     let query = query.trim().to_lowercase();
-    let mut matching: Vec<_> = fixtures
+    let matching = fixtures
         .iter()
         .enumerate()
         .filter(|(_, fixture)| matches_query(fixture, &query))
         .collect();
-    matching.sort_by_key(|(_, fixture)| fixture.age);
-
-    let total = matching.len() as u32;
-    let conversations: Vec<_> = matching
-        .into_iter()
-        .skip((page as usize).saturating_mul(page_size as usize))
-        .take(page_size as usize)
-        .map(|(index, fixture)| summary(index, fixture, now))
-        .collect();
-
-    ConversationPage {
-        total,
-        conversations,
-        inspect_candidates: Vec::new(),
-    }
+    page_of(matching, page, page_size, now)
 }
 
 /// The same places the mailbox search looks: who wrote it, what it is about,
@@ -854,19 +864,28 @@ fn list_from(
     page_size: u32,
     now: i64,
 ) -> ConversationPage {
-    let mut matching: Vec<_> = fixtures
+    let matching = fixtures
         .iter()
         .enumerate()
         .filter(|(_, fixture)| in_folder(fixture, folder))
         .collect();
-    matching.sort_by_key(|(_, fixture)| fixture.age);
+    page_of(matching, page, page_size, now)
+}
 
+/// Page `page` of the `matching` conversations, by their places in the
+/// mailbox, newest first.
+fn page_of(
+    mut matching: Vec<(usize, &Fixture)>,
+    page: u32,
+    page_size: u32,
+    now: i64,
+) -> ConversationPage {
+    matching.sort_by_key(|(_, fixture)| fixture.age);
     let total = matching.len() as u32;
-    let page_size = page_size as usize;
     let conversations = matching
         .into_iter()
-        .skip(page as usize * page_size)
-        .take(page_size)
+        .skip((page as usize).saturating_mul(page_size as usize))
+        .take(page_size as usize)
         .map(|(index, fixture)| summary(index, fixture, now))
         .collect();
 
@@ -892,21 +911,20 @@ fn counts_from(fixtures: &[Fixture]) -> MailboxCounts {
 }
 
 fn detail_from(fixtures: &[Fixture], id: &str, now: i64) -> Option<ConversationDetail> {
-    let index = fixture_index(id)?;
+    detail_at(fixtures, fixture_index(id)?, now)
+}
+
+/// The conversation at `index` in the mailbox, with its messages.
+fn detail_at(fixtures: &[Fixture], index: usize, now: i64) -> Option<ConversationDetail> {
     let fixture = fixtures.get(index)?;
-    let participants: Vec<MailAddress> = fixture
-        .correspondents
-        .split(", ")
-        .filter(|participant| !participant.is_empty())
-        .map(participant_address)
-        .collect();
+    let participants: Vec<MailAddress> = correspondent_addresses(fixture).collect();
     let count = fixture.message_count();
     let messages = (0..count)
         .map(|position| message(fixture, &participants, index, position, count, now))
         .collect();
 
     Some(ConversationDetail {
-        id: id.to_owned(),
+        id: conversation_id(index),
         subject: non_empty(&fixture.subject),
         messages,
         // The demo account owns no labels, so nothing carries one.
@@ -931,7 +949,7 @@ fn answered_message(fixtures: &[Fixture], kind: &OutgoingKind, now: i64) -> Opti
         }
     };
     let (index, position) = message_place(message_id)?;
-    let detail = detail_from(fixtures, &format!("demo-{index}"), now)?;
+    let detail = detail_at(fixtures, index, now)?;
     let message = detail.messages.get(position)?;
 
     Some(Answered {
@@ -947,7 +965,22 @@ fn answered_message(fixtures: &[Fixture], kind: &OutgoingKind, now: i64) -> Opti
     })
 }
 
-/// `demo-{conversation}-{message}`.
+/// The ID of the conversation at `index` in the mailbox.
+fn conversation_id(index: usize) -> String {
+    format!("demo-{index}")
+}
+
+/// The place in the mailbox that [`conversation_id`] names.
+fn fixture_index(id: &str) -> Option<usize> {
+    id.strip_prefix("demo-")?.parse().ok()
+}
+
+/// The ID of the message at `position` in the conversation at `index`.
+fn message_id(index: usize, position: usize) -> String {
+    format!("demo-{index}-{position}")
+}
+
+/// The conversation and the place in it that [`message_id`] names.
 fn message_place(id: &str) -> Option<(usize, usize)> {
     let rest = id.strip_prefix("demo-")?;
     let (index, position) = rest.split_once('-')?;
@@ -962,10 +995,6 @@ fn with_prefix(prefix: &str, subject: &str) -> String {
     }
 
     format!("{prefix}{subject}")
-}
-
-fn fixture_index(id: &str) -> Option<usize> {
-    id.strip_prefix("demo-")?.parse().ok()
 }
 
 /// Fictional protection: the demo treats Proton's own domains as encrypted
@@ -1002,7 +1031,7 @@ pub fn now() -> i64 {
 
 fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
     ConversationSummary {
-        id: format!("demo-{index}"),
+        id: conversation_id(index),
         kind: SummaryKind::Conversation,
         subject: non_empty(&fixture.subject),
         correspondents: non_empty(&fixture.correspondents),
@@ -1020,15 +1049,18 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
     }
 }
 
+/// The addresses of `fixture`'s correspondents.
+fn correspondent_addresses(fixture: &Fixture) -> impl Iterator<Item = MailAddress> + '_ {
+    fixture
+        .correspondents
+        .split(CORRESPONDENT_SEPARATOR)
+        .filter(|participant| !participant.is_empty())
+        .map(participant_address)
+}
+
 fn fixture_participants(fixture: &Fixture) -> Vec<MailAddress> {
     std::iter::once(demo_user())
-        .chain(
-            fixture
-                .correspondents
-                .split(", ")
-                .filter(|participant| !participant.is_empty())
-                .map(participant_address),
-        )
+        .chain(correspondent_addresses(fixture))
         .chain(
             fixture
                 .to
@@ -1108,7 +1140,7 @@ fn message(
     };
     let reply = ruston_core::reply_recipients(&meta, &[], &[demo_user().address]);
     MailMessage {
-        id: format!("demo-{index}-{position}"),
+        id: message_id(index, position),
         verdict: super::Verdict::Unverified,
         reply_to: reply.to,
         reply_all_cc: reply.cc,

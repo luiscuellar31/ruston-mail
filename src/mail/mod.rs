@@ -40,18 +40,7 @@ impl MailBackend {
     pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
         match self {
             Self::Proton(service) => service.recent_inbox(limit).await,
-            Self::Demo(service) => Ok(service
-                .list_conversations(&Folder::INBOX, 0, limit, demo::now())?
-                .conversations
-                .into_iter()
-                .map(|row| IncomingMail {
-                    id: row.id,
-                    time: row.time.unwrap_or_default(),
-                    unread: row.unread,
-                    sender: row.correspondents.unwrap_or_default(),
-                    subject: row.subject.unwrap_or_default(),
-                })
-                .collect()),
+            Self::Demo(service) => Ok(service.recent_inbox(limit, demo::now())),
         }
     }
 
