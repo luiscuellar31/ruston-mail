@@ -56,14 +56,17 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --target)
+            (($# >= 2)) || die "Missing value for $1"
             TARGET_TRIPLE="$2"
             shift 2
             ;;
         --binary)
+            (($# >= 2)) || die "Missing value for $1"
             CUSTOM_BINARY="$2"
             shift 2
             ;;
         --dist)
+            (($# >= 2)) || die "Missing value for $1"
             DIST_DIR="$2"
             shift 2
             ;;

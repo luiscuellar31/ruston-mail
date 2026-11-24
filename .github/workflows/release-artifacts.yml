@@ -471,6 +471,7 @@ jobs:
             --version "$VERSION" \
             --repo "$REPOSITORY" \
             --output "$PWD/release-notes.md"
+          # The start of the notes, in the log; the whole file goes to the release.
           sed -n '1,120p' "$PWD/release-notes.md"
 
       - name: Upload artifacts to GitHub release
