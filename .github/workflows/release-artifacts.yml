@@ -340,13 +340,7 @@ jobs:
       # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.
       - name: Put clang-cl on the PATH
         if: matrix.arch == 'arm64'
-        run: |
-          if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
-            $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
-            $env:PATH = "$llvm;$env:PATH"
-            $llvm >> $env:GITHUB_PATH
-          }
-          clang-cl --version
+        run: ./packaging/windows/add-clang-cl-to-path.ps1
 
       - name: Build the installer and the ZIP
         run: ./packaging/windows/package.ps1 -Architecture $env:ARCH -Dist dist -InnoSetup $env:INNO_SETUP

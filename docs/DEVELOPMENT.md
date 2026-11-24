@@ -85,8 +85,9 @@ CI uses Bash on all runners, including Git Bash on Windows, and sets
 `ubuntu-24.04` and `ubuntu-24.04-arm`, named rather than `ubuntu-latest` so a
 new Ubuntu reaches CI only through a workflow change. The Windows jobs use the
 `windows-2025` x86_64 and `windows-11-arm` ARM64 runners with the native MSVC
-toolchain; on ARM64, aws-lc-sys also needs LLVM's clang-cl, which the job puts
-on the `PATH`. Their caches are separate from the Linux and macOS caches. All
+toolchain; on ARM64, aws-lc-sys also needs LLVM's clang-cl, which
+[`add-clang-cl-to-path.ps1`](../packaging/windows/add-clang-cl-to-path.ps1) puts on
+the `PATH`, in CI and in the release workflow alike. Their caches are separate from the Linux and macOS caches. All
 platforms run the same checks; a failure on one platform does not cancel the
 other jobs. A Linux job also checks the workspace with the minimum Rust
 version, which its `RUSTUP_TOOLCHAIN` sets in place of `rust-toolchain.toml`'s;
