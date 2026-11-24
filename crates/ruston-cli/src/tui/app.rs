@@ -2037,7 +2037,7 @@ impl App {
         let unread = self
             .conversations
             .iter()
-            .any(|conversation| conversation.id == id && conversation.num_unread > 0);
+            .any(|conversation| conversation.id == id && conversation.has_unread());
         if !self.marks_read || !unread {
             return Vec::new();
         }

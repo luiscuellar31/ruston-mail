@@ -221,7 +221,7 @@ impl Reading {
             message_lines.push(ReadingMessage {
                 lines: start..lines.len(),
                 line: folded_line(meta, verdict, &words),
-                unread: meta.unread != 0,
+                unread: meta.is_unread(),
             });
         }
         Self {

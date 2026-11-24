@@ -235,7 +235,7 @@ pub fn messages_list(json: bool, total: u32, msgs: &[MessageMetadata]) {
     }
     terminal::println!("{} message(s) (total {total})", msgs.len());
     for m in msgs {
-        let mark = if m.unread != 0 { "*" } else { " " };
+        let mark = if m.is_unread() { "*" } else { " " };
         terminal::println!();
         terminal::println!("{mark} {}", subject_or_empty(&m.subject));
         terminal::println!("    from: {}", fmt_addr(&m.sender));
@@ -254,7 +254,7 @@ pub fn conversations_list(json: bool, total: u32, convs: &[Conversation]) {
     }
     terminal::println!("{} conversation(s) (total {total})", convs.len());
     for c in convs {
-        let mark = if c.num_unread != 0 { "*" } else { " " };
+        let mark = if c.has_unread() { "*" } else { " " };
         terminal::println!();
         terminal::println!("{mark} {}", subject_or_empty(&c.subject));
         terminal::println!("    from:     {}", fmt_addrs(&c.senders));

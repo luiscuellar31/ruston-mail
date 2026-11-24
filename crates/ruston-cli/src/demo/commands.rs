@@ -84,7 +84,7 @@ pub(super) fn messages(ctx: &Ctx, cmd: MessagesCmd, messages: Vec<DemoMessage>) 
             let mut matching: Vec<MessageMetadata> = messages
                 .into_iter()
                 .filter(|m| is_all || m.meta.label_ids.contains(&target_label))
-                .filter(|m| !unread || m.meta.unread != 0)
+                .filter(|m| !unread || m.meta.is_unread())
                 .map(|m| m.meta)
                 .collect();
 
@@ -129,7 +129,7 @@ pub(super) fn messages(ctx: &Ctx, cmd: MessagesCmd, messages: Vec<DemoMessage>) 
                     {
                         return false;
                     }
-                    if args.unread && m.meta.unread == 0 {
+                    if args.unread && !m.meta.is_unread() {
                         return false;
                     }
                     within(window, m.meta.time)

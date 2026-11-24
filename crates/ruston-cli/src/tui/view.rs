@@ -1088,7 +1088,7 @@ fn conversation_row(
     width: usize,
     theme: &Theme,
 ) -> ListItem<'static> {
-    let unread = conversation.num_unread > 0;
+    let unread = conversation.has_unread();
     let starred = conversation
         .labels
         .iter()

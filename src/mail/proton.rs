@@ -123,9 +123,9 @@ impl ProtonMailService {
         Ok(messages
             .into_iter()
             .map(|message| IncomingMail {
+                unread: message.is_unread(),
                 id: message.id,
                 time: message.time,
-                unread: message.unread != 0,
                 sender: if message.sender.name.trim().is_empty() {
                     message.sender.address
                 } else {
@@ -745,7 +745,7 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         participants,
         preview: None,
         time: known_time(message.time),
-        unread: message.unread != 0,
+        unread: message.is_unread(),
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
         has_attachments: message.num_attachments > 0,
@@ -865,7 +865,7 @@ fn message_without_body(
         reply_all_cc: reply.cc,
         reply_redirected,
         time: known_time(meta.time),
-        unread: meta.unread != 0,
+        unread: meta.is_unread(),
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
         id: meta.id,

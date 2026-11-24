@@ -101,7 +101,7 @@ fn list_page(
                     .iter()
                     .any(|l| l.id == label && l.context_num_messages.unwrap_or(0) > 0)
         })
-        .filter(|c| !unread || c.num_unread > 0)
+        .filter(|c| !unread || c.has_unread())
         .collect();
     matching.sort_by_key(|a| std::cmp::Reverse(a.time));
     let total = matching.len() as u32;
@@ -436,7 +436,7 @@ impl DemoSession {
                 // Proton marks its newest message in the place unread. The
                 // demo's messages keep the places they started in and none
                 // is in All mail, so where none is, its newest is.
-                if conversation.num_unread == 0 {
+                if !conversation.has_unread() {
                     let mut messages = self.messages.lock().expect("demo mailbox lock poisoned");
                     let newest = |in_place: bool| {
                         let held = messages.iter().enumerate().filter(|(_, m)| {
@@ -612,7 +612,7 @@ fn finds(
             .to
             .as_ref()
             .is_none_or(|to| someone_matches(&conversation.recipients, to))
-        && (!opts.unread || conversation.num_unread != 0)
+        && (!opts.unread || conversation.has_unread())
         && within(window, conversation.time)
         && label.is_none_or(|label| conversation.labels.iter().any(|on| on.id == label))
 }
@@ -620,7 +620,7 @@ fn finds(
 /// How many of `conversations` each place holds and how many of those are
 /// unread there, as Proton counts them; All mail holds every one.
 fn conversation_counts(conversations: &[Conversation]) -> Vec<LabelCount> {
-    let unread = conversations.iter().filter(|c| c.num_unread > 0).count();
+    let unread = conversations.iter().filter(|c| c.has_unread()).count();
     tally(
         conversations.iter().flat_map(|conversation| {
             conversation
@@ -635,10 +635,10 @@ fn conversation_counts(conversations: &[Conversation]) -> Vec<LabelCount> {
 /// How many of `messages` each place holds and how many of those are
 /// unread, as Proton counts messages; All mail holds every one.
 fn message_counts(messages: &[DemoMessage]) -> Vec<LabelCount> {
-    let unread = messages.iter().filter(|m| m.meta.unread != 0).count();
+    let unread = messages.iter().filter(|m| m.meta.is_unread()).count();
     tally(
         messages.iter().flat_map(|message| {
-            let unread = message.meta.unread != 0;
+            let unread = message.meta.is_unread();
             message
                 .meta
                 .label_ids

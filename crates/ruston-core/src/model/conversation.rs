@@ -38,7 +38,7 @@ pub struct Conversation {
     /// How many messages it has.
     #[serde(default)]
     pub num_messages: i64,
-    /// How many of them are unread.
+    /// How many of them are unread; [`Self::has_unread`] says whether any is.
     #[serde(default)]
     pub num_unread: i64,
     /// How many attachments its messages have between them.
@@ -56,6 +56,13 @@ pub struct Conversation {
     /// When it expires, in Unix seconds, if it does.
     #[serde(default)]
     pub expiration_time: Option<i64>,
+}
+
+impl Conversation {
+    /// Whether any of its messages is unread.
+    pub fn has_unread(&self) -> bool {
+        self.num_unread > 0
+    }
 }
 
 /// The conversations `messages` belong to, in the order the first message of
@@ -79,7 +86,7 @@ pub fn conversations_of(messages: Vec<MessageMetadata>) -> Vec<Conversation> {
                 conversations.len() - 1
             });
         let conversation = &mut conversations[at];
-        let unread = i64::from(message.unread > 0);
+        let unread = i64::from(message.is_unread());
         conversation.num_messages += 1;
         conversation.num_unread += unread;
         conversation.num_attachments += message.num_attachments;
