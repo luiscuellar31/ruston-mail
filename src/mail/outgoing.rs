@@ -221,7 +221,8 @@ pub async fn validate_attachments(attachments: &[PathBuf]) -> Result<(), SendErr
 mod tests {
     use super::*;
 
-    fn html(body: &str) -> String {
+    /// A new message to nobody, with only `body` typed in `format`.
+    fn message(body: &str, format: BodyFormat) -> Outgoing {
         Outgoing {
             kind: OutgoingKind::New,
             to: Vec::new(),
@@ -229,25 +230,19 @@ mod tests {
             bcc: Vec::new(),
             subject: String::new(),
             body: body.to_owned(),
-            format: BodyFormat::Html,
+            format,
             attachments: Vec::new(),
         }
-        .wire_body()
+    }
+
+    fn html(body: &str) -> String {
+        message(body, BodyFormat::Html).wire_body()
     }
 
     #[test]
     fn plain_text_leaves_exactly_as_it_was_typed() {
         let typed = "Hi Alex,\n\nThe < sign & the rest.\n";
-        let message = Outgoing {
-            kind: OutgoingKind::New,
-            to: Vec::new(),
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            subject: String::new(),
-            body: typed.to_owned(),
-            format: BodyFormat::PlainText,
-            attachments: Vec::new(),
-        };
+        let message = message(typed, BodyFormat::PlainText);
 
         assert_eq!(message.wire_body(), typed);
         assert!(!message.is_html());

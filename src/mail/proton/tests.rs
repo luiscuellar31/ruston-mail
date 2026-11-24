@@ -219,12 +219,9 @@ fn decrypted_messages_map_to_reader_models() {
     let own = OwnAddresses::from(["demo@example.com".to_owned()]);
     let message = mail_message(
         FullMessage {
-            meta,
-            body: "<p>Hello &amp; welcome</p>".into(),
-            mime_type: "text/html".into(),
-            attachments: Vec::new(),
             verdict: ruston_core::Verdict::Invalid,
             reply_tos: vec![person("", "replies@example.com")],
+            ..full_message(meta, "text/html", "<p>Hello &amp; welcome</p>")
         },
         &own,
     );
@@ -256,14 +253,7 @@ fn plain_text_bodies_are_kept_verbatim() {
     let body = "Line <one>\n\n  indented & raw";
 
     let message = mail_message(
-        FullMessage {
-            meta: MessageMetadata::default(),
-            body: body.into(),
-            mime_type: "text/plain".into(),
-            attachments: Vec::new(),
-            verdict: ruston_core::Verdict::Unverified,
-            reply_tos: Vec::new(),
-        },
+        full_message(MessageMetadata::default(), "text/plain", body),
         &OwnAddresses::new(),
     );
 
@@ -321,18 +311,18 @@ fn every_body_verdict_survives_plain_and_html_conversion() {
         for mime_type in ["text/plain", "text/html"] {
             let message = mail_message(
                 FullMessage {
-                    meta: MessageMetadata::default(),
-                    body: "body".into(),
-                    mime_type: mime_type.into(),
-                    attachments: Vec::new(),
                     verdict,
-                    reply_tos: Vec::new(),
+                    ..full_message(MessageMetadata::default(), mime_type, "body")
                 },
                 &OwnAddresses::new(),
             );
             assert_eq!(message.verdict, verdict);
         }
     }
+}
+
+#[test]
+fn an_attachment_that_fails_its_check_keeps_that_error() {
     assert_eq!(
         map_mailbox_error(Error::AttachmentVerificationFailed),
         MailboxError::AttachmentVerificationFailed
@@ -445,11 +435,11 @@ async fn a_challenge_after_sign_in_is_reported_as_for_a_resumed_session() {
 }
 
 #[tokio::test]
-async fn an_abandoned_prompt_cancels_the_sign_in() {
+async fn an_abandoned_verification_prompt_cancels_the_sign_in() {
     use futures::StreamExt;
 
     let (events, mut shown) = mpsc::channel(1);
-    let prompter = Prompter::new(events.clone());
+    let prompter = Prompter::new(events);
     let verification = tokio::spawn(prompter.human_verification()(captcha_challenge()));
     let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
         panic!("no verification prompt");
@@ -463,11 +453,14 @@ async fn an_abandoned_prompt_cancels_the_sign_in() {
         prompter.prompt_time.spent(now),
         prompter.prompt_time.spent(now + Duration::from_secs(60))
     );
+}
 
-    let prompter = Prompter {
-        cancelled: Arc::default(),
-        ..prompter
-    };
+#[tokio::test]
+async fn an_abandoned_totp_prompt_cancels_the_sign_in() {
+    use futures::StreamExt;
+
+    let (events, mut shown) = mpsc::channel(1);
+    let prompter = Prompter::new(events);
     let answered = Arc::new(AtomicBool::new(false));
     let code = tokio::spawn(prompter.totp(answered.clone())());
     let Some(SignInEvent::Prompt(prompt)) = shown.next().await else {
@@ -477,7 +470,13 @@ async fn an_abandoned_prompt_cancels_the_sign_in() {
     assert!(code.await.unwrap().is_err());
     assert!(prompter.cancelled.load(Ordering::Relaxed));
     assert!(!answered.load(Ordering::Relaxed));
+}
 
+#[tokio::test]
+async fn an_abandoned_mailbox_password_prompt_cancels_the_sign_in() {
+    use futures::StreamExt;
+
+    let (events, mut shown) = mpsc::channel(1);
     let prompter = Prompter::new(events);
     let answered = Arc::new(AtomicBool::new(false));
     let password = tokio::spawn(prompter.mailbox_password(answered.clone())());
@@ -501,12 +500,9 @@ fn answering_your_own_sent_message_addresses_its_recipients() {
     };
     let message = mail_message(
         FullMessage {
-            meta,
-            body: "Following up".into(),
-            mime_type: "text/plain".into(),
-            attachments: Vec::new(),
             verdict: ruston_core::Verdict::Unsigned,
             reply_tos: vec![person("Me", "me@proton.me")],
+            ..full_message(meta, "text/plain", "Following up")
         },
         &OwnAddresses::from(["me@proton.me".to_owned()]),
     );
@@ -1082,14 +1078,21 @@ fn expired_session_errors_are_distinguished() {
     );
 }
 
+/// A message with `body` of `mime_type`, unverified, with no attachments and
+/// no Reply-To; a test changes what it looks at with `..`.
+fn full_message(meta: MessageMetadata, mime_type: &str, body: &str) -> FullMessage {
+    FullMessage {
+        meta,
+        body: body.into(),
+        mime_type: mime_type.into(),
+        attachments: Vec::new(),
+        verdict: ruston_core::Verdict::Unverified,
+        reply_tos: Vec::new(),
+    }
+}
+
 fn listed_message(id: &str, attachments: &[(&str, Option<&str>)]) -> FullMessage {
     FullMessage {
-        meta: MessageMetadata {
-            id: id.into(),
-            ..MessageMetadata::default()
-        },
-        body: String::new(),
-        mime_type: "text/plain".into(),
         verdict: Verdict::Unsigned,
         attachments: attachments
             .iter()
@@ -1100,7 +1103,14 @@ fn listed_message(id: &str, attachments: &[(&str, Option<&str>)]) -> FullMessage
                 ..Attachment::default()
             })
             .collect(),
-        reply_tos: Vec::new(),
+        ..full_message(
+            MessageMetadata {
+                id: id.into(),
+                ..MessageMetadata::default()
+            },
+            "text/plain",
+            "",
+        )
     }
 }
 
