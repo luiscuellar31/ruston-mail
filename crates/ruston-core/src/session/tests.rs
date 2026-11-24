@@ -24,7 +24,38 @@ impl SecretStore for RejectTokenWrites {
     }
 }
 
-fn unique_base() -> PathBuf {
+/// A directory for one test, under the system's temporary one, that goes
+/// when the test ends, whether it passes or not.
+struct TestBase(PathBuf);
+
+impl std::ops::Deref for TestBase {
+    type Target = PathBuf;
+
+    fn deref(&self) -> &PathBuf {
+        &self.0
+    }
+}
+
+impl Drop for TestBase {
+    fn drop(&mut self) {
+        // A test may never have made it.
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+impl AsRef<std::path::Path> for TestBase {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl From<&TestBase> for PathBuf {
+    fn from(base: &TestBase) -> PathBuf {
+        base.0.clone()
+    }
+}
+
+fn unique_base() -> TestBase {
     // Tests run in parallel and the clock can read the same for two of
     // them, so a counter keeps each directory to itself.
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -32,12 +63,12 @@ fn unique_base() -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    std::env::temp_dir().join(format!(
+    TestBase(std::env::temp_dir().join(format!(
         "ruston-session-test-{}-{}-{}",
         std::process::id(),
         nanos,
         NEXT.fetch_add(1, Ordering::Relaxed)
-    ))
+    )))
 }
 
 #[test]
@@ -56,7 +87,6 @@ fn a_profile_held_elsewhere_is_given_up_on_after_a_while() {
 
     drop(held);
     Session::lock_within(&paths, "default", Duration::from_millis(200)).unwrap();
-    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -91,7 +121,6 @@ fn a_session_counts_as_saved_by_its_metadata_alone() {
     // Its secrets gone, it still counts: resuming it says what is wrong.
     store.delete(K_TOKENS).unwrap();
     assert!(Session::is_saved(&paths, "default"));
-    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -112,7 +141,6 @@ fn waiting_for_a_profile_lasts_while_it_is_held_and_lets_it_go() {
     drop(held);
     waiter.join().unwrap().unwrap();
     Session::lock_within(&paths, "default", Duration::ZERO).unwrap();
-    let _ = std::fs::remove_dir_all(base);
 }
 
 #[test]
@@ -131,7 +159,6 @@ fn clear_removes_secrets_even_when_metadata_cannot_be_removed() {
     ));
     assert!(store.get(K_TOKENS).unwrap().is_none());
     assert!(store.get(K_SKP).unwrap().is_none());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -156,7 +183,6 @@ fn invalid_profile_cannot_write_outside_sessions_directory() {
     ));
     assert_eq!(std::fs::read(&outside).unwrap(), b"keep this file");
     assert!(!base.join("outside.lock").exists());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -203,7 +229,6 @@ fn a_saved_session_loads_whole_until_it_is_cleared() {
     for key in [K_TOKENS, K_SKP, K_BASE_URL] {
         assert_eq!(store.get(key).unwrap(), None, "{key}");
     }
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -217,7 +242,6 @@ fn session_without_user_agent_round_trips_unchanged() {
     let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
     assert_eq!(loaded.session.user_agent, None);
     assert_eq!(loaded.session.uid, saved.uid);
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 /// What earlier versions saved, where and under which names, so that
@@ -258,7 +282,6 @@ fn stored_names_and_formats_stay_as_they_are() {
         let named = |part: std::path::Component| part.as_os_str() == "ruston-mail";
         assert!(system.base.components().any(named), "{:?}", system.base);
     }
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -272,7 +295,6 @@ fn a_profile_never_signed_in_to_has_no_session_to_load() {
             .is_none()
     );
     assert!(!Session::is_saved(&paths, "never-used"));
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -295,12 +317,12 @@ fn failed_refresh_write_keeps_the_previous_token_pair() {
         .tokens;
     let pair = [kept.access.expose_secret(), kept.refresh.expose_secret()];
     assert_eq!(pair, ["old-access", "old-refresh"]);
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
 fn a_login_whose_token_write_fails_leaves_no_earlier_tokens_behind() {
-    let paths = Paths::with_base(unique_base());
+    let base = unique_base();
+    let paths = Paths::with_base(base.clone());
     let store = RejectTokenWrites::default();
     let session = |uid: &str, base_url: &str| Session {
         uid: uid.into(),
@@ -353,7 +375,6 @@ fn a_session_whose_tokens_are_gone_does_not_resume() {
     store.delete(K_TOKENS).unwrap();
 
     assert!(Session::load(&paths, "default", &store).unwrap().is_none());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 /// The metadata a login at `base_url` saves for session `uid`.
@@ -418,7 +439,6 @@ fn edited_api_address_does_not_resume_a_session() {
 
     rewrite_base_url(&paths, &session, "https://mail.proton.me/api");
     assert!(Session::load(&paths, "default", &store).unwrap().is_some());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -434,7 +454,6 @@ fn selected_api_address_resumes_only_while_bound() {
         Session::load(&paths, "default", &store),
         Err(Error::SessionAddressMismatch)
     ));
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -448,7 +467,6 @@ fn a_session_bound_to_no_address_does_not_resume() {
         Session::load(&paths, "default", &store),
         Err(Error::SessionAddressMismatch)
     ));
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -487,7 +505,6 @@ fn a_later_version_s_session_loads_and_one_without_its_account_does_not() {
     older.as_object_mut().unwrap().remove("user_id");
     std::fs::write(paths.metadata_file("default"), older.to_string()).unwrap();
     assert!(Session::load(&paths, "default", &store).unwrap().is_none());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 #[test]
@@ -509,7 +526,6 @@ fn metadata_that_is_no_session_is_ignored_but_a_failed_read_is_an_error() {
     std::fs::create_dir(paths.metadata_file("default")).unwrap();
     assert!(Session::load(&paths, "default", &store).is_err());
     assert!(Session::clear_if_current(&paths, "default", &store, "UID1").is_err());
-    std::fs::remove_dir_all(base).unwrap();
 }
 
 /// Counts reads of the key passphrase.
@@ -572,5 +588,4 @@ fn a_token_refresh_needs_only_the_tokens() {
         refresh_tokens(),
         Err(Error::SessionAddressMismatch)
     ));
-    std::fs::remove_dir_all(base).unwrap();
 }
