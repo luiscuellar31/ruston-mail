@@ -720,7 +720,6 @@ fn a_cleared_password_cannot_be_brought_back_with_undo() {
                     field = edit_secret_field(
                         ui,
                         "Password",
-                        "Password",
                         password,
                         &mut show_password,
                         false,
@@ -811,7 +810,6 @@ fn typing_a_password_never_moves_it_to_a_new_buffer() {
                     field = edit_secret_field(
                         ui,
                         "Password",
-                        "Password",
                         app.password_mut(),
                         &mut false,
                         false,
@@ -856,7 +854,6 @@ fn the_measuring_pass_never_lays_out_what_was_typed() {
         );
         edit_secret_field(
             &mut measure,
-            "Password",
             "Password",
             &mut password,
             &mut true,
