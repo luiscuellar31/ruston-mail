@@ -458,7 +458,7 @@ fn repeated_search_does_not_mutate_source_conversations() {
 }
 
 #[test]
-fn visible_accessors_and_navigation_use_cache() {
+fn the_visible_rows_follow_the_search() {
     let mut mailbox = searchable_mailbox();
     assert_eq!(mailbox.visible_count(), 3);
     assert!(!mailbox.is_empty_visible());
@@ -476,17 +476,17 @@ fn visible_accessors_and_navigation_use_cache() {
     );
     assert_eq!(mailbox.visible_row(3), None);
 
-    // visible_position works with cached indices
+    // Positions run from the first visible row to the last.
     assert_eq!(mailbox.visible_position("sender"), Some(0.0));
     assert_eq!(mailbox.visible_position("subject"), Some(0.5));
     assert_eq!(mailbox.visible_position("preview"), Some(1.0));
     assert_eq!(mailbox.visible_position("nonexistent"), None);
 
-    // neighbour works with cached indices
+    // The next and previous rows are the visible ones.
     load_detail(&mut mailbox, "sender", detail("sender", &["m1"]), 10);
     assert_eq!(mailbox.neighbour(Step::Next), Some("subject".into()));
 
-    // Filtering narrows cache
+    // A search narrows them, and clearing it brings them back.
     mailbox.set_search_query("chen".into());
     assert_eq!(mailbox.visible_count(), 1);
     assert_eq!(
@@ -495,7 +495,6 @@ fn visible_accessors_and_navigation_use_cache() {
     );
     assert_eq!(mailbox.visible_position("subject"), None);
 
-    // Clearing query restores cache
     mailbox.set_search_query(String::new());
     assert_eq!(mailbox.visible_count(), 3);
 }

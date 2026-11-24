@@ -200,7 +200,7 @@ fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
 }
 
 #[test]
-fn conversations_loaded_with_candidates_starts_inspection_effects() {
+fn a_page_with_candidates_starts_inspecting_them() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
     let request = pending_list_request(&app);
@@ -285,12 +285,12 @@ fn inspection_before_a_confirmed_mutation_cannot_replace_rows_and_releases_its_s
         panic!("expected the next inspection");
     };
     assert!(
-        matches!(futures::executor::block_on(future), Message::ThreadInspected { revision, .. } if revision == current)
+        matches!(futures::executor::block_on(future), Message::ThreadInspected { revision: next_revision, .. } if next_revision == current)
     );
 }
 
 #[test]
-fn thread_inspected_splits_conversation_when_successful() {
+fn an_inspection_that_finds_separate_threads_splits_the_row() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
@@ -346,7 +346,7 @@ fn thread_inspected_splits_conversation_when_successful() {
 }
 
 #[test]
-fn thread_inspected_stale_epoch_or_folder_is_ignored() {
+fn an_inspection_from_another_session_or_folder_changes_nothing() {
     let mut app = loaded_demo_app();
     let stale_epoch = app.session_epoch + 99;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);

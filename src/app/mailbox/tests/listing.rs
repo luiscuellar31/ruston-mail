@@ -117,7 +117,7 @@ fn opening_loads_first_inbox_page_with_unknown_counts() {
 }
 
 #[test]
-fn loading_then_loaded() {
+fn a_loaded_first_page_lists_its_rows() {
     let mailbox = loaded_inbox(&["a", "b"], 2);
 
     assert_eq!(mailbox.status(), ListStatus::Loaded);
@@ -126,7 +126,7 @@ fn loading_then_loaded() {
 }
 
 #[test]
-fn loading_then_error() {
+fn a_failed_first_page_reports_the_folder_failure() {
     let (mut mailbox, request) = open();
 
     let error = mailbox.finish_page(request.id, Err(MailboxError::Connection));
@@ -269,7 +269,7 @@ fn failed_refresh_keeps_previous_list() {
 }
 
 #[test]
-fn counts_apply_once() {
+fn the_awaited_counts_apply_once() {
     let (mut mailbox, _) = open();
 
     // `open` left its counts request in flight; its response is the one that
