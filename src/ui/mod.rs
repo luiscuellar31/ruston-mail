@@ -846,92 +846,19 @@ impl DesktopApp {
             return;
         }
 
-        let wants_text = context.egui_wants_keyboard_input();
-        // Letters only matter to a text field: a focused button or row leaves
-        // j and k to the list.
-        let typing = context.text_edit_focused();
-        // An open menu or list takes Escape for itself, closing later in this
-        // pass, so what is behind it does not close as well.
-        let menu_open = egui::Popup::is_any_open(context);
-        let presses = context.input(|input| {
-            let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
-            let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
-            // Shift and an arrow choose rows along the list.
-            let shift_only = !command && !input.modifiers.alt && input.modifiers.shift;
-            let mut presses = Vec::new();
-            if command && input.key_pressed(egui::Key::R) {
-                presses.push(KeyPress::with_command(Key::Character('r')));
-            }
-            if command && input.key_pressed(egui::Key::F) {
-                presses.push(KeyPress::with_command(Key::Character('f')));
-            }
-            if command && input.key_pressed(egui::Key::Comma) {
-                presses.push(KeyPress::with_command(Key::Character(',')));
-            }
-            if command && input.key_pressed(egui::Key::N) {
-                presses.push(KeyPress::with_command(Key::Character('n')));
-            }
-            if command && input.key_pressed(egui::Key::Enter) {
-                presses.push(KeyPress::with_command(Key::Enter));
-            }
-            // Outside a text field, which takes it for its text, Command and A
-            // choose every conversation. Read from the key's own event: the
-            // macOS Edit menu's Select All sends it when clicked, with no key
-            // held.
-            let select_all = input.events.iter().any(|event| {
-                matches!(event, egui::Event::Key {
-                    key: egui::Key::A,
-                    pressed: true,
-                    modifiers,
-                    ..
-                } if modifiers.command && !modifiers.alt && !modifiers.shift)
-            });
-            if select_all && !typing {
-                presses.push(KeyPress::with_command(Key::Character('a')));
-            }
-            if !menu_open && input.key_pressed(egui::Key::Escape) {
-                presses.push(KeyPress::plain(Key::Escape));
-            }
-            // A focused widget keeps the arrows and Enter: egui moves focus
-            // with the arrows and presses a focused button with Enter. Delete
-            // waits too, as a focused row need not be the selected one.
-            if plain && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
-                presses.push(KeyPress::plain(Key::ArrowDown));
-            } else if plain && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
-                presses.push(KeyPress::plain(Key::ArrowUp));
-            } else if plain && !wants_text && input.key_pressed(egui::Key::Enter) {
-                presses.push(KeyPress::plain(Key::Enter));
-            } else if plain && !wants_text && input.key_pressed(egui::Key::Delete) {
-                presses.push(KeyPress::plain(Key::Delete));
-            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowDown) {
-                presses.push(KeyPress::with_shift(Key::ArrowDown));
-            } else if shift_only && !wants_text && input.key_pressed(egui::Key::ArrowUp) {
-                presses.push(KeyPress::with_shift(Key::ArrowUp));
-            } else if plain && !typing {
-                let letter = input.events.iter().find_map(|event| match event {
-                    egui::Event::Text(text) => text
-                        .chars()
-                        .next()
-                        .filter(|first| matches!(first, 'j' | 'k')),
-                    _ => None,
-                });
-                presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
-            } else if !wants_text && command && !input.modifiers.alt && !input.modifiers.shift {
-                if input.key_pressed(egui::Key::Backspace) {
-                    presses.push(KeyPress::with_command(Key::Backspace));
-                } else if input.key_pressed(egui::Key::Delete) {
-                    presses.push(KeyPress::with_command(Key::Delete));
-                }
-            }
-            presses
-        });
+        let focus = KeyFocus {
+            wants_keys: context.egui_wants_keyboard_input(),
+            typing: context.text_edit_focused(),
+            menu_open: egui::Popup::is_any_open(context),
+        };
+        let presses = context.input(|input| key_presses(input, focus));
 
         // j or k past a focused row or button moves the list on, so that
         // widget lets focus go instead of keeping its ring behind.
         let letter = presses
             .iter()
             .any(|press| matches!(press.key, Key::Character('j' | 'k')));
-        if wants_text && letter {
+        if focus.wants_keys && letter {
             context.memory_mut(|memory| {
                 if let Some(focused) = memory.focused() {
                     memory.surrender_focus(focused);
@@ -1387,6 +1314,93 @@ fn zoom_keys(context: &egui::Context) -> Option<settings::ZoomStep> {
             None
         }
     })
+}
+
+/// What holds the keyboard in the mailbox window, which decides the keys the
+/// mailbox's shortcuts get.
+#[derive(Clone, Copy)]
+struct KeyFocus {
+    /// A widget takes keys: a text field, or a focused button or row.
+    wants_keys: bool,
+    /// A text field takes them. Letters only matter to one: a focused button
+    /// or row leaves j and k to the list.
+    typing: bool,
+    /// A menu or list is open, which takes Escape for itself, closing later
+    /// in the pass, so what is behind it does not close as well.
+    menu_open: bool,
+}
+
+/// The shortcuts Command and a key ask for, in the order they are read.
+const COMMAND_KEYS: [(egui::Key, Key); 5] = [
+    (egui::Key::R, Key::Character('r')),
+    (egui::Key::F, Key::Character('f')),
+    (egui::Key::Comma, Key::Character(',')),
+    (egui::Key::N, Key::Character('n')),
+    (egui::Key::Enter, Key::Enter),
+];
+
+/// The mailbox shortcuts this pass's keys press, given what holds the
+/// keyboard.
+fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
+    let command = input.modifiers.command && !ctrl_alt_types(input.modifiers);
+    let plain = !command && !input.modifiers.alt && !input.modifiers.shift;
+    // Shift and an arrow choose rows along the list.
+    let shift_only = !command && !input.modifiers.alt && input.modifiers.shift;
+    let mut presses: Vec<KeyPress> = COMMAND_KEYS
+        .iter()
+        .filter(|(pressed, _)| command && input.key_pressed(*pressed))
+        .map(|&(_, key)| KeyPress::with_command(key))
+        .collect();
+    // Outside a text field, which takes it for its text, Command and A choose
+    // every conversation. Read from the key's own event: the macOS Edit menu's
+    // Select All sends it when clicked, with no key held.
+    let select_all = input.events.iter().any(|event| {
+        matches!(event, egui::Event::Key {
+            key: egui::Key::A,
+            pressed: true,
+            modifiers,
+            ..
+        } if modifiers.command && !modifiers.alt && !modifiers.shift)
+    });
+    if select_all && !focus.typing {
+        presses.push(KeyPress::with_command(Key::Character('a')));
+    }
+    if !focus.menu_open && input.key_pressed(egui::Key::Escape) {
+        presses.push(KeyPress::plain(Key::Escape));
+    }
+    // A focused widget keeps the arrows and Enter: egui moves focus with the
+    // arrows and presses a focused button with Enter. Delete waits too, as a
+    // focused row need not be the selected one.
+    let unclaimed = |key: egui::Key| !focus.wants_keys && input.key_pressed(key);
+    if plain && unclaimed(egui::Key::ArrowDown) {
+        presses.push(KeyPress::plain(Key::ArrowDown));
+    } else if plain && unclaimed(egui::Key::ArrowUp) {
+        presses.push(KeyPress::plain(Key::ArrowUp));
+    } else if plain && unclaimed(egui::Key::Enter) {
+        presses.push(KeyPress::plain(Key::Enter));
+    } else if plain && unclaimed(egui::Key::Delete) {
+        presses.push(KeyPress::plain(Key::Delete));
+    } else if shift_only && unclaimed(egui::Key::ArrowDown) {
+        presses.push(KeyPress::with_shift(Key::ArrowDown));
+    } else if shift_only && unclaimed(egui::Key::ArrowUp) {
+        presses.push(KeyPress::with_shift(Key::ArrowUp));
+    } else if plain && !focus.typing {
+        let letter = input.events.iter().find_map(|event| match event {
+            egui::Event::Text(text) => text
+                .chars()
+                .next()
+                .filter(|first| matches!(first, 'j' | 'k')),
+            _ => None,
+        });
+        presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
+    } else if !focus.wants_keys && command && !input.modifiers.alt && !input.modifiers.shift {
+        if input.key_pressed(egui::Key::Backspace) {
+            presses.push(KeyPress::with_command(Key::Backspace));
+        } else if input.key_pressed(egui::Key::Delete) {
+            presses.push(KeyPress::with_command(Key::Delete));
+        }
+    }
+    presses
 }
 
 /// On Windows Ctrl+Alt types what AltGr types, as "ń" with N on a Polish
