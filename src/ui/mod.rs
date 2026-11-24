@@ -497,13 +497,15 @@ impl DesktopApp {
         context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::CancelClose);
     }
 
+    /// Brings `viewport` back from the Dock or taskbar and gives it the keys.
+    fn bring_forward(context: &egui::Context, viewport: egui::ViewportId) {
+        context.send_viewport_cmd_to(viewport, egui::ViewportCommand::Minimized(false));
+        context.send_viewport_cmd_to(viewport, egui::ViewportCommand::Focus);
+    }
+
     /// Shows the main window, so the question it now asks is seen.
     fn bring_main_window_forward(context: &egui::Context) {
-        context.send_viewport_cmd_to(
-            egui::ViewportId::ROOT,
-            egui::ViewportCommand::Minimized(false),
-        );
-        context.send_viewport_cmd_to(egui::ViewportId::ROOT, egui::ViewportCommand::Focus);
+        Self::bring_forward(context, egui::ViewportId::ROOT);
         context.request_repaint();
     }
 
@@ -594,24 +596,23 @@ impl DesktopApp {
     fn native_action(&mut self, action: macos::Action, context: &egui::Context) {
         match action {
             macos::Action::Quit => self.request_window_close(context),
-            macos::Action::Settings | macos::Action::NewMessage
+            macos::Action::Settings
                 if self.app.auth_state().is_authenticated() && !self.prompt_open() =>
             {
-                self.dispatch(
-                    match action {
-                        macos::Action::Settings => Message::ShowSettings(true),
-                        _ => Message::OpenCompose,
-                    },
-                    context,
-                );
+                self.dispatch(Message::ShowSettings(true), context);
+                Self::bring_forward(context, egui::ViewportId::ROOT);
+            }
+            macos::Action::NewMessage
+                if self.app.auth_state().is_authenticated() && !self.prompt_open() =>
+            {
+                self.dispatch(Message::OpenCompose, context);
                 context.send_viewport_cmd_to(
                     egui::ViewportId::ROOT,
                     egui::ViewportCommand::Minimized(false),
                 );
                 // A new message comes forward in the draft's own window, unless
                 // leaving Settings first waits on its question in this one.
-                let destination = if matches!(action, macos::Action::NewMessage)
-                    && self.app.compose().is_some()
+                let destination = if self.app.compose().is_some()
                     && self.app.settings().compose_placement == ComposePlacement::Window
                     && self.pending_settings_exit.is_none()
                 {
@@ -619,8 +620,7 @@ impl DesktopApp {
                 } else {
                     egui::ViewportId::ROOT
                 };
-                context.send_viewport_cmd_to(destination, egui::ViewportCommand::Minimized(false));
-                context.send_viewport_cmd_to(destination, egui::ViewportCommand::Focus);
+                Self::bring_forward(context, destination);
             }
             macos::Action::Zoom(step) => self.step_zoom(step, context),
             macos::Action::Edit(edit) => {
@@ -669,11 +669,7 @@ impl DesktopApp {
                     self.notifications
                         .show(&sender, &subject, &self.runtime, context);
                 }
-                UiEffect::RaiseComposer => {
-                    let composer = compose::viewport_id();
-                    context.send_viewport_cmd_to(composer, egui::ViewportCommand::Minimized(false));
-                    context.send_viewport_cmd_to(composer, egui::ViewportCommand::Focus);
-                }
+                UiEffect::RaiseComposer => Self::bring_forward(context, compose::viewport_id()),
                 UiEffect::PickComposeAttachments(id) => {
                     let parent = self.claim_file_dialog();
                     let owner = if self.app.settings().compose_placement == ComposePlacement::Window
@@ -1053,8 +1049,7 @@ impl DesktopApp {
         if separate && !context.input(|input| input.raw.viewports.contains_key(&target)) {
             return;
         }
-        context.send_viewport_cmd_to(target, egui::ViewportCommand::Minimized(false));
-        context.send_viewport_cmd_to(target, egui::ViewportCommand::Focus);
+        Self::bring_forward(context, target);
         #[cfg(target_os = "linux")]
         context.send_viewport_cmd_to(
             target,
