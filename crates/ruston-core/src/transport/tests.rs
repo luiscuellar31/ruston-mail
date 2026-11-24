@@ -240,17 +240,14 @@ struct ValueResp {
 fn buffered_requests_move_and_share_raw_bytes_for_retries() {
     let bytes = vec![0x7f; 64 * 1024];
     let pointer = bytes.as_ptr();
-    let mut request = Request::post("/upload").raw(bytes, "application/octet-stream");
-    let prepared = client("http://127.0.0.1")
-        .prepare_request(&mut request)
-        .unwrap();
-    assert!(matches!(request.body, Body::Bytes(ref bytes) if bytes.is_empty()));
+    let request = Request::post("/upload").raw(bytes, "application/octet-stream");
+    let prepared = client("http://127.0.0.1").prepare(request).unwrap();
     assert_eq!(
-        prepared.body().unwrap().as_bytes().unwrap().as_ptr(),
+        prepared.http.body().unwrap().as_bytes().unwrap().as_ptr(),
         pointer
     );
     for _ in 0..3 {
-        let retry = prepared.try_clone().unwrap();
+        let retry = prepared.http.try_clone().unwrap();
         let data = retry.body().unwrap().as_bytes().unwrap();
         assert_eq!(data.len(), 64 * 1024);
         assert_eq!(data.as_ptr(), pointer);
@@ -259,16 +256,14 @@ fn buffered_requests_move_and_share_raw_bytes_for_retries() {
 
 #[test]
 fn a_json_body_is_kept_only_as_the_bytes_retries_share() {
-    let mut request =
+    let request =
         Request::post("/mail/v4/messages/send").json(serde_json::json!({"Key": "session"}));
-    let prepared = client("http://127.0.0.1")
-        .prepare_request(&mut request)
-        .unwrap();
-    // The value is gone; what goes out stays, for every retry.
-    assert!(matches!(request.body, Body::Json(serde_json::Value::Null)));
-    let sent = prepared.body().unwrap().as_bytes().unwrap();
+    // Preparing consumes the request, and its value with it; what goes out
+    // stays, for every retry.
+    let prepared = client("http://127.0.0.1").prepare(request).unwrap();
+    let sent = prepared.http.body().unwrap().as_bytes().unwrap();
     assert_eq!(sent, br#"{"Key":"session"}"#);
-    let retry = prepared.try_clone().unwrap();
+    let retry = prepared.http.try_clone().unwrap();
     assert_eq!(
         retry.body().unwrap().as_bytes().unwrap().as_ptr(),
         sent.as_ptr()

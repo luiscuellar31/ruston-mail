@@ -226,6 +226,25 @@ impl Request {
     }
 }
 
+/// A [`Request`] made ready to go out as often as its retries need: its body
+/// is encoded into `http` once, and each attempt sends a clone that shares
+/// those bytes. The `Request` is consumed, so a JSON body, which can hold
+/// session keys, is not kept beside them. The other fields are the
+/// `Request`'s own, which each attempt's headers and reading follow.
+struct Prepared {
+    /// The method, URL, deadline and body every attempt sends.
+    http: reqwest::Request,
+    /// What the body was, for the log: `empty`, `json` or `bytes`.
+    body_kind: &'static str,
+    content_type: Option<String>,
+    /// Set once a human verification is solved, for the attempts after it.
+    hv: Option<(String, String)>,
+    skip_refresh: bool,
+    omit_auth: bool,
+    enforce_unauth: bool,
+    max_response_bytes: usize,
+}
+
 /// What the API answered.
 #[derive(Debug, Clone)]
 pub struct Response {
@@ -423,41 +442,54 @@ impl HttpClient {
         self.auth.write().await.user_agent = Some(ua);
     }
 
-    /// Move byte buffers into reqwest once. Its buffered requests share their
-    /// body allocation when cloned for authentication, rate-limit or HV retries.
-    /// A JSON body leaves `req` as it is written out, so the value, which can
-    /// hold session keys, is not kept through those retries.
-    fn prepare_request(&self, req: &mut Request) -> Result<reqwest::Request> {
-        let builder = self
-            .client
-            .request(req.method.clone(), req.url(&self.base_url))
-            .timeout(req.timeout);
-        let builder = match &mut req.body {
-            Body::Empty => builder,
-            Body::Json(v) => builder.body(serde_json::to_vec(&std::mem::take(v))?),
-            Body::Bytes(bytes) => builder.body(std::mem::take(bytes)),
+    /// Makes `request` ready to go out as often as its retries need; see
+    /// [`Prepared`].
+    fn prepare(&self, request: Request) -> Result<Prepared> {
+        let url = request.url(&self.base_url);
+        let Request {
+            method,
+            path: _,
+            query: _,
+            body,
+            content_type,
+            hv,
+            skip_refresh,
+            omit_auth,
+            enforce_unauth,
+            max_response_bytes,
+            timeout,
+        } = request;
+        let builder = self.client.request(method, url).timeout(timeout);
+        let (builder, body_kind) = match body {
+            Body::Empty => (builder, "empty"),
+            Body::Json(value) => (builder.body(serde_json::to_vec(&value)?), "json"),
+            Body::Bytes(bytes) => (builder.body(bytes), "bytes"),
         };
-        Ok(builder.build()?)
+        Ok(Prepared {
+            http: builder.build()?,
+            body_kind,
+            content_type,
+            hv,
+            skip_refresh,
+            omit_auth,
+            enforce_unauth,
+            max_response_bytes,
+        })
     }
 
     async fn execute_once(
         client: &reqwest::Client,
-        req: &Request,
-        prepared: &reqwest::Request,
+        prepared: &Prepared,
         auth: &AuthState,
     ) -> Result<Response> {
-        let hdrs = headers::build_headers(auth, req);
-        let body_kind = match &req.body {
-            Body::Empty => "empty",
-            Body::Json(_) => "json",
-            Body::Bytes(_) => "bytes",
-        };
+        let hdrs = headers::build_headers(auth, prepared);
         // Borrow the parsed path: never log queries, fragments or URL credentials,
         // including ones supplied directly in Request.path or the base URL.
-        tracing::debug!(target: "ruston_core::http", method = %req.method, path = prepared.url().path(), body = body_kind, hv = req.hv.is_some(), "→ request");
+        tracing::debug!(target: "ruston_core::http", method = %prepared.http.method(), path = prepared.http.url().path(), body = prepared.body_kind, hv = prepared.hv.is_some(), "→ request");
         tracing::trace!(target: "ruston_core::http", headers = ?hdrs.keys().map(|k| k.as_str()).collect::<Vec<_>>(), "request headers");
 
         let mut attempt = prepared
+            .http
             .try_clone()
             .ok_or_else(|| Error::Other("request body cannot be replayed".into()))?;
         *attempt.headers_mut() = hdrs;
@@ -471,7 +503,7 @@ impl HttpClient {
         let status = resp.status().as_u16();
         let retry_after =
             header_text(&resp, reqwest::header::RETRY_AFTER).and_then(retry_after::parse);
-        let body = read_bounded_body(resp, req.max_response_bytes).await?;
+        let body = read_bounded_body(resp, prepared.max_response_bytes).await?;
         tracing::debug!(target: "ruston_core::http", status, bytes = body.len(), ms = started.elapsed().as_millis() as u64, "← response");
         Ok(Response {
             status,
@@ -507,11 +539,12 @@ impl HttpClient {
             "RedirectURI": "https://protonmail.ch",
             "State": "0",
         });
-        let mut req = Request::post("/auth/v4/refresh")
-            .json(body)
-            .no_refresh()
-            .omit_auth();
-        let prepared = self.prepare_request(&mut req)?;
+        let prepared = self.prepare(
+            Request::post("/auth/v4/refresh")
+                .json(body)
+                .no_refresh()
+                .omit_auth(),
+        )?;
         // Once sent, the old refresh token is spent. The rotation finishes on
         // a task of its own, holding both locks, so cancelling the request
         // that needed it cannot lose the new pair before it is stored and saved.
@@ -520,7 +553,7 @@ impl HttpClient {
             on_refresh: self.on_refresh.clone(),
             refresh_unsaved: self.refresh_unsaved.clone(),
         };
-        tokio::spawn(rotation.run(a, session_lock, req, prepared, uid))
+        tokio::spawn(rotation.run(a, session_lock, prepared, uid))
             .await
             .map_err(|e| Error::Session(format!("token refresh task failed: {e}")))??;
         Ok(Refresh::Rotated)
@@ -596,11 +629,10 @@ impl Rotation {
         self,
         mut a: OwnedRwLockWriteGuard<AuthState>,
         _session_lock: Option<File>,
-        req: Request,
-        prepared: reqwest::Request,
+        prepared: Prepared,
         uid: String,
     ) -> Result<()> {
-        let resp = HttpClient::execute_once(&self.client, &req, &prepared, &a).await?;
+        let resp = HttpClient::execute_once(&self.client, &prepared, &a).await?;
         match detect(resp.status, &resp.body) {
             Detected::Ok => {}
             // An outage, a rate limit or a challenge leaves the saved session
@@ -729,12 +761,12 @@ fn is_success(status: u16, code: Option<i64>) -> bool {
         )
 }
 
-/// Whether Proton's `error` says it was busy with `request`, which may then
-/// be sent again: a 429, or a 503 to a read. A gateway may answer 503 once
-/// Proton has acted on a request, so anything that is not a read, a send
-/// above all, is never sent twice after one.
-fn busy_and_repeatable(request: &Request, error: &ApiError) -> bool {
-    error.is_rate_limited() || (error.http_status == 503 && request.method.is_safe())
+/// Whether Proton's `error` says it was busy with a request of `method`,
+/// which may then be sent again: a 429, or a 503 to a read. A gateway may
+/// answer 503 once Proton has acted on a request, so anything that is not a
+/// read, a send above all, is never sent twice after one.
+fn busy_and_repeatable(method: &Method, error: &ApiError) -> bool {
+    error.is_rate_limited() || (error.http_status == 503 && method.is_safe())
 }
 
 /// The challenge a 9001 response's `Details` describe. A field they lack
@@ -765,22 +797,22 @@ fn hv_challenge(details: &serde_json::Value) -> HvChallenge {
 
 #[async_trait]
 impl Doer for HttpClient {
-    async fn do_raw(&self, mut request: Request) -> Result<Response> {
+    async fn do_raw(&self, request: Request) -> Result<Response> {
         // The request is sent again after renewing the tokens on a 401, up to
         // REFRESH_ATTEMPTS times; after a busy answer, up to BUSY_RETRIES
         // times; and after one solved human verification.
-        let prepared = self.prepare_request(&mut request)?;
+        let mut prepared = self.prepare(request)?;
         let mut refreshes_left = REFRESH_ATTEMPTS;
         let mut busy_retries_left = BUSY_RETRIES;
         let mut hv_tried = false;
 
         loop {
             let sent_auth = self.auth.read().await.clone();
-            let resp = Self::execute_once(&self.client, &request, &prepared, &sent_auth).await?;
+            let resp = Self::execute_once(&self.client, &prepared, &sent_auth).await?;
             match detect(resp.status, &resp.body) {
                 Detected::Ok => return Ok(resp),
                 Detected::Api(e)
-                    if e.is_unauthorized() && !request.skip_refresh && refreshes_left > 0 =>
+                    if e.is_unauthorized() && !prepared.skip_refresh && refreshes_left > 0 =>
                 {
                     tracing::debug!(target: "ruston_core::http", "401 — refreshing access token and retrying");
                     refreshes_left = match self.refresh_tokens(&sent_auth).await? {
@@ -789,7 +821,9 @@ impl Doer for HttpClient {
                     };
                 }
                 Detected::Api(e) if e.is_unauthorized() => return Err(Error::Unauthorized),
-                Detected::Api(e) if busy_retries_left > 0 && busy_and_repeatable(&request, &e) => {
+                Detected::Api(e)
+                    if busy_retries_left > 0 && busy_and_repeatable(prepared.http.method(), &e) =>
+                {
                     let Some(wait) = retry_after::wait(resp.retry_after) else {
                         return Err(Error::Api(e));
                     };
@@ -806,7 +840,7 @@ impl Doer for HttpClient {
                     tracing::info!(target: "ruston_core::auth", methods = ?chal.methods, "9001 human verification required — invoking resolver");
                     let (tok, ttype) = resolver(chal).await?;
                     tracing::info!(target: "ruston_core::auth", token_type = %ttype, "human verification token obtained — retrying");
-                    request.hv = Some((tok, ttype));
+                    prepared.hv = Some((tok, ttype));
                     hv_tried = true;
                 }
                 Detected::Api(e) => return Err(Error::Api(e)),
