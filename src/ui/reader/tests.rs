@@ -3125,3 +3125,85 @@ fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
             if *to == Folder::System(MailFolder::Archive)
     ));
 }
+
+#[test]
+fn quoted_text_waits_behind_its_button_unless_the_message_is_all_quote() {
+    let paragraph = |text: &str, quote_depth: u8| RichBlock {
+        kind: BlockKind::Paragraph(vec![RichSpan {
+            text: text.into(),
+            ..RichSpan::default()
+        }]),
+        quote_depth,
+        hidden: false,
+        centered: false,
+    };
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: Vec::new(),
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    // The words drawn, in order.
+    let drawn = |blocks: Vec<RichBlock>, show_quoted_text: bool| -> Vec<String> {
+        let body = RichBody {
+            blocks,
+            ..RichBody::default()
+        };
+        let reading = Reading {
+            show_quoted_text,
+            ..Reading::default()
+        };
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(600.0);
+            rich_body(
+                ui,
+                &body,
+                "message",
+                &reader,
+                no_pictures(),
+                reading,
+                &mut Vec::new(),
+            );
+        });
+        let words = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        words
+    };
+    let reply = || {
+        vec![
+            paragraph("Sounds good", 0),
+            paragraph("Shall we meet?", 1),
+            paragraph("Before that", 2),
+            paragraph("Thanks", 0),
+        ]
+    };
+
+    assert_eq!(
+        drawn(reply(), false),
+        ["Sounds good", "Show quoted text", "Thanks"]
+    );
+    assert_eq!(
+        drawn(reply(), true),
+        [
+            "Sounds good",
+            "Hide quoted text",
+            "Shall we meet?",
+            "Before that",
+            "Thanks"
+        ]
+    );
+    // A message that is all quote shows it, with no button before it.
+    assert_eq!(
+        drawn(vec![paragraph("Shall we meet?", 1)], false),
+        ["Shall we meet?"]
+    );
+}

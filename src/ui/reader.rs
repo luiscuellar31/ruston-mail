@@ -1454,6 +1454,8 @@ fn rich_body(
         }
         return;
     }
+    // A message that is all quote shows it at once: behind a button, the
+    // button would be all there is to read.
     if body.blocks.iter().all(|block| block.quote_depth > 0) {
         blocks(ui, &body.blocks, 0, pictures, reading, messages);
         return;
@@ -1461,14 +1463,11 @@ fn rich_body(
 
     let sight = Sight::new(ui, reading);
     let mut rest = &body.blocks[..];
-    let mut quote = 0;
+    let mut quote_index = 0;
     while let Some(first) = rest.first() {
         if first.quote_depth > 0 {
-            let run = rest
-                .iter()
-                .take_while(|block| block.quote_depth > 0)
-                .count();
-            let expanded = reader.is_quote_expanded(message_id, quote, reading);
+            let run = quoted_run(rest, 0);
+            let expanded = reader.is_quote_expanded(message_id, quote_index, reading);
             if ui
                 .add(theme::compact_button(if expanded {
                     "Hide quoted text"
@@ -1477,14 +1476,17 @@ fn rich_body(
                 }))
                 .clicked()
             {
-                messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));
+                messages.push(Message::ToggleQuoteExpanded(
+                    message_id.to_owned(),
+                    quote_index,
+                ));
             }
             if expanded {
                 quote_box(ui, |ui| {
                     blocks(ui, &rest[..run], 1, pictures, reading, messages);
                 });
             }
-            quote += 1;
+            quote_index += 1;
             rest = &rest[run..];
         } else {
             rest = &rest[1..];
@@ -1616,6 +1618,15 @@ fn texture(
     texture
 }
 
+/// How many of `blocks`, from the first, are quoted deeper than `depth`: the
+/// quote that starts there.
+fn quoted_run(blocks: &[RichBlock], depth: u8) -> usize {
+    blocks
+        .iter()
+        .take_while(|block| block.quote_depth > depth)
+        .count()
+}
+
 fn blocks(
     ui: &mut egui::Ui,
     rich_blocks: &[RichBlock],
@@ -1628,10 +1639,7 @@ fn blocks(
     let mut rest = rich_blocks;
     while let Some(first) = rest.first() {
         if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
-            let run = rest
-                .iter()
-                .take_while(|block| block.quote_depth > depth)
-                .count();
+            let run = quoted_run(rest, depth);
             let quoted = &rest[..run];
             rest = &rest[run..];
             if !quoted.iter().any(|block| shown(block, pictures, reading)) {
