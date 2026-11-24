@@ -50,7 +50,7 @@ pub(super) fn show(
     let context = root.ctx().clone();
     let window_width = root.available_width();
     if compact_layout(window_width) {
-        let settings = show_compact(root, app, settings_draft, state, messages);
+        let settings = show_compact(root, app, mailbox, settings_draft, state, messages);
         bottom_notice(&context, app, mailbox, state, settings, messages);
         return;
     }
@@ -72,17 +72,7 @@ pub(super) fn show(
         Some(draft) => {
             let page = egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-                .show(root, |ui| {
-                    settings::show(
-                        ui,
-                        app.settings(),
-                        draft,
-                        messages,
-                        state.notification_status,
-                        app.third_party_notices(),
-                        app.update_status(),
-                    )
-                })
+                .show(root, |ui| settings_pane(ui, app, draft, state, messages))
                 .inner;
             (None, page)
         }
@@ -100,7 +90,7 @@ pub(super) fn show(
 
             egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-                .show(root, |ui| reading_pane(ui, app, state, messages));
+                .show(root, |ui| reading_pane(ui, app, mailbox, state, messages));
             (
                 Some(conversations.response.rect),
                 conversations.response.rect,
@@ -189,11 +179,11 @@ fn sidebar_skeleton(ui: &mut egui::Ui) {
 fn show_compact(
     root: &mut egui::Ui,
     app: &App,
+    mailbox: &Mailbox,
     settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) -> Option<egui::Rect> {
-    let mailbox = app.mailbox().expect("authenticated mailbox");
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
         && app.compose().is_some_and(|draft| !draft.folded());
@@ -241,22 +231,14 @@ fn show_compact(
         .frame(theme::panel_frame(fill))
         .show(root, |ui| {
             if let Some(draft) = settings_draft {
-                return Some(settings::show(
-                    ui,
-                    app.settings(),
-                    draft,
-                    messages,
-                    state.notification_status,
-                    app.third_party_notices(),
-                    app.update_status(),
-                ));
+                return Some(settings_pane(ui, app, draft, state, messages));
             }
             match state.compact_view {
                 CompactView::Folders => {
                     sidebar(ui, app, mailbox, messages);
                 }
                 CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
-                CompactView::Reader => reading_pane(ui, app, state, messages),
+                CompactView::Reader => reading_pane(ui, app, mailbox, state, messages),
             }
             None
         })
@@ -279,7 +261,33 @@ fn compact_mail(
     conversation_pane(ui, app, mailbox, state, messages);
 }
 
-fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mut Vec<Message>) {
+/// Settings' page, in place of the list and the reader. Returns where it
+/// scrolls, above its buttons.
+fn settings_pane(
+    ui: &mut egui::Ui,
+    app: &App,
+    draft: &mut Settings,
+    state: &UiState,
+    messages: &mut Vec<Message>,
+) -> egui::Rect {
+    settings::show(
+        ui,
+        app.settings(),
+        draft,
+        messages,
+        state.notification_status,
+        app.third_party_notices(),
+        app.update_status(),
+    )
+}
+
+fn reading_pane(
+    ui: &mut egui::Ui,
+    app: &App,
+    mailbox: &Mailbox,
+    state: &mut UiState,
+    messages: &mut Vec<Message>,
+) {
     let in_pane = app.settings().compose_placement == ComposePlacement::ReadingPane;
     if in_pane && let Some(writing) = app.compose().filter(|draft| !draft.folded()) {
         compose::show_in_pane(ui, writing, messages);
@@ -289,7 +297,7 @@ fn reading_pane(ui: &mut egui::Ui, app: &App, state: &mut UiState, messages: &mu
             compose::folded_strip(ui, folded, messages);
         }
         let view = reader::ReaderView {
-            mailbox: app.mailbox().expect("authenticated mailbox"),
+            mailbox,
             places: app.folders(),
             actions_available: app.mailbox_actions_available(),
             saves: reader::AttachmentSaves {
