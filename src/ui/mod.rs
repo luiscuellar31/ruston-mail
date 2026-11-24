@@ -33,6 +33,8 @@ use auto_refresh::AutoRefresh;
 
 /// Debounces settings writes while a window or divider is dragged.
 const SETTINGS_QUIET: f32 = 0.75;
+/// How long a layout reset waits for the window to take its default size
+/// before it puts the panes back anyway.
 const LAYOUT_RESET_WAIT: f64 = 2.0;
 
 #[derive(Default)]
@@ -606,6 +608,8 @@ impl DesktopApp {
                     egui::ViewportId::ROOT,
                     egui::ViewportCommand::Minimized(false),
                 );
+                // A new message comes forward in the draft's own window, unless
+                // leaving Settings first waits on its question in this one.
                 let destination = if matches!(action, macos::Action::NewMessage)
                     && self.app.compose().is_some()
                     && self.app.settings().compose_placement == ComposePlacement::Window
@@ -634,11 +638,9 @@ impl DesktopApp {
     }
 
     fn execute(&mut self, effects: Effects, context: &egui::Context) {
-        let mut visual = false;
-        for effect in self.runtime.execute(effects) {
-            if effect.is_visual() {
-                visual = true;
-            }
+        let effects = self.runtime.execute(effects);
+        let visual = effects.iter().any(UiEffect::is_visual);
+        for effect in effects {
             match effect {
                 UiEffect::CopyText(text) => context.copy_text(text),
                 UiEffect::FocusSearch => {
@@ -673,8 +675,7 @@ impl DesktopApp {
                     context.send_viewport_cmd_to(composer, egui::ViewportCommand::Focus);
                 }
                 UiEffect::PickComposeAttachments(id) => {
-                    self.file_dialog_open = true;
-                    let parent = self.main_window.clone();
+                    let parent = self.claim_file_dialog();
                     let owner = if self.app.settings().compose_placement == ComposePlacement::Window
                     {
                         dialogs::DialogOwner::ActiveWindow
@@ -699,8 +700,7 @@ impl DesktopApp {
                     request,
                     suggested_name,
                 } => {
-                    self.file_dialog_open = true;
-                    let parent = self.main_window.clone();
+                    let parent = self.claim_file_dialog();
                     let task =
                         dialogs::open(parent.as_ref(), dialogs::DialogOwner::Root, |dialog| {
                             dialog
@@ -719,6 +719,13 @@ impl DesktopApp {
         if visual {
             context.request_repaint();
         }
+    }
+
+    /// Takes the one place a file dialog has, and returns the main window it
+    /// opens over, which the dialog's task holds until the dialog closes.
+    fn claim_file_dialog(&mut self) -> Option<std::sync::Arc<winit::window::Window>> {
+        self.file_dialog_open = true;
+        self.main_window.clone()
     }
 
     fn drain_runtime(&mut self, context: &egui::Context) {
@@ -768,15 +775,12 @@ impl DesktopApp {
                     .or(saved.position),
             }
         };
+        // The sizes a window passes through while a reset waits for its
+        // default one are not remembered.
         if self.settle_layout_reset(Some(&current), context) {
             return;
         }
-        if let Some(last) = self.last_window_size
-            && (last.width - current.width).abs() < f32::EPSILON
-            && (last.height - current.height).abs() < f32::EPSILON
-            && last.maximized == current.maximized
-            && last.position == current.position
-        {
+        if self.last_window_size == Some(current) {
             return;
         }
         self.last_window_size = Some(current);
