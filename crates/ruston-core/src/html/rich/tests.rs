@@ -145,6 +145,54 @@ fn room_stays_between_rows_headings_quotes_and_after_a_spacer() {
 }
 
 #[test]
+fn lines_a_sender_draws_between_sections_show() {
+    assert_eq!(
+        outline(
+            "<p>Booked</p><table style='border-top:1px solid #ddd'><tr><td>Address</td>\
+             </tr></table><div style='border-bottom:1px solid'>Guests</div><p>After</p>"
+        ),
+        ["p Booked", "hr", "p Address", "p Guests", "hr", "p After"]
+    );
+    // None before anything, none that ends the body, never two in a row.
+    assert_eq!(
+        outline(
+            "<div style='border-top:1px solid'>First</div><hr>\
+             <div style='border-top:1px solid'>Second</div>\
+             <div style='border-bottom:1px solid'>Last</div>"
+        ),
+        ["p First", "hr", "p Second", "p Last"]
+    );
+    // A box, as a button is drawn, is no line; a table of data keeps its own,
+    // and the line above it.
+    assert_eq!(
+        outline(
+            "<p>A</p><div style='border:1px solid'>Boxed</div>\
+             <table style='border-top:1px solid'><tr><th>Item</th><th>Price</th></tr>\
+             <tr><td style='border-top:1px solid'>Tea</td>\
+             <td style='border-top:1px solid'>$3</td></tr></table>"
+        ),
+        ["p A", "p Boxed", "hr", "table Item|Price / Tea|$3"]
+    );
+    // A line inside a table of data goes with its grid, and takes nothing
+    // that follows the table with it.
+    assert_eq!(
+        outline(
+            "<table><tr><th>Item</th><th>Price</th></tr>\
+             <tr><td style='border-top:1px solid'>Tea</td><td>$3</td></tr></table><p>Last</p>"
+        ),
+        ["table Item|Price / Tea|$3", "p Last"]
+    );
+    // A row whose cells have lines under them has one, after the row.
+    assert_eq!(
+        outline(
+            "<table><tr><td style='border-bottom:1px solid'>Name</td>\
+             <td style='border-bottom:1px solid'>Ana</td></tr><tr><td>Total</td></tr></table>"
+        ),
+        ["p Name Ana", "hr", "p Total"]
+    );
+}
+
+#[test]
 fn styled_runs_share_one_long_link_target() {
     let target = format!("https://example.test/{}", "x".repeat(32 * 1024));
     let body = spans(&format!(

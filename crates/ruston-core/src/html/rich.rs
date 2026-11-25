@@ -580,11 +580,17 @@ struct Builder {
     /// its kind leaves none, as a bare `div`, rather than by its style.
     assumed: bool,
     /// The blocks open whose room below is yet to come, innermost last, at
-    /// most [`MAX_STYLE_DEPTH`], each with that room.
-    below: Vec<(String, Room)>,
+    /// most [`MAX_STYLE_DEPTH`], each with that room and whether a line runs
+    /// under it.
+    below: Vec<(String, Room, bool)>,
     /// How many are open beyond those kept, so that their ends close them
     /// before any of `below`.
     omitted_below: usize,
+    /// Whether a cell of the row being read has a line under it, which runs
+    /// under the whole row once it ends.
+    row_ruled: bool,
+    /// The last line a border drew, which goes if nothing follows it.
+    ruled: Option<usize>,
 }
 
 /// The room a block leaves on one side, and whether its style said so
@@ -626,6 +632,8 @@ impl Builder {
             assumed: false,
             below: Vec::new(),
             omitted_below: 0,
+            row_ruled: false,
+            ruled: None,
         }
     }
 
@@ -911,7 +919,7 @@ impl Builder {
                     // Read whole, a table of data takes the place of the
                     // paragraphs its rows made.
                     if table.holds_data() {
-                        self.blocks.truncate(table.start);
+                        self.truncate(table.start);
                         self.push(BlockKind::Table(table.rows));
                     }
                 }
@@ -1281,11 +1289,15 @@ impl Builder {
             },
         };
         self.leave(side(around.room[0]));
+        if around.line[0] {
+            self.line_above(name);
+        }
         if name == "hr" {
             return;
         }
         if self.below.len() < MAX_STYLE_DEPTH {
-            self.below.push((name.to_owned(), side(around.room[1])));
+            self.below
+                .push((name.to_owned(), side(around.room[1]), around.line[1]));
         } else {
             self.omitted_below += 1;
         }
@@ -1297,10 +1309,68 @@ impl Builder {
             self.omitted_below -= 1;
             return;
         }
-        if let Some(index) = self.below.iter().rposition(|(open, _)| open == name) {
-            let (_, room) = self.below[index];
+        if let Some(index) = self.below.iter().rposition(|(open, ..)| open == name) {
+            let (_, room, line) = self.below[index];
             self.below.truncate(index);
             self.leave(room);
+            if line {
+                self.line_below(name);
+            }
+        }
+        if name == "tr" && std::mem::take(&mut self.row_ruled) {
+            self.rule();
+        }
+    }
+
+    /// A line the sender drew across the top of the block `name` that starts
+    /// now. A cell's runs above its row only when the cell starts the row;
+    /// a table's comes before it, so it stays if the table holds data.
+    fn line_above(&mut self, name: &str) {
+        if matches!(name, "td" | "th") && !self.spans.is_empty() {
+            return;
+        }
+        self.rule();
+        let start = self.blocks.len();
+        if name == "table"
+            && let Some(table) = self.open_table()
+        {
+            table.start = start;
+        }
+    }
+
+    /// A line the sender drew under the block `name` that ends now; a
+    /// cell's, under its row once that ends.
+    fn line_below(&mut self, name: &str) {
+        if matches!(name, "td" | "th") {
+            self.row_ruled = true;
+        } else {
+            self.rule();
+        }
+    }
+
+    /// A line across the body, where a border drew one: never two in a row,
+    /// nor before anything.
+    fn rule(&mut self) {
+        self.flush();
+        if matches!(
+            self.blocks.last(),
+            None | Some(RichBlock {
+                kind: BlockKind::Rule,
+                ..
+            })
+        ) {
+            return;
+        }
+        self.push(BlockKind::Rule);
+        self.ruled = Some(self.blocks.len() - 1);
+    }
+
+    /// Drops the blocks from `start` on, and with them the note of a
+    /// border's line among them.
+    fn truncate(&mut self, start: usize) {
+        self.blocks.truncate(start);
+        if self.ruled.is_some_and(|index| index >= start) {
+            self.ruled = None;
         }
     }
 
@@ -1362,6 +1432,20 @@ impl Builder {
 
     fn finish(mut self) -> RichBody {
         self.flush();
+        // A line a border drew under the last block separates it from nothing.
+        if self
+            .ruled
+            .is_some_and(|index| index + 1 == self.blocks.len())
+            && matches!(
+                self.blocks.last(),
+                Some(RichBlock {
+                    kind: BlockKind::Rule,
+                    ..
+                })
+            )
+        {
+            self.blocks.pop();
+        }
         if self.pre_depth > 0 {
             // A <pre> left open ends with the body: at depth one, end_pre
             // closes all its levels at once.

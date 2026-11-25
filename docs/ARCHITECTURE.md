@@ -629,7 +629,12 @@ of `&nbsp;`) leaves some, and two lines that only a bare block's default
 leaves tight must both be short (80 characters), so a newsletter whose margins
 came from a stylesheet keeps its paragraphs apart. The reader draws a joined
 paragraph right under the one before it (`room_after` takes back egui's item
-spacing), and the CLI writes it on the next line. The
+spacing), and the CLI writes it on the next line. A line a border draws
+across a block becomes a `BlockKind::Rule` above or below it: a cell's above
+its row only when the cell starts the row, and under the row once it ends; a
+table's before it, so a table of data keeps that line while its own grid
+goes. There are never two in a row, none before anything, and one a border
+drew under the last block goes. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
 always writes them as Markdown markers. The same stack notes an element with a
