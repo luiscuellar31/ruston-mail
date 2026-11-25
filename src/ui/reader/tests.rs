@@ -491,6 +491,78 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
 }
 
 #[test]
+fn a_picture_inside_a_link_opens_it_through_the_prompt() {
+    let picture = |link: Option<&str>| RichBlock {
+        kind: BlockKind::Image {
+            description: "Go to Marie".into(),
+            content_id: None,
+            link: link.map(Into::into),
+        },
+        quote_depth: 0,
+        hidden: false,
+        centered: false,
+    };
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |picture: &RichBlock, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_width(600.0);
+                block(
+                    ui,
+                    picture,
+                    no_pictures(),
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
+        );
+        let note = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "Image not loaded: Go to Marie" =>
+                {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the description stands in for the picture");
+        output.drop_without_applying_deltas();
+        (note, messages)
+    };
+
+    for link in [Some("https://example.com/profile"), None] {
+        let picture = picture(link);
+        let (note, _) = frame(&picture, Vec::new());
+        let press = |pressed| egui::Event::PointerButton {
+            pos: note.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let _ = frame(
+            &picture,
+            vec![egui::Event::PointerMoved(note.center()), press(true)],
+        );
+        let (_, messages) = frame(&picture, vec![press(false)]);
+        match link {
+            Some(link) => assert!(
+                matches!(&messages[..], [Message::LinkClicked(clicked)] if clicked == link),
+                "a click goes through the prompt that says where it leads"
+            ),
+            None => assert!(messages.is_empty(), "{} messages", messages.len()),
+        }
+    }
+}
+
+#[test]
 fn a_link_the_sender_drew_as_a_button_is_one_and_still_asks_where_it_goes() {
     let part = |text: &str, strong: bool| RichSpan {
         text: text.into(),

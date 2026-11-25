@@ -197,7 +197,10 @@ message carries within it** in Settings leaves them as their descriptions.
 Images on the web are never loaded: one appears as its description when it has
 one, and a line at the top of the message says how many others are not shown,
 tracking pixels aside, so a newsletter made only of pictures does not look
-empty. The command line shows none and says how many at the end. Text the
+empty. A picture inside a link, such as a host's photo linking to their
+profile, is that link: its description, or the picture, opens it, still asking
+first. The command line shows none and says how many at the end, writing one
+inside a link as that link. Text the
 sender hid
 stays hidden, as in a browser: a newsletter's preview line, or a letter slipped
 into a word to get past filters. **Show text the sender hid** in Settings shows

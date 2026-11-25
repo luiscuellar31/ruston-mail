@@ -261,6 +261,7 @@ mod tests {
                         4 => BlockKind::Image {
                             content_id: None,
                             description: format!("chart {index}"),
+                            link: None,
                         },
                         _ => BlockKind::Rule,
                     },

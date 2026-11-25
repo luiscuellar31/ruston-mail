@@ -484,6 +484,37 @@ fn images_keep_only_their_description() {
 }
 
 #[test]
+fn a_picture_inside_a_link_keeps_where_the_link_goes() {
+    let body = parse(
+        "<a href='https://example.com/profile'><img src='https://example.com/p.jpg' alt='Go to Marie'></a>\
+         <img src='https://example.com/q.jpg' alt='Not linked'>\
+         <a href='javascript:alert(1)'><img src='https://example.com/r.jpg' alt='Unsafe'></a>\
+         <a href='https://example.com/card'><img src='cid:card' alt=''></a>",
+    );
+    let pictures: Vec<(&str, Option<&str>)> = body
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Image {
+                description, link, ..
+            } => Some((description.as_str(), link.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pictures,
+        [
+            ("Go to Marie", Some("https://example.com/profile")),
+            ("Not linked", None),
+            // Only web and mail links stay, here as in text.
+            ("Unsafe", None),
+            // One the message carries, with no description, keeps it too.
+            ("", Some("https://example.com/card")),
+        ]
+    );
+}
+
+#[test]
 fn images_with_no_description_are_counted_but_pixels_and_hidden_ones_are_not() {
     let body = parse(
         "<p>Sale</p><img src='https://shop.example/banner.png'><img src='https://t.example/o.gif' width='1' height='1'>\
@@ -602,6 +633,7 @@ fn an_image_that_travels_in_the_message_names_its_part() {
             BlockKind::Image {
                 description,
                 content_id,
+                ..
             } => Some((description.as_str(), content_id.as_deref(), block.hidden)),
             _ => None,
         })
@@ -786,6 +818,7 @@ fn plain_text_keeps_structure_one_block_per_line() {
                 BlockKind::Image {
                     description: "Logo".to_owned(),
                     content_id: None,
+                    link: None,
                 },
                 0,
             ),

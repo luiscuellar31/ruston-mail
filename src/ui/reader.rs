@@ -1542,6 +1542,7 @@ fn shown(block: &RichBlock, pictures: Pictures<'_>, reading: Reading) -> bool {
         BlockKind::Image {
             description,
             content_id,
+            ..
         } if description.is_empty() => !matches!(
             pictures.find(content_id.as_deref(), reading),
             Found::Nothing
@@ -1927,6 +1928,7 @@ fn block(
         BlockKind::Image {
             description,
             content_id,
+            link,
         } => {
             let note = match pictures.find(content_id.as_deref(), reading) {
                 // A picture the message carries, no wider than the pane.
@@ -1937,10 +1939,24 @@ fn block(
                     let shown = ui.add(
                         egui::Image::new(&texture)
                             .fit_to_exact_size(egui::vec2(width, size.y * width / size.x))
-                            .corner_radius(theme::PICTURE_CORNER_RADIUS),
+                            .corner_radius(theme::PICTURE_CORNER_RADIUS)
+                            .sense(if link.is_some() {
+                                Sense::click()
+                            } else {
+                                Sense::hover()
+                            }),
                     );
-                    if !description.is_empty() {
-                        shown.on_hover_text(description);
+                    // A picture inside a link is that link.
+                    match link {
+                        Some(link) => follow_link(
+                            shown.on_hover_cursor(egui::CursorIcon::PointingHand),
+                            link,
+                            messages,
+                        ),
+                        None if !description.is_empty() => {
+                            shown.on_hover_text(description);
+                        }
+                        None => {}
                     }
                     return;
                 }
@@ -1966,15 +1982,23 @@ fn block(
                 .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(note)
-                                .size(theme::text_size(ui, theme::BODY_SIZE - 2.0))
-                                .color(theme::colors(ui).muted),
-                        )
-                        .selectable(true)
-                        .wrap(),
-                    );
+                    let note = egui::RichText::new(note)
+                        .size(theme::text_size(ui, theme::BODY_SIZE - 2.0));
+                    match link {
+                        // It stands in for its link too, underlined at rest
+                        // as text links are.
+                        Some(link) => {
+                            let response = ui.add(egui::Link::new(note.underline()));
+                            follow_link(response, link, messages);
+                        }
+                        None => {
+                            ui.add(
+                                egui::Label::new(note.color(theme::colors(ui).muted))
+                                    .selectable(true)
+                                    .wrap(),
+                            );
+                        }
+                    }
                 });
         }
         BlockKind::Rule => {
@@ -2161,23 +2185,11 @@ fn rich_spans(
                 job.append(&more.text, 0.0, more.sections[0].format.clone());
                 rest = after;
             }
-            let response = ui
-                .add(egui::Button::new(job))
-                .on_hover_text(link_hover_text(link));
-            if response.clicked() {
-                messages.push(Message::LinkClicked(link.to_string()));
-            }
-            response.context_menu(|ui| link_menu(ui, link, messages));
+            let response = ui.add(egui::Button::new(job));
+            follow_link(response, link, messages);
         } else if let Some(link) = &span.link {
-            // Where it goes shows before a click, as a browser shows it, also
-            // when Settings open links without asking.
-            let response = ui
-                .add(egui::Link::new(job))
-                .on_hover_text(link_hover_text(link));
-            if response.clicked() {
-                messages.push(Message::LinkClicked(link.to_string()));
-            }
-            response.context_menu(|ui| link_menu(ui, link, messages));
+            let response = ui.add(egui::Link::new(job));
+            follow_link(response, link, messages);
         } else {
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
@@ -2209,6 +2221,18 @@ fn link_hover_text(link: &str) -> String {
     let mut shown: String = link.chars().take(LINK_HOVER_CHARS).collect();
     shown.push('…');
     shown
+}
+
+/// What a link does wherever the reader draws one, as text, a button or a
+/// picture. Where it goes shows before a click, as a browser shows it, also
+/// when Settings open links without asking; a click asks first when they
+/// say so; and its menu opens or copies it.
+fn follow_link(response: egui::Response, link: &str, messages: &mut Vec<Message>) {
+    let response = response.on_hover_text(link_hover_text(link));
+    if response.clicked() {
+        messages.push(Message::LinkClicked(link.to_owned()));
+    }
+    response.context_menu(|ui| link_menu(ui, link, messages));
 }
 
 /// A link's right-click menu. Opening it still asks first, when Settings say

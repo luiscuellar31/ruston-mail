@@ -113,7 +113,20 @@ impl Writer {
                     .join("\n"),
                 false,
             ),
-            // The terminal shows no images, nor says what they were.
+            // The terminal shows no images, nor says what they were; one
+            // inside a link reads as that link, which would be lost with it.
+            BlockKind::Image {
+                description,
+                link: Some(link),
+                ..
+            } if !description.trim().is_empty() => (
+                markdown(&[RichSpan {
+                    text: description.clone(),
+                    link: Some(link.clone()),
+                    ..RichSpan::default()
+                }]),
+                false,
+            ),
             BlockKind::Image { .. } => return,
             BlockKind::Rule => ("---".to_owned(), false),
             BlockKind::Table(rows) => (table(rows), false),
@@ -586,6 +599,18 @@ mod tests {
         assert_eq!(
             to_markdown("<p>Was <s>$20</s>, now <del>$18</del> <strike>$16</strike> $15</p>"),
             "Was ~~$20~~, now ~~$18~~ ~~$16~~ $15"
+        );
+    }
+
+    #[test]
+    fn a_picture_inside_a_link_reads_as_that_link() {
+        assert_eq!(
+            to_markdown(
+                "<a href='https://example.com/profile'>\
+                 <img src='https://example.com/p.jpg' alt='Go to Marie'></a>\
+                 <p>After</p>"
+            ),
+            "[Go to Marie](https://example.com/profile)\n\nAfter\n\n[1 image not shown]"
         );
     }
 

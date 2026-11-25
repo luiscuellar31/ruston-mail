@@ -629,7 +629,11 @@ data in columns** is off (`Reading::data_tables`); the CLI as columns between
 pipes, measured in terminal cells. An image that names a part of its own
 message (`cid:`, which the sanitizer keeps, as it keeps no other scheme but a
 link's) carries that part's `Content-ID`, which core reads from an
-attachment's headers. When the reader reaches one, it sends
+attachment's headers. An image inside a link keeps that link's target
+(`BlockKind::Image::link`), through the same filter as a text link's, so the
+reader draws its description, or the picture, as that link, with the same
+hover, prompt and menu (`follow_link`), and the CLI writes it as a Markdown
+link. When the reader reaches one, it sends
 `Message::LoadInlineImage`; `App` ([`app/pictures.rs`](../src/app/pictures.rs))
 checks it is a part of the open conversation within the size limit, downloads
 it as it does an attachment to save, and decodes it on a blocking worker with

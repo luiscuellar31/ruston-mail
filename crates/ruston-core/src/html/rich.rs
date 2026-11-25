@@ -159,6 +159,9 @@ pub enum BlockKind {
         /// The part of the message it is, named as that part's
         /// `Content-ID`, when it travels in the message.
         content_id: Option<String>,
+        /// Where the link it sits in goes, kept as a text link's is: a
+        /// picture is often all a link holds, as a profile's photo is.
+        link: Option<Arc<str>>,
     },
     /// A line across, between two parts of the body.
     Rule,
@@ -1100,9 +1103,19 @@ impl Builder {
             },
             None => None,
         };
+        // Its link costs what a run's does, so many linked pictures cannot
+        // grow the body past its limit.
+        let link = self.link.clone();
+        let overhead = link.as_ref().map_or(0, |link| link.len());
+        if self.limit.saturating_sub(self.used) < overhead.saturating_add(BLOCK_SIZE) {
+            self.truncated = true;
+            return;
+        }
+        self.used += overhead;
         self.push(BlockKind::Image {
             description,
             content_id,
+            link,
         });
     }
 
