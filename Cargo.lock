@@ -5669,6 +5669,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "core-foundation 0.10.1",
+ "cssparser",
  "directories",
  "futures",
  "html5ever",

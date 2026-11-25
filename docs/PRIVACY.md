@@ -109,7 +109,12 @@ carry no other kind. Of styles it keeps only what hides text, `display` and
 in a quoted reply too, and what makes text bold, italic, struck through or
 centered: `font-weight`, `font-style`, `text-decoration` and `text-align`;
 and the color behind a link drawn as a button, `background-color` and a
-table's or a cell's `bgcolor`. None of these can load anything. An image keeps
+table's or a cell's `bgcolor`. Margins, padding and borders come through only
+as whether a block has room or a line above or below it: `margin-top` and
+`margin-bottom` of `0` or `1em`, and `border-top` and `border-bottom` of `1px
+solid`, written in place of whatever the sender wrote, so a negative margin
+cannot pull a quoted message over the reply around it. None of these can load
+anything. An image keeps
 its address only when it is on the web or names a part of its own message
 (`cid:`). The desktop shows those parts, unless **Show pictures a message
 carries within it** is off: it downloads the part from Proton as it does an

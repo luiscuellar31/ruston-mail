@@ -609,7 +609,17 @@ element of the same name within the hidden one does not end it. It also keeps
 `font-weight`, `font-style`, `text-decoration` and `text-align`: the parser
 follows them, `center` elements and the `align` of a paragraph, a heading, a
 cell or a row, through a bounded stack of styled elements, as a browser lets them apply within, and records them on each run's
-`SenderStyle` and each block's `centered`, apart from what tags did. The
+`SenderStyle` and each block's `centered`, apart from what tags did.
+Margins, padding and borders it rewrites first, in
+[`html/spacing.rs`](../crates/ruston-core/src/html/spacing.rs), through
+ammonia's `attribute_filter`, which runs before its property filter. Read
+with the CSS parser ammonia uses (`cssparser`, at ammonia's version), so a
+comment or an escape hides nothing from it, every declaration of them the
+sender wrote is dropped, and in their place come `margin-top` and
+`margin-bottom` of `0` or `1em`, where the sender gave a block room or none,
+and `border-top` and `border-bottom` of `1px solid`, where a line runs across
+a block with none down its sides. Nothing else of them comes through, so a
+quoted reply cannot be overlaid. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
 always writes them as Markdown markers. The same stack notes an element with a

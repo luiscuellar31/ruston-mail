@@ -35,6 +35,7 @@ pub fn escape_text(text: &str) -> String {
 }
 
 pub mod rich;
+mod spacing;
 
 /// The same sanitizer serves every body, so it is built once.
 static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
@@ -47,6 +48,15 @@ static SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
         // italic, struck or centered, and no other style: the readers can
         // still tell them, and a quote in a reply keeps them too.
         .add_generic_attributes(&["hidden", "style"])
+        // Margins, padding and borders only as whether a block has room or a
+        // line above or below it, rewritten before the styles are sifted.
+        .attribute_filter(|_, attribute, value| {
+            Some(if attribute == "style" {
+                spacing::normalize(value).into()
+            } else {
+                value.into()
+            })
+        })
         .filter_style_properties(HashSet::from(STYLE_PROPERTIES))
         // Older mail centers with `align`, which ammonia keeps on cells
         // and rows only.
@@ -179,7 +189,7 @@ const URL_SCHEMES: [&str; 4] = ["http", "https", "mailto", "cid"];
 /// The style properties a sanitized body keeps: those that hide text, those
 /// that make it bold, italic, struck through or centered, and the background
 /// color that draws a link as a button. None of them can load anything.
-const STYLE_PROPERTIES: [&str; 8] = [
+const STYLE_PROPERTIES: [&str; 12] = [
     "display",
     "visibility",
     "font-weight",
@@ -188,6 +198,11 @@ const STYLE_PROPERTIES: [&str; 8] = [
     "text-decoration-line",
     "text-align",
     "background-color",
+    // Only as `spacing::normalize` writes them.
+    "margin-top",
+    "margin-bottom",
+    "border-top",
+    "border-bottom",
 ];
 
 /// The declarations of `tag`'s style, each property and value in lowercase,
@@ -863,6 +878,28 @@ mod tests {
         assert!(!clean.contains("font-family"), "{clean}");
         assert!(!clean.contains("background-image"), "{clean}");
         for gone in ["red", "url(", "onclick", "steal"] {
+            assert!(!clean.contains(gone), "{gone} survived: {clean}");
+        }
+    }
+
+    #[test]
+    fn margins_padding_and_borders_come_through_only_as_what_the_readers_use() {
+        let clean = sanitize(
+            "<p style=\"margin:0; color:red\">a</p>\
+             <div style=\"padding-bottom:8px !important; margin-left:-999px\">b</div>\
+             <table style=\"border-top:1px solid #ddd\"><tr>\
+             <td style=\"border:1px solid #333\">c</td></tr></table>\
+             <p style=\"/* x */margin-top:-50px\">d</p>",
+        );
+        for kept in [
+            "<p style=\"margin-top:0;margin-bottom:0\">a</p>",
+            "<div style=\"margin-bottom:1em\">b</div>",
+            "<table style=\"border-top:1px solid\">",
+            "<p style=\"margin-top:0\">d</p>",
+        ] {
+            assert!(clean.contains(kept), "{kept} is not in {clean}");
+        }
+        for gone in ["red", "-999", "#333", "#ddd", "-50", "/*"] {
             assert!(!clean.contains(gone), "{gone} survived: {clean}");
         }
     }
