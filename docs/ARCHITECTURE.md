@@ -634,7 +634,14 @@ across a block becomes a `BlockKind::Rule` above or below it: a cell's above
 its row only when the cell starts the row, and under the row once it ends; a
 table's before it, so a table of data keeps that line while its own grid
 goes. There are never two in a row, none before anything, and one a border
-drew under the last block goes. The
+drew under the last block goes. A table that holds no data, of one row whose
+two to four cells hold their text in blocks of their own (not running on
+from one cell into the next), each of at most four visible paragraphs and
+120 characters, with no table, picture, heading or list within, becomes a
+`BlockKind::Columns`: each cell its blocks, which keep how closely they
+follow one another. The reader sets them side by side with egui's `columns`
+where each gets 150 points, else one under the other; plain text and the CLI
+write them one after the other. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
 always writes them as Markdown markers. The same stack notes an element with a

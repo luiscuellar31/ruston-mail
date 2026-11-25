@@ -492,6 +492,55 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
 }
 
 #[test]
+fn columns_sit_side_by_side_where_they_fit_and_stack_where_they_do_not() {
+    let body = ruston_core::html::rich::parse(
+        "<table><tr><td><p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p></td>\
+         <td><p style='margin:0'>Checkout</p><p style='margin:0'>Sun, Dec 7</p></td></tr></table>",
+    );
+    assert!(matches!(body.blocks[0].kind, BlockKind::Columns(_)));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |width: f32| {
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            blocks(
+                ui,
+                &body.blocks,
+                0,
+                no_pictures(),
+                Reading::default(),
+                &mut Vec::new(),
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (
+            text_rect(&shapes, "Check-in"),
+            text_rect(&shapes, "Thu, Dec 4"),
+            text_rect(&shapes, "Checkout"),
+        )
+    };
+
+    let (check_in, date, checkout) = drawn(600.0);
+    assert_eq!(checkout.top(), check_in.top(), "side by side");
+    assert!(
+        checkout.left() > check_in.right() + 100.0,
+        "{check_in:?} {checkout:?}"
+    );
+    assert!(
+        (date.top() - check_in.bottom()).abs() < 1.0,
+        "the date under its label"
+    );
+
+    let (check_in, date, checkout) = drawn(200.0);
+    assert_eq!(checkout.left(), check_in.left(), "one under the other");
+    assert!(
+        checkout.top() >= date.bottom() + 12.0,
+        "{date:?} {checkout:?}"
+    );
+}
+
+#[test]
 fn lines_the_sender_set_tight_are_drawn_as_next_lines() {
     let body = ruston_core::html::rich::parse(
         "<p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p>\

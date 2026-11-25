@@ -29,6 +29,22 @@ fn outline(html: &str) -> Vec<String> {
                         .collect();
                     format!("table {}", rows.join(" / "))
                 }
+                BlockKind::Columns(columns) => {
+                    let columns: Vec<String> = columns
+                        .iter()
+                        .map(|cell| {
+                            let lines: Vec<String> = cell
+                                .iter()
+                                .map(|block| match &block.kind {
+                                    BlockKind::Paragraph(spans) => text(spans),
+                                    other => format!("{other:?}"),
+                                })
+                                .collect();
+                            lines.join("/")
+                        })
+                        .collect();
+                    format!("columns {}", columns.join(" | "))
+                }
             };
             format!("{}{line}", ">".repeat(usize::from(block.quote_depth)))
         })
@@ -189,6 +205,109 @@ fn lines_a_sender_draws_between_sections_show() {
              <td style='border-bottom:1px solid'>Ana</td></tr><tr><td>Total</td></tr></table>"
         ),
         ["p Name Ana", "hr", "p Total"]
+    );
+}
+
+#[test]
+fn short_cells_a_row_sets_side_by_side_read_as_columns() {
+    // A booking's check-in beside its checkout, a picture between them.
+    assert_eq!(
+        outline(
+            "<table><tr><th><p style='margin:0'>Tuesday,</p><p style='margin:0'>Oct 24</p></th>\
+             <th><img src='https://example.com/slash.png' alt=''></th>\
+             <th><p>Friday,</p><p>Oct 27</p></th></tr></table>"
+        ),
+        ["columns Tuesday,/Oct 24 | Friday,/Oct 27"]
+    );
+    // An address beside the link to it, with the line under the row.
+    assert_eq!(
+        outline(
+            "<p>Before</p><table><tr><td style='border-bottom:1px solid'><p>Address</p>\
+             <p>650 Street</p></td><td style='border-bottom:1px solid'>\
+             <p><a href='https://example.com/map'>Get directions</a></p></td></tr></table>\
+             <p>After</p>"
+        ),
+        [
+            "p Before",
+            "columns Address/650 Street | Get directions",
+            "hr",
+            "p After"
+        ]
+    );
+    // Their lines keep how closely they follow one another.
+    let body = parse(
+        "<table><tr><td><p style='margin:0'>A</p><p style='margin:0'>B</p></td>\
+         <td><p>C</p></td></tr></table>",
+    );
+    let [
+        RichBlock {
+            kind: BlockKind::Columns(columns),
+            ..
+        },
+    ] = &body.blocks[..]
+    else {
+        panic!("one row of columns: {:?}", body.blocks);
+    };
+    let joined: Vec<Vec<bool>> = columns
+        .iter()
+        .map(|cell| cell.iter().map(|block| block.joined).collect())
+        .collect();
+    assert_eq!(joined, [vec![false, true], vec![false]]);
+    assert_eq!(body.plain_text(), "A\nB\nC\n");
+}
+
+#[test]
+fn rows_that_are_not_a_few_short_cells_read_as_before() {
+    for (html, outlined) in [
+        // One cell with text, however many around it.
+        (
+            "<table><tr><td><p>Only</p></td><td></td></tr></table>",
+            vec!["p Only"],
+        ),
+        // Text running on from cell to cell reads on one line, as before.
+        (
+            "<table><tr><td>Name</td><td>Ana</td></tr></table>",
+            vec!["p Name Ana"],
+        ),
+        // Two rows.
+        (
+            "<table><tr><td><p>A</p></td><td><p>B</p></td></tr>\
+             <tr><td><p>C</p></td></tr></table>",
+            vec!["p A", "p B", "p C"],
+        ),
+        // A picture, a heading or a table within.
+        (
+            "<table><tr><td><p>A</p></td><td><img src='cid:logo' alt='Logo'></td></tr></table>",
+            vec!["p A", "img Logo"],
+        ),
+        (
+            "<table><tr><td><h2>A</h2></td><td><p>B</p></td></tr></table>",
+            vec!["h2 A", "p B"],
+        ),
+        (
+            "<table><tr><td><p>A</p></td><td><table><tr><td><p>B</p></td></tr></table>\
+             </td></tr></table>",
+            vec!["p A", "p B"],
+        ),
+    ] {
+        assert_eq!(outline(html), outlined, "{html}");
+    }
+    // A cell of more than a few short lines.
+    let long = "word ".repeat(30);
+    let long = long.trim();
+    assert_eq!(
+        outline(&format!(
+            "<table><tr><td><p>A</p></td><td><p>{long}</p></td></tr></table>"
+        )),
+        ["p A".to_owned(), format!("p {long}")]
+    );
+    // Five cells.
+    assert_eq!(
+        outline(
+            "<table><tr><td><p>1</p></td><td><p>2</p></td><td><p>3</p></td>\
+             <td><p>4</p></td><td><p>5</p></td></tr></table>"
+        ),
+        ["p 1", "p 2", "p 3", "p 4", "p 5"]
     );
 }
 

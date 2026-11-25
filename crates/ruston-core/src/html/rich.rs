@@ -32,6 +32,10 @@ const MAX_BUTTON_CHARS: usize = 60;
 /// The longest a cell of a table of data may be. A longer one is a page laid
 /// out in columns, which reads better as paragraphs.
 const MAX_CELL_CHARS: usize = 120;
+/// The most cells a row may set side by side as columns.
+const MAX_COLUMNS: usize = 4;
+/// The most lines a cell of a row of columns may hold.
+const MAX_COLUMN_LINES: usize = 4;
 /// The most characters a line may have to be set tight against the one
 /// before it only because a bare block, as a `div` is, leaves no room.
 const SHORT_LINE_CHARS: usize = 80;
@@ -87,6 +91,16 @@ impl RichBody {
                     BlockKind::Image { description, .. } if description.is_empty() => String::new(),
                     BlockKind::Image { description, .. } => format!("[Image: {description}]"),
                     BlockKind::Rule => "---".to_owned(),
+                    // One cell after the other, a paragraph to a line.
+                    BlockKind::Columns(columns) => columns
+                        .iter()
+                        .flatten()
+                        .filter_map(|block| match &block.kind {
+                            BlockKind::Paragraph(spans) if !block.hidden => Some(join(spans)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     // A row to a line, its cells apart as words are.
                     BlockKind::Table(rows) => rows
                         .iter()
@@ -175,6 +189,10 @@ pub enum BlockKind {
     /// A table of data, as a receipt's lines or a timetable are. A table
     /// that only lays a page out reads as the paragraphs of its rows.
     Table(Vec<TableRow>),
+    /// Cells a sender set side by side, as a booking's check-in beside its
+    /// checkout: a one-row table of two to four cells, each of a few short
+    /// paragraphs, its blocks.
+    Columns(Vec<Vec<RichBlock>>),
 }
 
 /// A row of a table of data.
@@ -394,6 +412,12 @@ struct OpenTable {
     /// Whether it may still hold data: nothing but short text in its cells,
     /// and no table within it.
     data: bool,
+    /// The blocks each cell made, while it may still be read as columns:
+    /// one row, no table within it, and each cell's text in blocks of its
+    /// own rather than running on into the next cell.
+    columns: Option<Vec<std::ops::Range<usize>>>,
+    /// The first block of the cell being read.
+    cell_start: usize,
 }
 
 impl OpenTable {
@@ -406,6 +430,8 @@ impl OpenTable {
             widths: Vec::new(),
             width: 0,
             data: true,
+            columns: Some(Vec::new()),
+            cell_start: start,
         }
     }
 
@@ -730,6 +756,7 @@ impl Builder {
                 self.flush();
                 if let Some(outer) = self.tables.last_mut() {
                     outer.data = false;
+                    outer.columns = None;
                 }
                 if self.tables.len() < MAX_TABLE_DEPTH {
                     self.tables.push(OpenTable::new(self.blocks.len()));
@@ -776,8 +803,15 @@ impl Builder {
                     .and_then(|columns| columns.trim().parse::<usize>().ok())
                     .unwrap_or(1)
                     .clamp(1, MAX_TABLE_DEPTH);
+                let running_on = !self.spans.is_empty();
+                let start = self.blocks.len();
                 if let Some(table) = self.open_table() {
                     table.start_cell(name == "th", columns);
+                    // Columns hold one row, whose cells start text of their own.
+                    if running_on || !table.rows.is_empty() {
+                        table.columns = None;
+                    }
+                    table.cell_start = start;
                 }
             }
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
@@ -900,8 +934,17 @@ impl Builder {
             "pre" => self.end_pre(),
             "a" => self.link = None,
             "td" | "th" => {
+                let running_on = !self.spans.is_empty();
+                let end = self.blocks.len();
                 if let Some(table) = self.open_table() {
                     table.end_cell();
+                    if running_on {
+                        table.columns = None;
+                    }
+                    let start = table.cell_start;
+                    if let Some(cells) = &mut table.columns {
+                        cells.push(start..end);
+                    }
                 }
             }
             "tr" => {
@@ -921,6 +964,18 @@ impl Builder {
                     if table.holds_data() {
                         self.truncate(table.start);
                         self.push(BlockKind::Table(table.rows));
+                    } else if let Some(cells) = table.columns.take()
+                        && let Some((columns, above, below)) = self.columns(&cells, table.start)
+                    {
+                        // Likewise a row of columns, with the lines it had.
+                        self.truncate(table.start);
+                        if above {
+                            self.rule();
+                        }
+                        self.push(BlockKind::Columns(columns));
+                        if below {
+                            self.rule();
+                        }
                     }
                 }
             }
@@ -971,6 +1026,7 @@ impl Builder {
                     && table.cell.is_none()
                 {
                     table.data = false;
+                    table.columns = None;
                 }
                 self.space_written = false;
                 self.push_text(word);
@@ -1372,6 +1428,60 @@ impl Builder {
         if self.ruled.is_some_and(|index| index >= start) {
             self.ruled = None;
         }
+    }
+
+    /// The columns a one-row table's `cells` make of the blocks read since
+    /// `start`, and whether a line ran above and below the row: two to four
+    /// cells with text, each of at most [`MAX_COLUMN_LINES`] visible
+    /// paragraphs and [`MAX_CELL_CHARS`] characters, with nothing but lines
+    /// between them.
+    fn columns(
+        &self,
+        cells: &[std::ops::Range<usize>],
+        start: usize,
+    ) -> Option<(Vec<Vec<RichBlock>>, bool, bool)> {
+        let is_rule = |block: &RichBlock| matches!(block.kind, BlockKind::Rule);
+        let mut columns = Vec::new();
+        let mut covered = start;
+        let mut above = false;
+        for cell in cells {
+            let between = self.blocks.get(covered..cell.start)?;
+            let within = self.blocks.get(cell.clone())?;
+            if !between.iter().all(is_rule) {
+                return None;
+            }
+            // A cell's line above it runs above the row.
+            above |= !between.is_empty() || within.iter().any(is_rule);
+            covered = cell.end;
+            let blocks: Vec<RichBlock> = within.iter().filter(|b| !is_rule(b)).cloned().collect();
+            if blocks.is_empty() {
+                continue;
+            }
+            let mut characters = 0;
+            let mut lines = 0;
+            for block in &blocks {
+                let BlockKind::Paragraph(spans) = &block.kind else {
+                    return None;
+                };
+                if block.hidden {
+                    return None;
+                }
+                let text = join(spans);
+                characters += text.chars().count();
+                lines += text.lines().count().max(1);
+            }
+            if characters > MAX_CELL_CHARS || lines > MAX_COLUMN_LINES {
+                return None;
+            }
+            columns.push(blocks);
+        }
+        let after = self.blocks.get(covered..)?;
+        if !after.iter().all(is_rule) {
+            return None;
+        }
+        (2..=MAX_COLUMNS)
+            .contains(&columns.len())
+            .then_some((columns, above, !after.is_empty()))
     }
 
     /// Notes `room` between the last block and the next.

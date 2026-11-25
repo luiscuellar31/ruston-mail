@@ -182,7 +182,10 @@ formatting, and quotes remain, but scripts and remote content do not run. Lines
 the sender set with no room between them, such as a booking's date under its
 label or the lines of a signature, read as consecutive lines, here and in the
 command line, while paragraphs keep the space between them. A line the
-sender draws across the message between its sections shows as one. Bold,
+sender draws across the message between its sections shows as one. A few
+short cells a sender sets side by side, such as a booking's check-in beside its
+checkout, stay side by side where the reader is wide enough and one under the
+other where it is not; the command line writes them one after the other. Bold,
 italic, struck-through and centered text count whether the sender marked them
 with tags, with `align`, or set them with styles, as newsletters often do; a short centered
 line is centered, a longer one starts at the left. A link the sender drew as a

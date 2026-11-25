@@ -1813,6 +1813,14 @@ fn text_stamp(block: &RichBlock) -> u64 {
         BlockKind::Image { description, .. } => (0, description.len()),
         BlockKind::Rule => (0, 0),
         BlockKind::Table(rows) => return rows_stamp(rows),
+        BlockKind::Columns(columns) => {
+            return columns
+                .iter()
+                .flatten()
+                .fold(columns.len() as u64, |stamp, block| {
+                    stamp.rotate_left(7) ^ text_stamp(block)
+                });
+        }
     };
     (runs as u64).rotate_left(40) ^ bytes as u64
 }
@@ -2019,6 +2027,61 @@ fn block(
             ui.separator();
         }
         BlockKind::Table(rows) => table(ui, rows, reading, messages),
+        BlockKind::Columns(cells) => columns(ui, cells, pictures, reading, messages),
+    }
+}
+
+/// The least width a column takes beside others; with less, cells stack.
+const COLUMN_MIN_WIDTH: f32 = 150.0;
+/// The room between columns.
+const COLUMN_GAP: f32 = 24.0;
+
+/// Cells a sender set side by side: beside one another, each as wide as the
+/// others, where the pane gives each [`COLUMN_MIN_WIDTH`]; otherwise one
+/// under the other, as a narrow screen sets them.
+fn columns(
+    ui: &mut egui::Ui,
+    cells: &[Vec<RichBlock>],
+    pictures: Pictures<'_>,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
+    let count = cells.len() as f32;
+    if ui.available_width() >= count * COLUMN_MIN_WIDTH + (count - 1.0) * COLUMN_GAP {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+            ui.columns(cells.len(), |columns| {
+                for (column, cell) in columns.iter_mut().zip(cells) {
+                    cell_blocks(column, cell, pictures, reading, messages);
+                }
+            });
+        });
+    } else {
+        for (index, cell) in cells.iter().enumerate() {
+            if index > 0 {
+                ui.add_space(8.0);
+            }
+            cell_blocks(ui, cell, pictures, reading, messages);
+        }
+    }
+}
+
+/// The blocks of one cell of a row of columns, spaced as a body's are.
+fn cell_blocks(
+    ui: &mut egui::Ui,
+    cell: &[RichBlock],
+    pictures: Pictures<'_>,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
+    for (index, rich_block) in cell.iter().enumerate() {
+        if !shown(rich_block, pictures, reading) {
+            continue;
+        }
+        block(ui, rich_block, pictures, reading, messages);
+        if index + 1 < cell.len() {
+            room_after(ui, &cell[index + 1..], pictures, reading);
+        }
     }
 }
 

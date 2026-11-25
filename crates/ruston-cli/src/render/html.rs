@@ -130,6 +130,13 @@ impl Writer {
             BlockKind::Image { .. } => return,
             BlockKind::Rule => ("---".to_owned(), false),
             BlockKind::Table(rows) => (table(rows), false),
+            // One cell after the other, as a narrow screen sets them.
+            BlockKind::Columns(cells) => {
+                for block in cells.iter().flatten() {
+                    self.block(block);
+                }
+                return;
+            }
         };
         self.push_block(
             &text,
@@ -391,6 +398,17 @@ mod tests {
                  <p>After</p>"
             ),
             "Check-in\nThu, Dec 4\n\nAfter"
+        );
+    }
+
+    #[test]
+    fn columns_read_one_after_the_other() {
+        assert_eq!(
+            to_markdown(
+                "<table><tr><td><p style='margin:0'>Check-in</p><p style='margin:0'>Thu</p></td>\
+                 <td><p>Checkout</p></td></tr></table><p>After</p>"
+            ),
+            "Check-in\nThu\n\nCheckout\n\nAfter"
         );
     }
 
