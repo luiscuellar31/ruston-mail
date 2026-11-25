@@ -228,6 +228,8 @@ pub enum Message {
     SetShowInlineImages(bool),
     /// Scales the whole interface.
     SetZoom(f32),
+    /// Draws text at one of the sizes Settings offers, apart from the zoom.
+    SetTextScale(f32),
     /// Chooses the desktop color scheme, which stops following the system's.
     SetAppearance(Appearance),
     /// Follows the system's light or dark mode, or the chosen scheme.
@@ -940,6 +942,9 @@ impl App {
                 }
             }
             Message::SetZoom(zoom) => self.remember(|settings| settings.zoom = zoom),
+            Message::SetTextScale(scale) => {
+                self.remember(|settings| settings.text_scale = scale);
+            }
             Message::SetAppearance(appearance) => {
                 self.remember(|settings| {
                     settings.appearance = appearance;

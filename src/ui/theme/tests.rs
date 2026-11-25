@@ -247,6 +247,47 @@ fn small_text_is_drawn_at_footnote_size() {
 }
 
 #[test]
+fn text_is_drawn_at_the_scale_settings_chose_and_back() {
+    let context = egui::Context::default();
+    install(&context);
+    let usual = context.style_of(egui::Theme::Dark).text_styles.clone();
+    let body = || {
+        let mut size = 0.0;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                size = text_size(ui, BODY_SIZE);
+            })
+            .drop_without_applying_deltas();
+        size
+    };
+    assert_eq!(text_scale(&context), 1.0);
+    assert_eq!(body(), BODY_SIZE);
+
+    set_text_scale(&context, 1.5);
+    assert_eq!(text_scale(&context), 1.5);
+    assert_eq!(body(), BODY_SIZE * 1.5);
+    for mode in [egui::Theme::Dark, egui::Theme::Light] {
+        let styles = &context.style_of(mode).text_styles;
+        for (style, font) in &usual {
+            assert_eq!(styles[style].size, font.size * 1.5, "{mode:?} {style:?}");
+        }
+    }
+
+    // Back to the usual size, every style is as before.
+    set_text_scale(&context, 1.0);
+    assert_eq!(body(), BODY_SIZE);
+    for mode in [egui::Theme::Dark, egui::Theme::Light] {
+        assert_eq!(context.style_of(mode).text_styles, usual, "{mode:?}");
+    }
+
+    // Installing the theme again starts from the usual size too.
+    set_text_scale(&context, 1.3);
+    install(&context);
+    assert_eq!(text_scale(&context), 1.0);
+    assert_eq!(context.style_of(egui::Theme::Light).text_styles, usual);
+}
+
+#[test]
 fn text_on_accent_buttons_keeps_adequate_contrast() {
     for fill in [ACCENT, ACCENT_HOVER, ACCENT_PRESSED] {
         let ratio = contrast(ON_ACCENT, fill);
@@ -431,10 +472,47 @@ fn selection_is_limited_to_mail_content() {
 
 #[test]
 fn compact_buttons_keep_a_comfortable_height() {
-    egui::__run_test_ui(|ui| {
-        let button = ui.add(compact_button("More options"));
-        assert!(button.rect.height() >= COMPACT_BUTTON_HEIGHT);
-    });
+    // At every text size, with room around their words as at the usual one.
+    for scale in crate::settings::TEXT_SCALES {
+        let context = egui::Context::default();
+        install(&context);
+        set_text_scale(&context, scale);
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                let button = ui.add(compact_button(ui, "More options"));
+                // egui keeps lengths on a grid of 1/32 pt.
+                assert!(
+                    button.rect.height() >= COMPACT_BUTTON_HEIGHT * scale - 1.0 / 32.0,
+                    "{scale}: {}",
+                    button.rect.height()
+                );
+                assert_eq!(compact_button_height(ui), COMPACT_BUTTON_HEIGHT * scale);
+            })
+            .drop_without_applying_deltas();
+    }
+}
+
+#[test]
+fn icon_buttons_are_as_tall_as_buttons_of_words_at_every_text_size() {
+    for scale in crate::settings::TEXT_SCALES {
+        let context = egui::Context::default();
+        install(&context);
+        set_text_scale(&context, scale);
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.horizontal(|ui| {
+                    let icon = ui.add(IconButton::new(Icon::Archive, "Archive"));
+                    let words = ui.button("Move to…");
+                    if scale <= 1.0 {
+                        assert_eq!(icon.rect.height(), ICON_BUTTON_MIN_SIZE.y, "{scale}");
+                    } else {
+                        assert_eq!(icon.rect.height(), words.rect.height(), "{scale}");
+                    }
+                    assert!(icon.rect.height() >= words.rect.height(), "{scale}");
+                });
+            })
+            .drop_without_applying_deltas();
+    }
 }
 
 #[test]
@@ -447,7 +525,7 @@ fn a_compact_button_keeps_its_size_on_hover() {
             .run_ui(input, |ui| {
                 rect = ui
                     .add(
-                        compact_button("Reply")
+                        compact_button(ui, "Reply")
                             .fill(DARK.accent_soft)
                             .stroke(Stroke::new(1.0, ACCENT)),
                     )

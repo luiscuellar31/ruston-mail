@@ -193,7 +193,11 @@ fn sign_in(
         _ => (SignInStep::Credentials, false),
     };
 
-    ui.heading(egui::RichText::new("Sign in").size(HEADING_SIZE).strong());
+    ui.heading(
+        egui::RichText::new("Sign in")
+            .size(theme::text_size(ui, HEADING_SIZE))
+            .strong(),
+    );
     ui.label(
         egui::RichText::new("Continue to Ruston Mail with your Proton account.")
             .color(theme::colors(ui).muted),
@@ -251,7 +255,7 @@ fn sign_in(
 fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     ui.heading(
         egui::RichText::new("Verify you are human")
-            .size(HEADING_SIZE)
+            .size(theme::text_size(ui, HEADING_SIZE))
             .strong(),
     );
     ui.add_space(12.0);
@@ -559,7 +563,7 @@ fn brand(ui: &mut egui::Ui) {
         );
         ui.label(
             egui::RichText::new("Ruston Mail")
-                .size(theme::APP_NAME_SIZE)
+                .size(theme::text_size(ui, theme::APP_NAME_SIZE))
                 .strong(),
         );
     });
@@ -570,13 +574,13 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
     ui.vertical_centered(|ui| {
         ui.label(
             egui::RichText::new("Not affiliated with Proton")
-                .size(theme::FOOTNOTE_SIZE)
+                .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                 .color(color),
         );
         ui.add(
             egui::AtomLayout::new((
                 egui::RichText::new("Made with")
-                    .size(theme::FOOTNOTE_SIZE)
+                    .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                     .color(color),
                 egui::Image::new(egui::include_image!(
                     "../../assets/icons/bootstrap/heart.svg"
@@ -585,7 +589,7 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
                 .tint(theme::ACCENT)
                 .alt_text("heart"),
                 egui::RichText::new("by Luis Cuellar")
-                    .size(theme::FOOTNOTE_SIZE)
+                    .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                     .color(color),
             ))
             .gap(ui.spacing().item_spacing.x),

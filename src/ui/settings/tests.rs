@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::test_support::{shape_text_rect, text_rect};
+use crate::ui::test_support::{shape_text_rect, text_rect, visible_text_rect};
 
 #[test]
 fn every_shortcut_key_stays_inside_its_section() {
@@ -426,6 +426,7 @@ fn apply_reports_only_preferences_changed_in_the_window() {
 
     draft.confirm_links = false;
     draft.zoom = 1.15;
+    draft.text_scale = 1.3;
     draft.show_unread_badge = false;
     draft.desktop_notifications = false;
     draft.appearance = Appearance::Light;
@@ -440,7 +441,7 @@ fn apply_reports_only_preferences_changed_in_the_window() {
     draft.check_for_updates = true;
     draft.notice_seconds = 8;
     let changes = preference_changes(&current, &draft);
-    assert_eq!(changes.len(), 15);
+    assert_eq!(changes.len(), 16);
     assert!(
         changes
             .iter()
@@ -475,6 +476,11 @@ fn apply_reports_only_preferences_changed_in_the_window() {
         changes
             .iter()
             .any(|message| matches!(message, Message::SetZoom(zoom) if *zoom == 1.15))
+    );
+    assert!(
+        changes
+            .iter()
+            .any(|message| matches!(message, Message::SetTextScale(scale) if *scale == 1.3))
     );
     assert!(
         changes
@@ -541,6 +547,53 @@ fn zoom_steps_move_between_the_offered_levels() {
     // A level from an older file joins the nearest offered one.
     assert_eq!(zoom_step(1.05, ZoomStep::In), 1.15);
     assert_eq!(zoom_step(1.05, ZoomStep::Out), 1.0);
+}
+
+#[test]
+fn the_interface_choices_show_their_whole_text_at_every_text_size() {
+    for scale in TEXT_SCALES {
+        let context = egui::Context::default();
+        theme::install(&context);
+        theme::set_text_scale(&context, scale);
+        // The longest of each choice's labels.
+        let mut settings = Settings::default();
+        settings.notice_seconds = MAX_NOTICE_SECONDS;
+        settings.text_scale = scale;
+        let output = context.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 4000.0),
+                )),
+                ..Default::default()
+            },
+            |ui| {
+                page(
+                    ui,
+                    &mut settings,
+                    &mut Vec::new(),
+                    super::super::notifications::Status::Off,
+                    None,
+                    None,
+                )
+            },
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+
+        for label in [
+            "Interface scale",
+            "Text size",
+            &percent_label(scale),
+            "Where I left off",
+            "10 seconds",
+        ] {
+            assert!(
+                visible_text_rect(&shapes, label).is_some(),
+                "{scale}: {label} is cut short"
+            );
+        }
+    }
 }
 
 #[test]

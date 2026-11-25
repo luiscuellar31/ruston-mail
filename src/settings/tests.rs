@@ -7,6 +7,7 @@ fn settings_survive_a_round_trip() {
         check_recipient_protection: false,
         appearance: Appearance::Light,
         system_font: true,
+        text_scale: 1.3,
         ..Settings::default()
     };
     settings
@@ -16,6 +17,42 @@ fn settings_survive_a_round_trip() {
     let text = serde_json::to_string(&settings).unwrap();
 
     assert_eq!(serde_json::from_str::<Settings>(&text).unwrap(), settings);
+}
+
+#[test]
+fn text_is_only_ever_drawn_at_a_size_settings_offers() {
+    assert_eq!(Settings::default().text_scale, 1.0);
+
+    // Settings saved before this choice existed draw text as they did.
+    let mut old = serde_json::to_value(Settings {
+        text_scale: 1.3,
+        ..Settings::default()
+    })
+    .unwrap();
+    old.as_object_mut().unwrap().remove("text_scale");
+    let restored: Settings = serde_json::from_value(old).unwrap();
+    assert_eq!(restored.text_scale, 1.0);
+
+    // A hand-edited file gets the nearest size offered.
+    let at = |text_scale| {
+        Settings {
+            text_scale,
+            ..Settings::default()
+        }
+        .sanitized()
+        .text_scale
+    };
+    for offered in TEXT_SCALES {
+        assert_eq!(at(offered), offered);
+    }
+    assert_eq!(at(1.2), 1.15);
+    assert_eq!(at(1.25), 1.3);
+    assert_eq!(at(0.0), 0.9);
+    assert_eq!(at(-3.0), 0.9);
+    assert_eq!(at(9.0), 1.5);
+    assert_eq!(at(f32::NAN), 1.0);
+    assert_eq!(at(f32::INFINITY), 1.0);
+    assert_eq!(TEXT_SCALES, [0.9, 1.0, 1.15, 1.3, 1.5]);
 }
 
 #[test]

@@ -155,20 +155,25 @@ fn sidebar_skeleton(ui: &mut egui::Ui) {
     const NAME_WIDTHS: [f32; 4] = [0.42, 0.3, 0.5, 0.36];
     ui.heading(
         egui::RichText::new("Ruston Mail")
-            .size(theme::APP_NAME_SIZE)
+            .size(theme::text_size(ui, theme::APP_NAME_SIZE))
             .strong(),
     );
     ui.add_space(12.0);
     let fill = theme::skeleton_fill(ui);
     let width = ui.available_width();
-    let (button, _) = ui.allocate_exact_size(egui::vec2(width, NEW_MESSAGE_HEIGHT), Sense::hover());
+    let scale = theme::text_scale(ui.ctx());
+    let (button, _) = ui.allocate_exact_size(
+        egui::vec2(width, NEW_MESSAGE_HEIGHT * scale),
+        Sense::hover(),
+    );
     theme::paint_skeleton(ui.painter(), button, fill);
     ui.add_space(12.0);
     for index in 0..MailFolder::ALL.len() {
-        let (row, _) = ui.allocate_exact_size(egui::vec2(width, FOLDER_HEIGHT), Sense::hover());
+        let (row, _) =
+            ui.allocate_exact_size(egui::vec2(width, FOLDER_HEIGHT * scale), Sense::hover());
         let name = egui::Rect::from_min_size(
-            egui::pos2(row.left() + 10.0, row.center().y - 5.0),
-            egui::vec2(width * NAME_WIDTHS[index % NAME_WIDTHS.len()], 10.0),
+            egui::pos2(row.left() + 10.0, row.center().y - 5.0 * scale),
+            egui::vec2(width * NAME_WIDTHS[index % NAME_WIDTHS.len()], 10.0 * scale),
         );
         theme::paint_skeleton(ui.painter(), name, fill);
     }
@@ -355,7 +360,7 @@ fn sidebar(
 fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     ui.heading(
         egui::RichText::new("Ruston Mail")
-            .size(theme::APP_NAME_SIZE)
+            .size(theme::text_size(ui, theme::APP_NAME_SIZE))
             .strong(),
     );
     ui.add_space(12.0);
@@ -419,7 +424,7 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
             email.unwrap_or("Proton Mail account")
         };
         let label = egui::RichText::new(account_label)
-            .size(theme::CAPTION_SIZE)
+            .size(theme::text_size(ui, theme::CAPTION_SIZE))
             .color(theme::colors(ui).muted);
         if app.is_demo_process() || signing_out {
             ui.add(egui::Label::new(label).truncate())
@@ -444,8 +449,10 @@ fn sidebar_account(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
         let sending = app.compose().is_some_and(crate::app::Compose::in_flight);
         let mut logout = ui.add_enabled(
             !signing_out && !sending,
-            egui::Button::new(logout_label)
-                .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT)),
+            egui::Button::new(logout_label).min_size(egui::vec2(
+                ui.available_width(),
+                theme::text_size(ui, ACCOUNT_BUTTON_HEIGHT),
+            )),
         );
         if sending {
             logout = logout.on_disabled_hover_text("Available once the message is sent");
@@ -530,8 +537,10 @@ fn paint_menu_chevron(ui: &egui::Ui, response: &egui::Response) {
 /// A neutral button like the one under it; while Settings is open, the soft
 /// violet of the open folder.
 fn settings_button(ui: &mut egui::Ui, selected: bool) -> egui::Response {
-    let button = egui::Button::new(place_text(ui, "Settings", selected))
-        .min_size(egui::vec2(ui.available_width(), ACCOUNT_BUTTON_HEIGHT));
+    let button = egui::Button::new(place_text(ui, "Settings", selected)).min_size(egui::vec2(
+        ui.available_width(),
+        theme::text_size(ui, ACCOUNT_BUTTON_HEIGHT),
+    ));
     let button = chosen_place(ui, button, selected);
     ui.add(button)
 }
@@ -574,12 +583,12 @@ fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new("New message")
-                .size(theme::BODY_SIZE)
+                .size(theme::text_size(ui, theme::BODY_SIZE))
                 .color(theme::ON_ACCENT)
                 .atom_id(egui::Id::new(NEW_MESSAGE_LABEL_ID)),
             egui::Atom::grow(),
         ))
-        .min_size(egui::vec2(width, NEW_MESSAGE_HEIGHT))
+        .min_size(egui::vec2(width, theme::text_size(ui, NEW_MESSAGE_HEIGHT)))
         .stroke(Stroke::NONE)
         .atom_ui(ui)
     })
@@ -606,7 +615,10 @@ fn folder_button(
     let mut button = egui::Button::new((theme::icon_atom(), name))
         .gap(ui.spacing().icon_spacing + 3.0)
         .wrap_mode(egui::TextWrapMode::Truncate)
-        .min_size(egui::vec2(ui.available_width(), FOLDER_HEIGHT))
+        .min_size(egui::vec2(
+            ui.available_width(),
+            theme::text_size(ui, FOLDER_HEIGHT),
+        ))
         .selected(selected)
         .frame(true)
         .frame_when_inactive(selected);
@@ -715,7 +727,7 @@ fn conversation_pane(
                     egui::Label::new(
                         egui::RichText::new(title)
                             .heading()
-                            .size(theme::LIST_TITLE_SIZE)
+                            .size(theme::text_size(ui, theme::LIST_TITLE_SIZE))
                             .strong(),
                     )
                     .truncate(),
@@ -855,7 +867,7 @@ fn state_message(ui: &mut egui::Ui, text: &str, color: Color32) {
 
 /// Asks again for what failed: the folder, its next page, or the search.
 fn try_again(ui: &mut egui::Ui, attempt: ListAttempt, messages: &mut Vec<Message>) {
-    if ui.add(theme::compact_button("Try again")).clicked() {
+    if ui.add(theme::compact_button(ui, "Try again")).clicked() {
         messages.push(match attempt {
             ListAttempt::Folder => Message::RefreshMailbox,
             ListAttempt::More => Message::LoadMoreConversations,
@@ -993,7 +1005,7 @@ fn notice_content(
             // The move back waits while the list loads or loads more.
             let ready = mailbox.takes_actions();
             if ui
-                .add_enabled(ready, theme::compact_button("Undo"))
+                .add_enabled(ready, theme::compact_button(ui, "Undo"))
                 .clicked()
             {
                 messages.push(Message::UndoMove);
@@ -1012,7 +1024,7 @@ fn notice_content(
                 |name| name.to_string_lossy().into_owned(),
             );
             notice_words(ui, format!("Saved {name}.")).on_hover_text(path.display().to_string());
-            if ui.add(theme::compact_button(REVEAL_LABEL)).clicked() {
+            if ui.add(theme::compact_button(ui, REVEAL_LABEL)).clicked() {
                 messages.push(Message::RevealAttachment(path.clone()));
             }
         }
@@ -1039,7 +1051,7 @@ fn notice_words(ui: &mut egui::Ui, words: impl Into<egui::WidgetText>) -> egui::
     // A wrapping row starts shorter than the button, and would center a
     // label's first line on that shorter height.
     if one_line {
-        ui.set_row_height(theme::COMPACT_BUTTON_HEIGHT);
+        ui.set_row_height(theme::compact_button_height(ui));
     }
     let response = ui.label(words);
     if !one_line {
@@ -1076,12 +1088,10 @@ const FOLDER_HEIGHT: f32 = 31.0;
 const NEW_MESSAGE_HEIGHT: f32 = 34.0;
 /// How far each folder a subfolder sits in moves it right.
 const SUBFOLDER_INDENT: f32 = 14.0;
-/// Virtualized rows must draw at this height to stay aligned with scrolling.
+/// Virtualized rows must draw at this height, times the scale text is drawn
+/// at, to stay aligned with scrolling.
 const ROW_HEIGHT: f32 = 60.0;
 const ROW_GAP: f32 = 10.0;
-/// From one row's top to the next one's: the step the virtualized list
-/// places and scrolls its rows by.
-const ROW_PITCH: f32 = ROW_HEIGHT + ROW_GAP;
 const ROW_HORIZONTAL_PADDING: f32 = 18.0;
 /// Room at a row's right for its time and marks; its text ends before it.
 const ROW_META_WIDTH: f32 = 70.0;
@@ -1090,6 +1100,17 @@ const ROW_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
 /// The width of the search field's outline, inside its padding.
 const SEARCH_OUTLINE: i8 = 1;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
+
+/// A row's height when text is drawn at `scale`.
+fn row_height(scale: f32) -> f32 {
+    ROW_HEIGHT * scale
+}
+
+/// From one row's top to the next one's when text is drawn at `scale`: the
+/// step the virtualized list places and scrolls its rows by.
+fn row_pitch(scale: f32) -> f32 {
+    row_height(scale) + ROW_GAP
+}
 
 struct RowAnchor {
     id: String,
@@ -1105,6 +1126,8 @@ pub(super) struct ConversationScroll {
     search_query: String,
     shown_search_query: Option<String>,
     offset: f32,
+    /// The step between rows the offset was taken at.
+    pitch: f32,
     anchors: [Option<RowAnchor>; 2],
 }
 
@@ -1113,10 +1136,11 @@ impl ConversationScroll {
         mailbox: &Mailbox,
         scroll_id: egui::Id,
         offset: f32,
+        pitch: f32,
         previous: Option<&Self>,
     ) -> Self {
         let previous = previous.filter(|saved| saved.same_view(mailbox, scroll_id));
-        let first = (offset / ROW_PITCH).floor() as usize;
+        let first = (offset / pitch).floor() as usize;
         let first = first.min(mailbox.visible_count().saturating_sub(1));
         Self {
             scroll_id,
@@ -1124,6 +1148,7 @@ impl ConversationScroll {
             search_query: mailbox.search_query().to_owned(),
             shown_search_query: mailbox.shown_search_query().map(str::to_owned),
             offset,
+            pitch,
             anchors: std::array::from_fn(|extra| {
                 let index = first + extra;
                 let row = mailbox.visible_row(index)?;
@@ -1168,7 +1193,7 @@ impl ConversationScroll {
         }
         self.anchors.iter().flatten().find_map(|anchor| {
             let index = mailbox.visible_anchor_index(&anchor.id, anchor.conversation.as_deref())?;
-            let delta = (index as f32 - anchor.index as f32) * ROW_PITCH;
+            let delta = (index as f32 - anchor.index as f32) * self.pitch;
             Some((self.offset + delta).max(0.0))
         })
     }
@@ -1221,7 +1246,8 @@ fn conversation_list(
                 }
             }
 
-            let output = scroll.show_rows(ui, ROW_HEIGHT, total, |ui, range| {
+            let scale = theme::text_scale(ui.ctx());
+            let output = scroll.show_rows(ui, row_height(scale), total, |ui, range| {
                 if let Some(index) = reveal {
                     scroll_row_into_view(ui, range.start, index);
                 }
@@ -1239,6 +1265,7 @@ fn conversation_list(
                 mailbox,
                 output.id,
                 output.state.offset.y,
+                row_pitch(scale),
                 state.conversation_scroll.as_ref(),
             ));
             if reveal.is_some() {
@@ -1252,10 +1279,14 @@ fn conversation_list(
 /// list does: not at all while the row is in view. `first` is the row that
 /// `show_rows` draws at the top of `ui`.
 fn scroll_row_into_view(ui: &mut egui::Ui, first: usize, index: usize) {
-    let content_top = ui.max_rect().top() - first as f32 * ROW_PITCH;
+    let scale = theme::text_scale(ui.ctx());
+    let content_top = ui.max_rect().top() - first as f32 * row_pitch(scale);
     let row_rect = egui::Rect::from_min_size(
-        egui::pos2(ui.max_rect().left(), content_top + index as f32 * ROW_PITCH),
-        egui::vec2(ui.available_width(), ROW_HEIGHT),
+        egui::pos2(
+            ui.max_rect().left(),
+            content_top + index as f32 * row_pitch(scale),
+        ),
+        egui::vec2(ui.available_width(), row_height(scale)),
     );
     ui.scroll_to_rect(row_rect, None);
 }
@@ -1347,13 +1378,14 @@ struct RowLines {
     meta_right: f32,
 }
 
-fn row_lines(rect: egui::Rect) -> RowLines {
+/// The lines of a row drawn in `rect`, with text drawn at `scale`.
+fn row_lines(rect: egui::Rect, scale: f32) -> RowLines {
     let meta_right = rect.right() - ROW_HORIZONTAL_PADDING;
     RowLines {
-        sender_y: rect.center().y - ROW_LINE_CENTER_OFFSET,
-        subject_y: rect.center().y + ROW_LINE_CENTER_OFFSET,
+        sender_y: rect.center().y - ROW_LINE_CENTER_OFFSET * scale,
+        subject_y: rect.center().y + ROW_LINE_CENTER_OFFSET * scale,
         text_left: rect.left() + ROW_HORIZONTAL_PADDING,
-        text_right: meta_right - ROW_META_WIDTH,
+        text_right: meta_right - ROW_META_WIDTH * scale,
         meta_right,
     }
 }
@@ -1379,7 +1411,9 @@ fn conversation_row(
         Color32::TRANSPARENT
     };
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::click());
+    let scale = theme::text_scale(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, row_height(scale)), Sense::click());
     let hovered_fill = if response.hovered() && !selected {
         theme::colors(ui).row_hover
     } else {
@@ -1393,7 +1427,7 @@ fn conversation_row(
         egui::StrokeKind::Inside,
     );
 
-    let lines = row_lines(rect);
+    let lines = row_lines(rect, scale);
 
     if conversation.unread {
         // On the sender line: at the row's centre it reads as belonging to
@@ -1413,7 +1447,7 @@ fn conversation_row(
         egui::pos2(lines.text_left, lines.sender_y),
         Align2::LEFT_CENTER,
         correspondents,
-        FontId::proportional(theme::ROW_TEXT_SIZE),
+        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
         sender_color,
         text_width,
     );
@@ -1422,12 +1456,12 @@ fn conversation_row(
         egui::pos2(lines.text_left, lines.subject_y),
         Align2::LEFT_CENTER,
         subject,
-        FontId::proportional(theme::ROW_TEXT_SIZE),
+        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
         subject_color,
         text_width,
     );
 
-    let meta_font = FontId::proportional(theme::FOOTNOTE_SIZE);
+    let meta_font = FontId::proportional(theme::FOOTNOTE_SIZE * scale);
     painter.text(
         egui::pos2(lines.meta_right, lines.sender_y),
         Align2::RIGHT_CENTER,
@@ -1505,7 +1539,8 @@ fn row_description(
 fn conversation_skeleton(ui: &mut egui::Ui) {
     let fill = theme::skeleton_fill(ui);
     let available = ui.available_height();
-    let rows = (((available + ROW_GAP) / ROW_PITCH).floor() as usize).clamp(1, 12);
+    let pitch = row_pitch(theme::text_scale(ui.ctx()));
+    let rows = (((available + ROW_GAP) / pitch).floor() as usize).clamp(1, 12);
     let response = ui
         .scope(|ui| {
             ui.spacing_mut().item_spacing.y = ROW_GAP;
@@ -1540,9 +1575,11 @@ fn skeleton_conversation_row(ui: &mut egui::Ui, index: usize, fill: Color32) -> 
     const SUBJECT_WIDTHS: [f32; 4] = [0.44, 0.66, 0.52, 0.36];
 
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(width, ROW_HEIGHT), Sense::hover());
+    let scale = theme::text_scale(ui.ctx());
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(width, row_height(scale)), Sense::hover());
     let painter = ui.painter_at(rect);
-    let lines = row_lines(rect);
+    let lines = row_lines(rect, scale);
     let text_width = (lines.text_right - lines.text_left).max(24.0);
     let bar = |center_y: f32, width: f32, height: f32| {
         theme::paint_skeleton(
@@ -1557,18 +1594,18 @@ fn skeleton_conversation_row(ui: &mut egui::Ui, index: usize, fill: Color32) -> 
     bar(
         lines.sender_y,
         text_width * SENDER_WIDTHS[index % SENDER_WIDTHS.len()],
-        11.0,
+        11.0 * scale,
     );
     bar(
         lines.subject_y,
         text_width * SUBJECT_WIDTHS[index % SUBJECT_WIDTHS.len()],
-        9.0,
+        9.0 * scale,
     );
     theme::paint_skeleton(
         &painter,
         egui::Rect::from_center_size(
-            egui::pos2(lines.meta_right - 18.0, lines.sender_y),
-            egui::vec2(36.0, 8.0),
+            egui::pos2(lines.meta_right - 18.0 * scale, lines.sender_y),
+            egui::vec2(36.0 * scale, 8.0 * scale),
         ),
         fill,
     );

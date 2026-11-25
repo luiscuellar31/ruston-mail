@@ -498,6 +498,9 @@ Settings control:
 - Dark or light appearance, or on macOS and Windows the system's. Dark remains
   the default.
 - Interface scale.
+- Text size, apart from the interface scale: from 90% to 150%, 100% by
+  default. Rows and buttons grow or shrink with the text; icons, spacing and
+  panes keep their size.
 - How long notices at the foot of the window, such as **Message sent**, stay:
   from 3 to 10 seconds, 5 by default.
 - Optional system interface font, with Ruston's fonts retained as fallback.

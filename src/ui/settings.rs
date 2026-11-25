@@ -7,6 +7,7 @@ use crate::app::{Message, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{
     Appearance, ComposePlacement, MAX_NOTICE_SECONDS, MIN_NOTICE_SECONDS, Settings, StartFolder,
+    TEXT_SCALES,
 };
 
 /// Settings, with Apply and Back to mail at their foot. Returns where the
@@ -101,7 +102,7 @@ fn page(
 ) {
     ui.heading(
         egui::RichText::new("Settings")
-            .size(theme::PAGE_TITLE_SIZE)
+            .size(theme::text_size(ui, theme::PAGE_TITLE_SIZE))
             .strong(),
     );
     ui.add_space(18.0);
@@ -288,17 +289,36 @@ fn interface(
         ));
         description(ui, "Keeps text sizes. Uses Ruston's font if unavailable.");
         ui.add_space(8.0);
+        let label = ui.label("Interface scale");
         egui::ComboBox::from_id_salt("interface-scale")
-            .selected_text(zoom_label(settings.zoom))
+            .selected_text(percent_label(settings.zoom))
             .width(100.0)
             .show_ui(ui, |ui| {
                 for step in ZOOM_STEPS {
-                    ui.selectable_value(&mut settings.zoom, step, zoom_label(step));
+                    ui.selectable_value(&mut settings.zoom, step, percent_label(step));
                 }
-            });
+            })
+            .response
+            .labelled_by(label.id);
         description(
             ui,
             "Scales everything, not the text alone, so the window keeps its proportions.",
+        );
+        ui.add_space(8.0);
+        let label = ui.label("Text size");
+        egui::ComboBox::from_id_salt("text-size")
+            .selected_text(percent_label(settings.text_scale))
+            .width(100.0)
+            .show_ui(ui, |ui| {
+                for scale in TEXT_SCALES {
+                    ui.selectable_value(&mut settings.text_scale, scale, percent_label(scale));
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        description(
+            ui,
+            "Makes the text alone larger or smaller. Rows and buttons grow or shrink with it.",
         );
         ui.add_space(8.0);
         if let Some((label, what_it_does)) = UNREAD_BADGE {
@@ -464,7 +484,7 @@ fn about(
             ui.vertical(|ui| {
                 ui.label(
                     egui::RichText::new(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION")))
-                        .size(theme::ABOUT_TITLE_SIZE)
+                        .size(theme::text_size(ui, theme::ABOUT_TITLE_SIZE))
                         .strong(),
                 );
                 description(ui, "A native Proton Mail client.");
@@ -495,12 +515,12 @@ fn about(
         );
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.add(theme::compact_button("Source code")).clicked() {
+            if ui.add(theme::compact_button(ui, "Source code")).clicked() {
                 messages.push(Message::OpenSourceCode);
             }
             if third_party_notices.is_some()
                 && ui
-                    .add(theme::compact_button("Third-party notices"))
+                    .add(theme::compact_button(ui, "Third-party notices"))
                     .clicked()
             {
                 messages.push(Message::OpenThirdPartyNotices);
@@ -539,7 +559,7 @@ fn update_found(ui: &mut egui::Ui, status: UpdateStatus, messages: &mut Vec<Mess
 /// Opens a newer release's page, where it is downloaded from.
 pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
     if ui
-        .add(theme::compact_button("Download"))
+        .add(theme::compact_button(ui, "Download"))
         .on_hover_text("Opens the release page in your browser.")
         .clicked()
     {
@@ -598,6 +618,9 @@ pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Me
     if (draft.zoom - current.zoom).abs() > f32::EPSILON {
         messages.push(Message::SetZoom(draft.zoom));
     }
+    if (draft.text_scale - current.text_scale).abs() > f32::EPSILON {
+        messages.push(Message::SetTextScale(draft.text_scale));
+    }
     let scheme_changed = draft.appearance != current.appearance;
     if scheme_changed || (current.follow_system_appearance && !draft.follow_system_appearance) {
         messages.push(Message::SetAppearance(draft.appearance));
@@ -633,8 +656,8 @@ fn start_label(start: StartFolder) -> &'static str {
     }
 }
 
-fn zoom_label(zoom: f32) -> String {
-    format!("{:.0}%", zoom * 100.0)
+fn percent_label(share: f32) -> String {
+    format!("{:.0}%", share * 100.0)
 }
 
 fn seconds_label(seconds: u64) -> String {
@@ -727,17 +750,17 @@ fn shortcut(ui: &mut egui::Ui, keys: &str, what: &str, keys_width: f32) {
             egui::vec2(keys_width, 0.0),
             Layout::right_to_left(Align::TOP),
             |ui| {
-                ui.add(egui::Label::new(key_text(keys)));
+                ui.add(egui::Label::new(key_text(ui, keys)));
             },
         );
         ui.vertical(|ui| description(ui, what));
     });
 }
 
-fn key_text(keys: &str) -> egui::RichText {
+fn key_text(ui: &egui::Ui, keys: &str) -> egui::RichText {
     egui::RichText::new(keys)
         .monospace()
-        .size(theme::CAPTION_SIZE)
+        .size(theme::text_size(ui, theme::CAPTION_SIZE))
 }
 
 /// The width of the keys column: its widest key, or more. A key wider than
@@ -747,7 +770,7 @@ fn keys_width(ui: &egui::Ui) -> f32 {
     SHORTCUTS
         .iter()
         .map(|(keys, _)| {
-            egui::WidgetText::from(key_text(keys))
+            egui::WidgetText::from(key_text(ui, keys))
                 .into_galley(
                     ui,
                     Some(egui::TextWrapMode::Extend),
@@ -773,7 +796,7 @@ fn section(ui: &mut egui::Ui, title: &str, content: impl FnOnce(&mut egui::Ui)) 
             ui.set_width(ui.available_width());
             ui.heading(
                 egui::RichText::new(title)
-                    .size(theme::SECTION_TITLE_SIZE)
+                    .size(theme::text_size(ui, theme::SECTION_TITLE_SIZE))
                     .strong(),
             );
             ui.add_space(4.0);

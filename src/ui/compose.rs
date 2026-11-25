@@ -44,7 +44,7 @@ fn drop_hint(ui: &egui::Ui, rect: egui::Rect) {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "Drop files to attach",
-        egui::FontId::proportional(18.0),
+        egui::FontId::proportional(theme::text_size(ui, 18.0)),
         ui.visuals().strong_text_color(),
     );
 }
@@ -225,7 +225,7 @@ fn title_and_actions(
     ui.horizontal_wrapped(|ui| {
         ui.heading(
             egui::RichText::new(heading(compose))
-                .size(theme::PAGE_TITLE_SIZE)
+                .size(theme::text_size(ui, theme::PAGE_TITLE_SIZE))
                 .strong(),
         );
         ui.with_layout(
@@ -319,7 +319,7 @@ fn recipient_fields(
         "More options"
     };
     if ui
-        .add_enabled(!leaving, theme::compact_button(more))
+        .add_enabled(!leaving, theme::compact_button(ui, more))
         .clicked()
     {
         messages.push(Message::ToggleComposeCopies);
@@ -348,7 +348,7 @@ fn attachment_list(
                 egui::RichText::new(format!("📎 {name}{size}")).color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .add_enabled(!leaving, theme::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::RemoveComposeAttachment(index));
@@ -377,7 +377,7 @@ fn forwarded_list(
                 .color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .add_enabled(!leaving, theme::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::LeaveOutForwarded(file.id.clone()));
@@ -403,7 +403,10 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
             .id(body_id(compose.id()))
             .hint_text("Write your message…")
             // What is written reads at the size it will be read at.
-            .font(egui::FontId::proportional(theme::BODY_SIZE))
+            .font(egui::FontId::proportional(theme::text_size(
+                ui,
+                theme::BODY_SIZE,
+            )))
             .frame(theme::field_frame(ui))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
@@ -447,7 +450,10 @@ pub(super) fn folded_strip(ui: &mut egui::Ui, compose: &Compose, messages: &mut 
     theme::card(ui).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::compact_button("Continue writing")).clicked() {
+                if ui
+                    .add(theme::compact_button(ui, "Continue writing"))
+                    .clicked()
+                {
                     messages.push(Message::ContinueWriting);
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {

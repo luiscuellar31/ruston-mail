@@ -26,6 +26,10 @@ pub const MIN_WINDOW_SIZE: [f32; 2] = [480.0, 420.0];
 /// what a window can still show something useful at.
 pub const MIN_ZOOM: f32 = 0.8;
 pub const MAX_ZOOM: f32 = 2.0;
+/// The text sizes Settings offers, as shares of the usual one. Only these
+/// are ever drawn, the layout having been made to hold each: a hand-edited
+/// file gets the nearest.
+pub const TEXT_SCALES: [f32; 5] = [0.9, 1.0, 1.15, 1.3, 1.5];
 /// How many seconds a notice at the foot of the window may stay: long enough
 /// to reach its button, short enough not to cover the list for long.
 pub const MIN_NOTICE_SECONDS: u64 = 3;
@@ -101,6 +105,12 @@ pub struct Settings {
     /// How much to scale the interface by. Every length is a multiple of it,
     /// so the whole window grows together rather than the text alone.
     pub zoom: f32,
+    /// How large text is drawn, apart from the zoom: one of [`TEXT_SCALES`].
+    /// Rows and other lengths made to hold text grow with it; the rest of the
+    /// window keeps its size. Settings saved before this choice existed have
+    /// the usual size.
+    #[serde(default = "default_text_scale")]
+    pub text_scale: f32,
     /// Show the unread inbox count on the macOS Dock icon or the Windows
     /// taskbar button.
     pub show_unread_badge: bool,
@@ -157,6 +167,7 @@ impl Default for Settings {
             follow_system_appearance: false,
             system_font: false,
             zoom: 1.0,
+            text_scale: default_text_scale(),
             show_unread_badge: true,
             desktop_notifications: true,
             notice_seconds: default_notice_seconds(),
@@ -334,6 +345,7 @@ impl Settings {
         } else {
             defaults.zoom
         };
+        self.text_scale = nearest_text_scale(self.text_scale);
         self.notice_seconds = self
             .notice_seconds
             .clamp(MIN_NOTICE_SECONDS, MAX_NOTICE_SECONDS);
@@ -363,6 +375,22 @@ fn enabled() -> bool {
 
 fn default_notice_seconds() -> u64 {
     5
+}
+
+fn default_text_scale() -> f32 {
+    1.0
+}
+
+/// The text size offered nearest to `scale`, or the usual one for a value
+/// that is not a number.
+fn nearest_text_scale(scale: f32) -> f32 {
+    if !scale.is_finite() {
+        return default_text_scale();
+    }
+    TEXT_SCALES
+        .into_iter()
+        .min_by(|a, b| (a - scale).abs().total_cmp(&(b - scale).abs()))
+        .unwrap_or_else(default_text_scale)
 }
 
 fn clamp_ratio(value: f32, fallback: f32) -> f32 {

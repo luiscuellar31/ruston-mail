@@ -455,6 +455,19 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   change announced while the window keeps focus shows until then. The shell
   stores the preference for the next run and applies
   [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
+  The text size is `Settings::text_scale`, one of `TEXT_SCALES`; a loaded
+  value takes the nearest, so text is only drawn at sizes the layout was made
+  for. The shell hands it to `theme::set_text_scale` on every pass, which
+  scales egui's own text styles and keeps the scale for `theme::text_scale`
+  and `theme::text_size`. Every size of the type scale goes through them, and
+  so does every length made to hold text: a conversation row's height, the
+  step the virtualized list places and scrolls rows by, its time column, the
+  sidebar's rows, compact buttons, and the lines of a message header with the
+  signature mark that stands in them. An icon button is as tall as a button
+  of words, so a toolbar keeps one height. Other icons, padding, panes and
+  corner radii keep their size, which only the zoom changes. The reader stamps
+  remembered block heights with the body text's height, so a new size lays
+  the blocks out again.
   Bundled typography stays primary by default. The optional system UI face is
   San Francisco/Helvetica Neue on macOS, Segoe UI/Arial on Windows, or
   Fontconfig's sans-serif family on Linux (with known local alternatives).

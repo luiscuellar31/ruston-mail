@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use crate::settings::Appearance;
@@ -13,7 +14,8 @@ pub const ACCENT_PRESSED: Color32 = Color32::from_rgb(86, 69, 198);
 pub const ON_ACCENT: Color32 = Color32::WHITE;
 pub const PANEL_PADDING: i8 = 16;
 // Text sizes come from one scale, 11, 13, 14, 15, 17, 21 and 28 points, and
-// corner radii from another, 4, 8, 12 and 20.
+// corner radii from another, 4, 8, 12 and 20. Text is drawn at these sizes
+// times the text scale Settings chose: see `text_size`.
 pub const FOOTNOTE_SIZE: f32 = 11.0;
 /// Text in a conversation row and a message header: names, subjects and
 /// previews.
@@ -43,7 +45,8 @@ pub const ICON_BUTTON_MIN_SIZE: egui::Vec2 = egui::Vec2::new(32.0, 28.0);
 const SKELETON_PERIOD_SECONDS: f64 = 1.6;
 /// How long a looping animation waits before asking for its next frame.
 const ANIMATION_FRAME: Duration = Duration::from_millis(50);
-/// The height of [`compact_button`], which a line of words beside one takes.
+/// The height of [`compact_button`] at the usual text size: see
+/// [`compact_button_height`].
 pub const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const DIALOG_BUTTON_HEIGHT: f32 = 32.0;
 const ICON_SIZE: f32 = 16.0;
@@ -251,7 +254,7 @@ impl Widget for IconButton<'_> {
     fn ui(self, ui: &mut egui::Ui) -> Response {
         let mut button = egui::Button::new(icon_atom())
             .small()
-            .min_size(ICON_BUTTON_MIN_SIZE);
+            .min_size(icon_button_size(ui));
         if let Some(selected) = self.selected {
             button = button.selected(selected);
         }
@@ -276,6 +279,19 @@ impl Widget for IconButton<'_> {
         });
         response.on_hover_text(self.label)
     }
+}
+
+/// An icon button's size: as tall as a button of words, which grows with the
+/// text, so a row of both keeps one height, and never under its usual size.
+fn icon_button_size(ui: &egui::Ui) -> egui::Vec2 {
+    // Measured as a button lays its words out, rounded to the same pixels.
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let line = ui
+        .fonts_mut(|fonts| fonts.layout_no_wrap("M".into(), font, Color32::PLACEHOLDER))
+        .size()
+        .y;
+    let words = line + 2.0 * ui.spacing().button_padding.y;
+    egui::vec2(ICON_BUTTON_MIN_SIZE.x, ICON_BUTTON_MIN_SIZE.y.max(words))
 }
 
 /// An icon button that opens a menu: drawn, sized and announced like the
@@ -449,10 +465,16 @@ pub fn field_frame(ui: &egui::Ui) -> egui::Frame {
 }
 
 /// A compact button that remains easy to click.
-pub fn compact_button<'a>(atoms: impl egui::IntoAtoms<'a>) -> egui::Button<'a> {
+pub fn compact_button<'a>(ui: &egui::Ui, atoms: impl egui::IntoAtoms<'a>) -> egui::Button<'a> {
     egui::Button::new(atoms)
         .small()
-        .min_size(egui::vec2(0.0, COMPACT_BUTTON_HEIGHT))
+        .min_size(egui::vec2(0.0, compact_button_height(ui)))
+}
+
+/// The height of [`compact_button`] at the scale text is drawn at, which a
+/// line of words beside one takes.
+pub fn compact_button_height(ui: &egui::Ui) -> f32 {
+    text_size(ui, COMPACT_BUTTON_HEIGHT)
 }
 
 /// How much a button asks to be pressed.
@@ -618,11 +640,7 @@ pub fn install(context: &egui::Context) {
         style.visuals.widgets.hovered.corner_radius = widget_corners;
         style.visuals.widgets.active.corner_radius = widget_corners;
         style.visuals.widgets.open.corner_radius = widget_corners;
-        // egui's 9 pt is too small for the notices and details drawn with it.
-        style.text_styles.insert(
-            egui::TextStyle::Small,
-            egui::FontId::proportional(FOOTNOTE_SIZE),
-        );
+        style.text_styles = text_styles(1.0);
         style.spacing.item_spacing = egui::vec2(8.0, 8.0);
         style.spacing.button_padding = egui::vec2(10.0, 6.0);
         // Solid scrollbars reserve space instead of covering content.
@@ -632,10 +650,54 @@ pub fn install(context: &egui::Context) {
         style.interaction.selectable_labels = false;
         context.set_style_of(mode, style);
     }
+    context.data_mut(|data| data.remove::<f32>(Id::new(TEXT_SCALE)));
     context.set_theme(egui::Theme::Dark);
     // The zoom is a setting, which the app reapplies every pass; egui's own
     // keys would draw one frame at another scale and snap back.
     context.options_mut(|options| options.zoom_with_keyboard = false);
+}
+
+/// Where [`set_text_scale`] keeps the scale text is drawn at.
+const TEXT_SCALE: &str = "ruston-text-scale";
+
+/// The share of the sizes above that text is drawn at: 1 unless Settings
+/// asks for larger or smaller text. A length made to hold text, such as a
+/// row's height or the step from one line of a header to the next, is drawn
+/// at it too; every other length keeps its size, which only the zoom changes.
+pub fn text_scale(context: &egui::Context) -> f32 {
+    context
+        .data(|data| data.get_temp::<f32>(Id::new(TEXT_SCALE)))
+        .unwrap_or(1.0)
+}
+
+/// `size`, one of the sizes above or a length made to hold text, at the
+/// scale text is drawn at.
+pub fn text_size(ui: &egui::Ui, size: f32) -> f32 {
+    size * text_scale(ui.ctx())
+}
+
+/// Draws text at `scale` times the sizes above: egui's own text styles,
+/// which its widgets read, and every size [`text_size`] gives.
+pub fn set_text_scale(context: &egui::Context, scale: f32) {
+    if (text_scale(context) - scale).abs() <= f32::EPSILON {
+        return;
+    }
+    context.all_styles_mut(|style| style.text_styles = text_styles(scale));
+    context.data_mut(|data| data.insert_temp(Id::new(TEXT_SCALE), scale));
+}
+
+/// egui's text styles at `scale`: its own sizes, but for small text, whose
+/// 9 pt is too small for the notices and details drawn with it.
+fn text_styles(scale: f32) -> BTreeMap<egui::TextStyle, egui::FontId> {
+    let mut styles = egui::style::default_text_styles();
+    styles.insert(
+        egui::TextStyle::Small,
+        egui::FontId::proportional(FOOTNOTE_SIZE),
+    );
+    for font in styles.values_mut() {
+        font.size *= scale;
+    }
+    styles
 }
 
 /// Draws in `appearance`.

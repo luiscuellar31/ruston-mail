@@ -1184,6 +1184,7 @@ impl eframe::App for DesktopApp {
         theme::reduce_motion(context, system_reduces_motion());
         self.root_title_bar.keep(context);
         self.apply_zoom(context);
+        theme::set_text_scale(context, self.app.settings().text_scale);
         fonts::apply(
             context,
             fonts::Typeface::chosen(self.app.settings().system_font),
@@ -1447,7 +1448,7 @@ fn status_view(root: &mut egui::Ui, message: &str) {
         theme::centered_group(ui, |ui| {
             ui.heading(
                 egui::RichText::new("Ruston Mail")
-                    .size(theme::DISPLAY_SIZE)
+                    .size(theme::text_size(ui, theme::DISPLAY_SIZE))
                     .strong(),
             );
             ui.add_space(16.0);
@@ -1503,7 +1504,7 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
 fn version_label(ui: &mut egui::Ui) -> egui::Response {
     ui.label(
         egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-            .size(theme::FOOTNOTE_SIZE)
+            .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
             .color(theme::colors(ui).muted),
     )
 }

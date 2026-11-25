@@ -1152,7 +1152,7 @@ fn interleaved_pages_and_refreshes_keep_the_first_visible_row_in_place() {
             .insert(0, pagination_row("overlap", 1001));
         mailbox.finish_page(request.id, Ok(page));
         let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
-        assert_eq!(after.offset, before.offset + ROW_PITCH);
+        assert_eq!(after.offset, before.offset + row_pitch(1.0));
         assert_eq!(after.subjects["p44"], before.subjects["p44"]);
         assert_eq!(mailbox.selected_conversation(), Some("p40"));
     }
@@ -1297,7 +1297,7 @@ fn repeated_refresh_and_reinspection_keep_top_middle_and_bottom_without_duplicat
         let id = format!("p{parent}");
         mailbox.split_conversation(&Folder::INBOX, &id, inspected_page_members(parent));
         let (context, mut state, _) = pagination_view(&mailbox);
-        set_list_offset(&context, &state, parent as f32 * ROW_PITCH);
+        set_list_offset(&context, &state, parent as f32 * row_pitch(1.0));
         let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
         for request in 20..24 {
             let refresh = mailbox.refresh(request).unwrap();
@@ -1334,7 +1334,7 @@ fn changed_group_retains_the_original_message_anchor_until_reinspection() {
     let mut mailbox = pagination_mailbox(false);
     mailbox.split_conversation(&Folder::INBOX, "p20", inspected_page_members(20));
     let (context, mut state, _) = pagination_view(&mailbox);
-    set_list_offset(&context, &state, 21.0 * ROW_PITCH);
+    set_list_offset(&context, &state, 21.0 * row_pitch(1.0));
     let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
     let refresh = mailbox.refresh(20).unwrap();
     let mut page = pagination_page(0, 50, 120);
@@ -2403,19 +2403,25 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
         message_count: 3,
         has_attachments: true,
     };
-    let context = egui::Context::default();
     let now = ZonedDateTime::now();
-    let mut height = 0.0;
-    context
-        .run_ui(egui::RawInput::default(), |ui| {
-            ui.set_width(320.0);
-            height = conversation_row(ui, &conversation, true, &now)
-                .rect
-                .height();
-        })
-        .drop_without_applying_deltas();
+    // At every text size, since the row grows with its text.
+    for scale in crate::settings::TEXT_SCALES {
+        let context = egui::Context::default();
+        theme::install(&context);
+        theme::set_text_scale(&context, scale);
+        let mut height = 0.0;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(320.0);
+                height = conversation_row(ui, &conversation, true, &now)
+                    .rect
+                    .height();
+            })
+            .drop_without_applying_deltas();
 
-    assert_eq!(height, ROW_HEIGHT);
+        assert_eq!(height, row_height(scale), "{scale}");
+    }
+    assert_eq!(row_height(1.0), ROW_HEIGHT);
 }
 
 #[test]
@@ -2424,13 +2430,20 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
     let now = ZonedDateTime::now();
     // A full date, and the longest word the time column shows.
     let yesterday = now.timestamp().as_second() - 86_400;
-    for timestamp in [1_700_000_000, yesterday] {
+    // At every text size, the lines keep apart and inside the row.
+    for (timestamp, scale) in [1_700_000_000, yesterday]
+        .into_iter()
+        .flat_map(|timestamp| crate::settings::TEXT_SCALES.map(|scale| (timestamp, scale)))
+    {
         let mut conversation = pagination_row("A subject", timestamp);
         conversation.correspondents = Some(name.into());
         let context = egui::Context::default();
+        theme::install(&context);
+        theme::set_text_scale(&context, scale);
+        let mut row = egui::Rect::NOTHING;
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(320.0);
-            conversation_row(ui, &conversation, false, &now);
+            row = conversation_row(ui, &conversation, false, &now).rect;
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -2439,13 +2452,17 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
         let subject = visible_text_rect(&shapes, "A subject").expect("the subject line");
         let time = visible_text_rect(&shapes, &format_time(timestamp, &now)).expect("the time");
         assert!(
-            sender.center().y < subject.center().y,
-            "{sender:?} {subject:?}"
+            sender.bottom() <= subject.top(),
+            "{scale}: {sender:?} {subject:?}"
+        );
+        assert!(
+            row.top() <= sender.top() && subject.bottom() <= row.bottom(),
+            "{scale}: {sender:?} {subject:?} outside {row:?}"
         );
         assert_eq!(sender.left(), subject.left());
         assert!(
             sender.right() <= time.left(),
-            "{sender:?} runs into {time:?}"
+            "{scale}: {sender:?} runs into {time:?}"
         );
     }
 }

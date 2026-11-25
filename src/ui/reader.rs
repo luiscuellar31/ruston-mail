@@ -26,7 +26,6 @@ const MAX_QUOTE_DEPTH: u8 = 4;
 /// nested list cannot push its text out of the column.
 const MAX_LIST_DEPTH: u8 = 8;
 const READING_WIDTH: f32 = 680.0;
-const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
 const SIGNATURE_ICON_SIZE: f32 = 13.0;
 const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
@@ -136,7 +135,7 @@ fn rows_chosen(
         ui.add(
             egui::Label::new(
                 egui::RichText::new(format!("{} conversations selected", rows.len()))
-                    .size(SUBJECT_SIZE)
+                    .size(theme::text_size(ui, SUBJECT_SIZE))
                     .strong(),
             )
             .wrap(),
@@ -235,7 +234,7 @@ fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut U
                     skeleton_label(
                         ui,
                         egui::RichText::new("Loading conversation")
-                            .size(SUBJECT_SIZE)
+                            .size(theme::text_size(ui, SUBJECT_SIZE))
                             .strong(),
                         fill,
                     );
@@ -276,29 +275,28 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             ui.set_min_width(width);
             // A loading card does not know the sender yet, so it keeps room
             // for a name and an address of its own.
+            let scale = theme::text_scale(ui.ctx());
             let (header, _) = ui.allocate_exact_size(
                 egui::vec2(
                     width,
-                    message_header_height(expanded, SenderLine::NameOverAddress, 1),
+                    message_header_height(expanded, SenderLine::NameOverAddress, 1, scale),
                 ),
                 Sense::hover(),
             );
             paint_message_chevron(ui, header, expanded, None);
-            let date_width = SKELETON_DATE_WIDTH.min(header.width() * SKELETON_DATE_SHARE);
+            let date_width =
+                (SKELETON_DATE_WIDTH * scale).min(header.width() * SKELETON_DATE_SHARE);
             let copy = header_copy_rect(header, date_width);
-            let sender_height =
-                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::ROW_TEXT_SIZE)));
-            let detail_height =
-                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::FOOTNOTE_SIZE)));
+            let sender_font = FontId::proportional(theme::ROW_TEXT_SIZE * scale);
+            let sender_height = ui.fonts_mut(|fonts| fonts.row_height(&sender_font));
+            let detail_font = FontId::proportional(theme::FOOTNOTE_SIZE * scale);
+            let detail_height = ui.fonts_mut(|fonts| fonts.row_height(&detail_font));
+            let icon_inset = SIGNATURE_ICON_INSET * scale;
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    copy.left_top()
-                        + egui::vec2(if expanded { 0.0 } else { SIGNATURE_ICON_INSET }, 0.0),
-                    egui::vec2(
-                        (copy.width() - SIGNATURE_ICON_INSET).max(0.0) * 0.55,
-                        sender_height,
-                    ),
+                    copy.left_top() + egui::vec2(if expanded { 0.0 } else { icon_inset }, 0.0),
+                    egui::vec2((copy.width() - icon_inset).max(0.0) * 0.55, sender_height),
                 ),
                 fill,
             );
@@ -306,20 +304,20 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 // The address, right of the signature icon, as `paint_sender`
                 // lays it out.
                 SkeletonLine {
-                    top: SECOND_LINE_TOP,
-                    inset: SIGNATURE_ICON_INSET,
+                    top: SECOND_LINE_TOP * scale,
+                    inset: icon_inset,
                     share: 0.85,
                     height: detail_height,
                 },
                 SkeletonLine {
-                    top: recipients_top(SenderLine::NameOverAddress),
+                    top: recipients_top(SenderLine::NameOverAddress, scale),
                     inset: 0.0,
                     share: 0.65,
                     height: detail_height,
                 },
             ];
             let collapsed_lines = [SkeletonLine {
-                top: PREVIEW_LINE_TOP,
+                top: PREVIEW_LINE_TOP * scale,
                 inset: 0.0,
                 share: 0.85,
                 height: sender_height,
@@ -345,7 +343,7 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    egui::pos2(header.right() - date_width, header.top() + 2.0),
+                    egui::pos2(header.right() - date_width, header.top() + 2.0 * scale),
                     egui::vec2(date_width, detail_height),
                 ),
                 fill,
@@ -353,8 +351,8 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             if expanded {
                 reply_toolbar(ui, None, &mut Vec::new());
                 ui.separator();
-                let line_height =
-                    ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::BODY_SIZE)));
+                let body_font = FontId::proportional(theme::BODY_SIZE * scale);
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&body_font));
                 for fraction in [0.92, 0.76, 0.84, 0.48] {
                     skeleton_bar(ui, width * fraction, line_height, fill);
                 }
@@ -451,7 +449,7 @@ fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) 
     ui.add(
         egui::Label::new(
             egui::RichText::new(subject.unwrap_or("(No subject)"))
-                .size(SUBJECT_SIZE)
+                .size(theme::text_size(ui, SUBJECT_SIZE))
                 .strong(),
         )
         .selectable(true)
@@ -922,7 +920,7 @@ fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Mes
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
+        egui::vec2(ui.available_width(), theme::compact_button_height(ui)),
         // A narrow reader moves a button to the next row rather than letting
         // the row widen the card past the pane, which would cut off the body.
         Layout::left_to_right(Align::Center)
@@ -936,7 +934,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 ("Forward", AnswerKind::Forward),
             ] {
                 if ui
-                    .add_enabled(message_id.is_some(), theme::compact_button(label))
+                    .add_enabled(message_id.is_some(), theme::compact_button(ui, label))
                     .clicked()
                     && let Some(message_id) = message_id
                 {
@@ -1029,10 +1027,11 @@ fn message_header(
     } else {
         Vec::new()
     };
+    let scale = theme::text_scale(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
-            message_header_height(expanded, line, recipients.len()),
+            message_header_height(expanded, line, recipients.len(), scale),
         ),
         Sense::click(),
     );
@@ -1048,7 +1047,7 @@ fn message_header(
     let date = theme::truncated_galley(
         &painter,
         &time,
-        FontId::proportional(theme::FOOTNOTE_SIZE),
+        FontId::proportional(theme::FOOTNOTE_SIZE * scale),
         theme::colors(ui).muted,
         (rect.width() - HEADER_TEXT_INSET) * 0.5,
     );
@@ -1056,7 +1055,7 @@ fn message_header(
     let (icon_rect, status) = paint_sender(ui, &painter, message, line, copy_rect);
     paint_header_details(ui, &painter, &recipients, preview, line, copy_rect);
     painter.galley(
-        egui::pos2(rect.right() - date.size().x, rect.top() + 2.0),
+        egui::pos2(rect.right() - date.size().x, rect.top() + 2.0 * scale),
         date,
         theme::colors(ui).muted,
     );
@@ -1082,16 +1081,19 @@ fn paint_sender(
     copy_rect: egui::Rect,
 ) -> (egui::Rect, &'static str) {
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    let scale = theme::text_scale(ui.ctx());
     let identity_top = copy_rect.left_top()
         + egui::vec2(
             0.0,
             if line.separate_address() {
-                SECOND_LINE_TOP
+                SECOND_LINE_TOP * scale
             } else {
                 0.0
             },
         );
-    let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
+    let icon_inset = SIGNATURE_ICON_INSET * scale;
+    let icon_rect =
+        egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE * scale));
     let (icon, status, color) = message_status(ui, message);
     egui::Image::new(icon.source())
         .tint(color)
@@ -1099,7 +1101,7 @@ fn paint_sender(
     let sender_inset = if line.separate_address() {
         0.0
     } else {
-        SIGNATURE_ICON_INSET
+        icon_inset
     };
     let sender_origin = copy_rect.left_top() + egui::vec2(sender_inset, 0.0);
     let sender_width = (copy_rect.width() - sender_inset).max(0.0);
@@ -1118,7 +1120,7 @@ fn paint_sender(
             painter,
             sender_origin,
             sender,
-            FontId::proportional(theme::ROW_TEXT_SIZE),
+            FontId::proportional(theme::ROW_TEXT_SIZE * scale),
             ui.visuals().strong_text_color(),
             sender_width,
         ),
@@ -1126,10 +1128,11 @@ fn paint_sender(
     if line.separate_address() {
         header_detail(
             painter,
-            identity_top + egui::vec2(SIGNATURE_ICON_INSET, 0.0),
+            identity_top + egui::vec2(icon_inset, 0.0),
             &message.sender.address,
             theme::colors(ui).muted,
-            (copy_rect.width() - SIGNATURE_ICON_INSET).max(0.0),
+            (copy_rect.width() - icon_inset).max(0.0),
+            scale,
         );
     }
     (icon_rect, status)
@@ -1145,23 +1148,26 @@ fn paint_header_details(
     line: SenderLine,
     copy_rect: egui::Rect,
 ) {
+    let scale = theme::text_scale(ui.ctx());
     if !recipients.is_empty() {
-        let top = recipients_top(line);
+        let top = recipients_top(line, scale);
+        let pitch = RECIPIENT_LINE_PITCH * scale;
         for (index, recipient_line) in recipients.iter().enumerate() {
             header_detail(
                 painter,
-                copy_rect.left_top() + egui::vec2(0.0, top + index as f32 * RECIPIENT_LINE_PITCH),
+                copy_rect.left_top() + egui::vec2(0.0, top + index as f32 * pitch),
                 recipient_line,
                 theme::colors(ui).muted,
                 copy_rect.width(),
+                scale,
             );
         }
     } else {
         theme::paint_truncated_text(
             painter,
-            copy_rect.left_top() + egui::vec2(0.0, PREVIEW_LINE_TOP),
+            copy_rect.left_top() + egui::vec2(0.0, PREVIEW_LINE_TOP * scale),
             preview,
-            FontId::proportional(theme::ROW_TEXT_SIZE),
+            FontId::proportional(theme::ROW_TEXT_SIZE * scale),
             theme::colors(ui).muted,
             copy_rect.width(),
         );
@@ -1191,7 +1197,7 @@ fn header_hover(
 ) -> egui::Response {
     if ui.rect_contains_pointer(icon_rect) {
         response.on_hover_text(status)
-    } else if ui.rect_contains_pointer(chevron_area(response.rect)) {
+    } else if ui.rect_contains_pointer(chevron_area(response.rect, theme::text_scale(ui.ctx()))) {
         response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
     } else {
         response
@@ -1208,42 +1214,48 @@ fn paint_name_and_address(
     address: &str,
     width: f32,
 ) {
-    const GAP: f32 = 6.0;
+    let scale = theme::text_scale(ui.ctx());
+    let gap = 6.0 * scale;
     let muted = theme::colors(ui).muted;
     let strong = ui.visuals().strong_text_color();
     let address = theme::truncated_galley(
         painter,
         &format!("<{address}>"),
-        FontId::proportional(ADDRESS_SIZE),
+        FontId::proportional(ADDRESS_SIZE * scale),
         muted,
         width * 2.0 / 3.0,
     );
     let name = theme::truncated_galley(
         painter,
         name,
-        FontId::proportional(theme::ROW_TEXT_SIZE),
+        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
         strong,
-        (width - address.size().x - GAP).max(0.0),
+        (width - address.size().x - gap).max(0.0),
     );
     // Share the name's baseline rather than its top edge.
     let address_origin = origin
         + egui::vec2(
-            name.size().x + GAP,
+            name.size().x + gap,
             (name.size().y - address.size().y).max(0.0),
         );
     painter.galley(origin, name, strong);
     painter.galley(address_origin, address, muted);
 }
 
-/// A header's height: an open card lists its recipients under the sender,
-/// and under the sender's address when `line` gives that a line of its own,
-/// in `recipient_lines` lines.
-fn message_header_height(expanded: bool, line: SenderLine, recipient_lines: usize) -> f32 {
+/// A header's height with text drawn at `scale`: an open card lists its
+/// recipients under the sender, and under the sender's address when `line`
+/// gives that a line of its own, in `recipient_lines` lines.
+fn message_header_height(
+    expanded: bool,
+    line: SenderLine,
+    recipient_lines: usize,
+    scale: f32,
+) -> f32 {
     if expanded {
         let more = recipient_lines.saturating_sub(1) as f32;
-        recipients_top(line) + 27.0 + more * RECIPIENT_LINE_PITCH
+        recipients_top(line, scale) + (27.0 + more * RECIPIENT_LINE_PITCH) * scale
     } else {
-        44.0
+        44.0 * scale
     }
 }
 
@@ -1263,13 +1275,14 @@ fn recipient_lines(message: &MailMessage) -> Vec<String> {
     lines
 }
 
-/// How far below an open header's top its "To:" line starts: one line under
-/// the sender's address when that has a line of its own.
-fn recipients_top(line: SenderLine) -> f32 {
+/// How far below an open header's top its "To:" line starts, with text drawn
+/// at `scale`: one line under the sender's address when that has a line of
+/// its own.
+fn recipients_top(line: SenderLine, scale: f32) -> f32 {
     if line.separate_address() {
-        SECOND_LINE_TOP + RECIPIENT_LINE_PITCH
+        (SECOND_LINE_TOP + RECIPIENT_LINE_PITCH) * scale
     } else {
-        SECOND_LINE_TOP
+        SECOND_LINE_TOP * scale
     }
 }
 
@@ -1281,7 +1294,11 @@ fn paint_message_chevron(
     expanded: bool,
     response: Option<&egui::Response>,
 ) {
-    let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+    // On the sender's line, wherever text puts it.
+    let icon_center = egui::pos2(
+        rect.left() + 8.0,
+        rect.top() + 11.0 * theme::text_scale(ui.ctx()),
+    );
     let points = chevron_points(icon_center, expanded);
     let color = if response.is_some_and(egui::Response::hovered) {
         ui.visuals().strong_text_color()
@@ -1294,11 +1311,12 @@ fn paint_message_chevron(
         .line_segment([points[1], points[2]], Stroke::new(1.5, color));
 }
 
-/// The column left of the header's text, where the chevron sits.
-fn chevron_area(rect: egui::Rect) -> egui::Rect {
+/// The column left of the header's text, where the chevron sits, with text
+/// drawn at `scale`.
+fn chevron_area(rect: egui::Rect, scale: f32) -> egui::Rect {
     egui::Rect::from_min_max(
         rect.left_top(),
-        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top() + 22.0),
+        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top() + 22.0 * scale),
     )
 }
 
@@ -1316,12 +1334,13 @@ fn header_detail(
     text: &str,
     color: Color32,
     width: f32,
+    scale: f32,
 ) {
     theme::paint_truncated_text(
         painter,
         position,
         text,
-        FontId::proportional(theme::FOOTNOTE_SIZE),
+        FontId::proportional(theme::FOOTNOTE_SIZE * scale),
         color,
         width,
     );
@@ -1365,7 +1384,7 @@ fn attachment_row(
         if ui
             .add_enabled(
                 !saving,
-                theme::compact_button(if this_one { "Saving…" } else { "Save" }),
+                theme::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
             )
             .clicked()
         {
@@ -1375,7 +1394,7 @@ fn attachment_row(
             });
         }
         if ui
-            .add_enabled(!saving, theme::compact_button("Save as…"))
+            .add_enabled(!saving, theme::compact_button(ui, "Save as…"))
             .clicked()
         {
             messages.push(Message::SaveAttachmentAs {
@@ -1403,9 +1422,11 @@ fn message_body(
     match &message.body {
         MessageBody::PlainText(content) => {
             ui.add(
-                egui::Label::new(egui::RichText::new(content).size(theme::BODY_SIZE))
-                    .selectable(true)
-                    .wrap(),
+                egui::Label::new(
+                    egui::RichText::new(content).size(theme::text_size(ui, theme::BODY_SIZE)),
+                )
+                .selectable(true)
+                .wrap(),
             );
         }
         MessageBody::Rich(body) => {
@@ -1414,7 +1435,7 @@ fn message_body(
         MessageBody::Unreadable => {
             ui.label(
                 egui::RichText::new(UNREADABLE_NOTICE)
-                    .size(theme::BODY_SIZE)
+                    .size(theme::text_size(ui, theme::BODY_SIZE))
                     .color(theme::colors(ui).danger),
             );
         }
@@ -1469,11 +1490,14 @@ fn rich_body(
             let run = quoted_run(rest, 0);
             let expanded = reader.is_quote_expanded(message_id, quote_index, reading);
             if ui
-                .add(theme::compact_button(if expanded {
-                    "Hide quoted text"
-                } else {
-                    "Show quoted text"
-                }))
+                .add(theme::compact_button(
+                    ui,
+                    if expanded {
+                        "Hide quoted text"
+                    } else {
+                        "Show quoted text"
+                    },
+                ))
                 .clicked()
             {
                 messages.push(Message::ToggleQuoteExpanded(
@@ -1873,7 +1897,8 @@ fn block(
                     |ui| {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(marker.label()).size(theme::BODY_SIZE),
+                                egui::RichText::new(marker.label())
+                                    .size(theme::text_size(ui, theme::BODY_SIZE)),
                             )
                             .selectable(true),
                         );
@@ -1892,7 +1917,7 @@ fn block(
                         egui::Label::new(
                             egui::RichText::new(content)
                                 .monospace()
-                                .size(theme::BODY_SIZE),
+                                .size(theme::text_size(ui, theme::BODY_SIZE)),
                         )
                         .selectable(true)
                         .wrap(),
@@ -1944,7 +1969,7 @@ fn block(
                     ui.add(
                         egui::Label::new(
                             egui::RichText::new(note)
-                                .size(theme::BODY_SIZE - 2.0)
+                                .size(theme::text_size(ui, theme::BODY_SIZE - 2.0))
                                 .color(theme::colors(ui).muted),
                         )
                         .selectable(true)
@@ -2202,6 +2227,7 @@ fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
 /// Builds span styling; `TextFormat` allows padded code backgrounds.
 fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Reading) -> LayoutJob {
     let size = heading.map(heading_size).unwrap_or(theme::BODY_SIZE);
+    let scale = theme::text_scale(ui.ctx());
     // What the sender's style makes a run counts as its tags do, unless
     // Settings say to leave it out.
     let styled = if reading.sender_text_styles {
@@ -2226,9 +2252,9 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
     let mut format = egui::TextFormat {
         font_id: if span.code {
             // Slightly smaller monospace aligns with surrounding text.
-            FontId::monospace(size - 1.5)
+            FontId::monospace((size - 1.5) * scale)
         } else {
-            FontId::proportional(size)
+            FontId::proportional(size * scale)
         },
         // A link's colour is left to `Link`, which fills in the placeholder
         // with the hyperlink colour.

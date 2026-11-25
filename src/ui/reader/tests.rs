@@ -1517,8 +1517,19 @@ fn header_shapes(
     expanded: bool,
     width: f32,
 ) -> (egui::Rect, Vec<egui::epaint::ClippedShape>) {
+    header_shapes_at(message, expanded, width, 1.0)
+}
+
+/// [`header_shapes`] with text drawn at `scale`.
+fn header_shapes_at(
+    message: &MailMessage,
+    expanded: bool,
+    width: f32,
+    scale: f32,
+) -> (egui::Rect, Vec<egui::epaint::ClippedShape>) {
     let context = egui::Context::default();
     theme::install(&context);
+    theme::set_text_scale(&context, scale);
     let mut rect = egui::Rect::NOTHING;
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         ui.set_width(width);
@@ -1570,6 +1581,47 @@ fn a_message_header_keeps_the_arrow_pointer() {
     };
     render(hover());
     assert_eq!(render(hover()).1, egui::CursorIcon::Default);
+}
+
+#[test]
+fn a_header_grows_with_its_text_and_keeps_its_lines_apart() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.cc = vec![address(None, "copy@example.org")];
+    for scale in crate::settings::TEXT_SCALES {
+        for expanded in [false, true] {
+            let (usual, _) = header_shapes_at(&message, expanded, 420.0, 1.0);
+            let (header, shapes) = header_shapes_at(&message, expanded, 420.0, scale);
+            // egui keeps lengths on a grid of 1/32 pt.
+            assert!(
+                (header.height() - usual.height() * scale).abs() < 0.05,
+                "{scale}: {} pt tall, {} usually",
+                header.height(),
+                usual.height()
+            );
+            let labels: &[&str] = if expanded {
+                &[
+                    "Alex Rivera",
+                    "alex@example.com",
+                    "To: team@example.org",
+                    "Cc: copy@example.org",
+                ]
+            } else {
+                &["Alex Rivera", "Preview"]
+            };
+            let lines: Vec<egui::Rect> = labels
+                .iter()
+                .map(|label| text_rect(&shapes, label))
+                .collect();
+            assert!(header.top() <= lines[0].top(), "{scale}: {lines:?}");
+            assert!(
+                lines[lines.len() - 1].bottom() <= header.bottom(),
+                "{scale}: {lines:?} past {header:?}"
+            );
+            for pair in lines.windows(2) {
+                assert!(pair[0].bottom() <= pair[1].top(), "{scale}: {pair:?}");
+            }
+        }
+    }
 }
 
 #[test]
