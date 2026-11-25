@@ -229,6 +229,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # THIRD_PARTY_LICENSES.txt ships in every package, so a dependency
+      # THIRD_PARTY_NOTICES.txt ships in every package, so a dependency
       # change must bring it up to date.
       - run: python3 packaging/third-party-licenses.py --check

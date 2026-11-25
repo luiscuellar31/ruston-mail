@@ -73,12 +73,16 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "mailto"; Description: "Offer Ruston Mail as an app for email links (mailto)"; GroupDescription: "Integration:"
 Name: "path"; Description: "Add ruston-cli to the PATH"; GroupDescription: "Integration:"; Flags: unchecked
 
+[InstallDelete]
+; Versions 0.9.1 to 0.10.1 installed the notices under this name.
+Type: files; Name: "{app}\THIRD_PARTY_LICENSES.txt"
+
 [Files]
 Source: "{#SourceDir}\ruston.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\ruston-cli.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 ; Settings finds the notices beside ruston.exe (src/licenses.rs); keep the two in step.
-Source: "..\..\THIRD_PARTY_LICENSES.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\THIRD_PARTY_NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Ruston Mail"; Filename: "{app}\ruston.exe"; AppUserModelID: "{#AppId}"; Comment: "Unofficial desktop client for Proton Mail"

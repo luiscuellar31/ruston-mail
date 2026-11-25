@@ -70,7 +70,7 @@ fn about_is_the_last_settings_section() {
                 &mut Settings::default(),
                 &mut Vec::new(),
                 super::super::notifications::Status::Off,
-                Some(Path::new("THIRD_PARTY_LICENSES.txt")),
+                Some(Path::new("THIRD_PARTY_NOTICES.txt")),
                 None,
             )
         },
@@ -204,7 +204,7 @@ fn about_fits_both_themes_and_its_buttons_ask_for_what_they_name() {
                             ui,
                             &mut Settings::default(),
                             &mut messages,
-                            Some(Path::new("THIRD_PARTY_LICENSES.txt")),
+                            Some(Path::new("THIRD_PARTY_NOTICES.txt")),
                             None,
                         )
                         .rect;

@@ -149,7 +149,7 @@ cp "$ICNS_PATH" "$APP_DIR/Contents/Resources/ruston-mail.icns"
 
 # The licenses: Ruston Mail's and those of what it ships with it. Settings
 # finds the notices here (src/licenses.rs), so keep the two in step.
-cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" "$APP_DIR/Contents/Resources/"
+cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.txt" "$APP_DIR/Contents/Resources/"
 
 PLIST_TEMPLATE="$ASSETS_DIR/Info.plist"
 [[ -f "$PLIST_TEMPLATE" ]] || die "Info.plist template missing at: $PLIST_TEMPLATE"

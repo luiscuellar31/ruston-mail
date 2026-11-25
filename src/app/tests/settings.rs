@@ -335,7 +335,7 @@ fn third_party_notices_open_in_the_background_only_when_shipped() {
     app.third_party_notices = None;
     assert_eq!(app.update(Message::OpenThirdPartyNotices).units(), 0);
 
-    app.third_party_notices = Some(PathBuf::from("THIRD_PARTY_LICENSES.txt"));
+    app.third_party_notices = Some(PathBuf::from("THIRD_PARTY_NOTICES.txt"));
     let effects = app.update(Message::OpenThirdPartyNotices);
 
     assert_eq!(effects.units(), 1);

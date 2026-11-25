@@ -525,7 +525,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   Third-party notices button. Source code dispatches `OpenSourceCode` through
   `App`, which opens the package repository using the existing background
   browser effect. Third-party notices dispatches `OpenThirdPartyNotices`, and
-  `App` hands the same effect the `THIRD_PARTY_LICENSES.txt` that
+  `App` hands the same effect the `THIRD_PARTY_NOTICES.txt` that
   [`licenses.rs`](../src/licenses.rs) found at boot from the running
   executable: beside it, in `../Resources` or in `../share/doc/ruston-mail`,
   the places every package puts it (see
@@ -1615,7 +1615,7 @@ for MSVC targets, so neither executable needs the Visual C++ redistributable.
 Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
-The committed `THIRD_PARTY_LICENSES.txt` comes from
+The committed `THIRD_PARTY_NOTICES.txt` comes from
 [`packaging/third-party-licenses.py`](../packaging/third-party-licenses.py):
 the notice of every crate the binaries use on the six release targets,
 procedural macros aside, under the least demanding license it offers (none

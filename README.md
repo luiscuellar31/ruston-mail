@@ -158,5 +158,5 @@ covers PowerShell, Linux launchers, Windows builds, packaging, and releases.
 ## License
 
 Ruston Mail is available under the [MIT License](LICENSE).
-[`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt), which every package
+[`THIRD_PARTY_NOTICES.txt`](THIRD_PARTY_NOTICES.txt), which every package
 carries, holds the notices of the software it ships with.
