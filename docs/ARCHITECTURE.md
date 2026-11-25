@@ -619,7 +619,17 @@ sender wrote is dropped, and in their place come `margin-top` and
 `margin-bottom` of `0` or `1em`, where the sender gave a block room or none,
 and `border-top` and `border-bottom` of `1px solid`, where a line runs across
 a block with none down its sides. Nothing else of them comes through, so a
-quoted reply cannot be overlaid. The
+quoted reply cannot be overlaid. The parser reads that room, with
+`spacing::around`, so raw HTML reads as sanitized HTML does, on top of what a
+browser gives each block: a paragraph, a heading, a list, a quote and
+preformatted text have room above and below, a `div` and its kin none. A
+paragraph that follows another with no room between them is `joined`; rows
+and cells keep the room of paragraphs, a blank line (`<br>` alone, or a block
+of `&nbsp;`) leaves some, and two lines that only a bare block's default
+leaves tight must both be short (80 characters), so a newsletter whose margins
+came from a stylesheet keeps its paragraphs apart. The reader draws a joined
+paragraph right under the one before it (`room_after` takes back egui's item
+spacing), and the CLI writes it on the next line. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
 always writes them as Markdown markers. The same stack notes an element with a

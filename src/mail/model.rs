@@ -541,6 +541,7 @@ mod tests {
                 quote_depth: 0,
                 hidden: false,
                 centered: false,
+                joined: false,
             }],
             ..RichBody::default()
         });

@@ -7,15 +7,52 @@
 
 use cssparser::{Delimiter, ParseError, Parser, ParserInput, Token};
 
+/// What a style says of the room and the lines around its block: above,
+/// then below.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct Around {
+    /// Whether there is room: `Some(true)` where a margin or padding makes
+    /// some, `Some(false)` where a margin says there is none, `None` where
+    /// the sender said nothing.
+    pub(super) room: [Option<bool>; 2],
+    /// Whether a line runs across the block there.
+    pub(super) line: [bool; 2],
+}
+
+/// What `style` says of the room and the lines around its block, whether it
+/// is a sender's own or what [`normalize`] made of one.
+pub(super) fn around(style: &str) -> Around {
+    read(style).0
+}
+
 /// `style`, the value of a `style` attribute, with every margin, padding and
 /// border declaration replaced by the normalized ones: `margin-top` and
 /// `margin-bottom` of `0` or `1em`, and `border-top` and `border-bottom` of
 /// `1px solid`. The rest is kept as written, for the sanitizer to filter.
+pub(super) fn normalize(style: &str) -> String {
+    let (around, kept) = read(style);
+    let room = ["top", "bottom"]
+        .into_iter()
+        .zip(around.room)
+        .filter_map(|(side, room)| {
+            room.map(|room| format!("margin-{side}:{}", if room { "1em" } else { "0" }))
+        });
+    let lines = ["top", "bottom"]
+        .into_iter()
+        .zip(around.line)
+        .filter(|(_, line)| *line)
+        .map(|(side, _)| format!("border-{side}:1px solid"));
+    // The normalized ones come first: a declaration left open at the end, as
+    // an unclosed string is, cannot take them in.
+    room.chain(lines).chain(kept).collect::<Vec<_>>().join(";")
+}
+
+/// The room and lines `style` gives, and its other declarations as written.
 ///
 /// It reads the declarations as ammonia does, with the same parser, so a
 /// comment or an escape cannot hide a declaration from it that ammonia would
 /// then keep.
-pub(super) fn normalize(style: &str) -> String {
+fn read(style: &str) -> (Around, Vec<String>) {
     let mut input = ParserInput::new(style);
     let mut parser = Parser::new(&mut input);
     let mut room = Room::default();
@@ -50,11 +87,11 @@ pub(super) fn normalize(style: &str) -> String {
             kept.push(written.trim().to_owned());
         }
     }
-    // The normalized ones come first: a declaration left open at the end, as
-    // an unclosed string is, cannot take them in.
-    let mut out: Vec<String> = room.declarations().chain(lines.declarations()).collect();
-    out.extend(kept);
-    out.join(";")
+    let around = Around {
+        room: room.room(),
+        line: lines.across(),
+    };
+    (around, kept)
 }
 
 /// Whether a length makes room: a positive one does; zero, a negative one
@@ -110,24 +147,18 @@ impl Room {
         }
     }
 
-    /// `margin-top` and `margin-bottom`, for the sides the sender said
-    /// something of: `1em` where there is room, `0` where a margin says there
-    /// is none.
-    fn declarations(&self) -> impl Iterator<Item = String> + '_ {
-        ["top", "bottom"]
-            .into_iter()
-            .enumerate()
-            .filter_map(|(index, side)| {
-                let room = if self.margin[index] == Some(true) || self.padding[index] == Some(true)
-                {
-                    "1em"
-                } else if self.margin[index] == Some(false) {
-                    "0"
-                } else {
-                    return None;
-                };
-                Some(format!("margin-{side}:{room}"))
-            })
+    /// Above and below: room where a margin or padding makes some, none
+    /// where a margin says so, and `None` where the sender said nothing.
+    fn room(&self) -> [Option<bool>; 2] {
+        [0, 1].map(|side| {
+            if self.margin[side] == Some(true) || self.padding[side] == Some(true) {
+                Some(true)
+            } else if self.margin[side] == Some(false) {
+                Some(false)
+            } else {
+                None
+            }
+        })
     }
 }
 
@@ -234,16 +265,13 @@ impl Lines {
         }
     }
 
-    /// `border-top` and `border-bottom` where a line runs across the block:
-    /// one that shows, on a block with no line down either side, which
-    /// would make it a box, as a button or a card is.
-    fn declarations(&self) -> impl Iterator<Item = String> + '_ {
+    /// Above and below, whether a line runs across the block: one that
+    /// shows, on a block with no line down either side, which would make it
+    /// a box, as a button or a card is.
+    fn across(&self) -> [bool; 2] {
         let [top, right, bottom, left] = self.0;
         let across = !right.shows() && !left.shows();
-        [("top", top), ("bottom", bottom)]
-            .into_iter()
-            .filter(move |(_, side)| across && side.shows())
-            .map(|(name, _)| format!("border-{name}:1px solid"))
+        [across && top.shows(), across && bottom.shows()]
     }
 }
 

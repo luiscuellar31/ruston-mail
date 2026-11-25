@@ -268,6 +268,7 @@ mod tests {
                     quote_depth: (index % 3) as u8,
                     hidden: false,
                     centered: false,
+                    joined: false,
                 })
                 .collect(),
             ..RichBody::default()
@@ -322,6 +323,7 @@ mod tests {
                     quote_depth: 0,
                     hidden: false,
                     centered: false,
+                    joined: false,
                 })
                 .collect(),
             ..RichBody::default()

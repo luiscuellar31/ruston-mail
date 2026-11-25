@@ -47,6 +47,103 @@ fn spans(html: &str) -> Vec<RichSpan> {
     }
 }
 
+/// Each block's text, a heading's after `#`, with `+` before a paragraph
+/// that follows the one before it closely.
+fn lines(html: &str) -> Vec<String> {
+    let text = |spans: &[RichSpan]| spans.iter().map(|s| s.text.as_str()).collect::<String>();
+    parse(html)
+        .blocks
+        .iter()
+        .map(|block| {
+            let line = match &block.kind {
+                BlockKind::Paragraph(spans) => text(spans),
+                BlockKind::Heading { spans, .. } => format!("# {}", text(spans)),
+                other => format!("{other:?}"),
+            };
+            format!("{}{line}", if block.joined { "+" } else { "" })
+        })
+        .collect()
+}
+
+#[test]
+fn lines_the_sender_set_without_room_follow_each_other() {
+    // A booking's date under its label, set with margins of none, however
+    // long the lines.
+    assert_eq!(
+        lines(
+            "<table><tr><th>\
+             <p style='margin:0'>Tuesday,</p>\
+             <p style='margin:0;margin-bottom:0px !important'>Oct 24, 2017</p>\
+             <p style='margin:0'>Check in anytime after 3PM, or ask the host to arrange \
+             a later arrival if your flight lands after dark</p>\
+             </th></tr></table>"
+        ),
+        [
+            "Tuesday,",
+            "+Oct 24, 2017",
+            "+Check in anytime after 3PM, or ask the host to arrange a later arrival \
+             if your flight lands after dark",
+        ]
+    );
+    // Paragraphs keep the room a browser gives them.
+    assert_eq!(
+        lines("<p>Hi Alex,</p><p>See you Thursday.</p>"),
+        ["Hi Alex,", "See you Thursday."]
+    );
+    // Lines written as bare blocks, as Gmail and Apple Mail write them,
+    // with a blank one between paragraphs.
+    assert_eq!(
+        lines(
+            "<div>Hi Alex,</div><div><br></div><div>Thanks for the notes.</div>\
+             <div>Best,</div><div>Ana</div>"
+        ),
+        ["Hi Alex,", "Thanks for the notes.", "+Best,", "+Ana"]
+    );
+    // A long one in a bare block keeps its room, unless a style says none.
+    let long = "word ".repeat(20);
+    let long = long.trim();
+    assert_eq!(
+        lines(&format!("<div>{long}</div><div>{long}</div>")),
+        [long, long]
+    );
+    assert_eq!(
+        lines(&format!(
+            "<div style='margin:0'>{long}</div><div style='margin:0'>{long}</div>"
+        )),
+        [long.to_owned(), format!("+{long}")]
+    );
+}
+
+#[test]
+fn room_stays_between_rows_headings_quotes_and_after_a_spacer() {
+    // A spacer's padding, and a blank line of `&nbsp;`, leave room.
+    assert_eq!(
+        lines(
+            "<p style='margin:0'>A</p><div style='padding-bottom:8px'></div>\
+             <p style='margin:0'>B</p>"
+        ),
+        ["A", "B"]
+    );
+    assert_eq!(
+        lines("<div>A</div><div>&nbsp;</div><div>B</div>"),
+        ["A", "B"]
+    );
+    // Rows and cells keep the room of paragraphs.
+    assert_eq!(
+        lines("<table><tr><td>One</td></tr><tr><td>Two</td></tr></table>"),
+        ["One", "Two"]
+    );
+    // Headings and quotes are never set tight.
+    assert_eq!(
+        lines("<div>Total</div><h2 style='margin:0'>$65</h2><div>Paid</div>"),
+        ["Total", "# $65", "Paid"]
+    );
+    assert_eq!(
+        lines("<p style='margin:0'>A</p><blockquote><p style='margin:0'>B</p></blockquote>"),
+        ["A", "B"]
+    );
+}
+
 #[test]
 fn styled_runs_share_one_long_link_target() {
     let target = format!("https://example.test/{}", "x".repeat(32 * 1024));
@@ -791,6 +888,7 @@ fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
         quote_depth,
         hidden: false,
         centered: false,
+        joined: false,
     }
 }
 

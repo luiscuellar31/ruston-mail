@@ -32,6 +32,9 @@ const MAX_BUTTON_CHARS: usize = 60;
 /// The longest a cell of a table of data may be. A longer one is a page laid
 /// out in columns, which reads better as paragraphs.
 const MAX_CELL_CHARS: usize = 120;
+/// The most characters a line may have to be set tight against the one
+/// before it only because a bare block, as a `div` is, leaves no room.
+const SHORT_LINE_CHARS: usize = 80;
 /// What a block takes besides its text. Text always leaves room for one, so
 /// a body cut short still ends with the block it was reading.
 const BLOCK_SIZE: usize = std::mem::size_of::<RichBlock>();
@@ -126,6 +129,10 @@ pub struct RichBlock {
     pub hidden: bool,
     /// Whether the sender's style, or a `center` element, centers it.
     pub centered: bool,
+    /// Whether it follows the paragraph before it as that one's next line
+    /// would, with no room between them: the sender set none, as a receipt
+    /// sets a date under its label.
+    pub joined: bool,
 }
 
 /// What a block is, with its content.
@@ -565,6 +572,27 @@ struct Builder {
     truncated: bool,
     /// See [`RichBody::undescribed_images`].
     undescribed_images: usize,
+    /// Whether room separates the block read next from the last one: a
+    /// margin, a block's own spacing, a cell, or a blank line. The first
+    /// block has room above it.
+    spaced: bool,
+    /// Whether a block came between them that leaves no room only because
+    /// its kind leaves none, as a bare `div`, rather than by its style.
+    assumed: bool,
+    /// The blocks open whose room below is yet to come, innermost last, at
+    /// most [`MAX_STYLE_DEPTH`], each with that room.
+    below: Vec<(String, Room)>,
+    /// How many are open beyond those kept, so that their ends close them
+    /// before any of `below`.
+    omitted_below: usize,
+}
+
+/// The room a block leaves on one side, and whether its style said so
+/// rather than its kind.
+#[derive(Clone, Copy)]
+struct Room {
+    some: bool,
+    said: bool,
 }
 
 impl Builder {
@@ -594,6 +622,10 @@ impl Builder {
             used: 0,
             truncated: false,
             undescribed_images: 0,
+            spaced: true,
+            assumed: false,
+            below: Vec::new(),
+            omitted_below: 0,
         }
     }
 
@@ -743,6 +775,9 @@ impl Builder {
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
+        if spaces(name) {
+            self.open_block(name, tag);
+        }
     }
 
     /// The innermost table kept open, unless one too deep to keep is.
@@ -884,6 +919,9 @@ impl Builder {
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
         }
+        if spaces(name) {
+            self.close_block(name);
+        }
     }
 
     fn text(&mut self, text: &str) {
@@ -901,6 +939,11 @@ impl Builder {
             return;
         }
 
+        // A non-breaking space before any word makes a line of its own, as
+        // a blank paragraph a sender writes with `&nbsp;` does.
+        if self.spans.is_empty() && text.contains('\u{a0}') {
+            self.spaced = true;
+        }
         // Collapse whitespace runs like a browser does. A control character
         // separates words too, without a space.
         for run in text.split_inclusive(|c: char| c.is_whitespace() || c.is_control()) {
@@ -1066,6 +1109,9 @@ impl Builder {
         } else if !self.spans.is_empty() {
             self.push_text("\n");
             self.space_written = false;
+        } else {
+            // A line break with nothing before it is a blank line.
+            self.spaced = true;
         }
     }
 
@@ -1190,7 +1236,81 @@ impl Builder {
         } else {
             BlockKind::Paragraph(spans)
         };
-        self.push_block(kind, hidden, self.centered);
+        let joined = self.follows_closely(&kind);
+        self.push_block(kind, hidden, self.centered, joined);
+        self.spaced = false;
+        self.assumed = false;
+    }
+
+    /// Whether `kind`, read next, follows the last block as its next line
+    /// would: both paragraphs at one quote depth, nothing between them that
+    /// leaves room, and, where a bare block alone said so, two short lines.
+    fn follows_closely(&self, kind: &BlockKind) -> bool {
+        let (BlockKind::Paragraph(spans), Some(last)) = (kind, self.blocks.last()) else {
+            return false;
+        };
+        let BlockKind::Paragraph(previous) = &last.kind else {
+            return false;
+        };
+        let line = |spans: &[RichSpan]| {
+            let text = join(spans);
+            !text.contains('\n') && text.chars().count() <= SHORT_LINE_CHARS
+        };
+        !self.spaced
+            && usize::from(last.quote_depth) == self.quote_depth.min(usize::from(u8::MAX))
+            && (!self.assumed || (line(previous) && line(spans)))
+    }
+
+    /// Notes the room above the block `name` that starts now, and keeps the
+    /// room it leaves below for its end.
+    fn open_block(&mut self, name: &str, tag: &Tag) {
+        let around = attribute(tag, "style")
+            .map(super::spacing::around)
+            .unwrap_or_default();
+        let side = |said: Option<bool>| match said {
+            // A table's own spacing is its cells' padding, which a class
+            // usually sets: its rows and cells keep the room of paragraphs.
+            _ if TABLE_PARTS.contains(&name) => Room {
+                some: true,
+                said: true,
+            },
+            Some(some) => Room { some, said: true },
+            None => Room {
+                some: ROOMY_BLOCKS.contains(&name),
+                said: false,
+            },
+        };
+        self.leave(side(around.room[0]));
+        if name == "hr" {
+            return;
+        }
+        if self.below.len() < MAX_STYLE_DEPTH {
+            self.below.push((name.to_owned(), side(around.room[1])));
+        } else {
+            self.omitted_below += 1;
+        }
+    }
+
+    /// Notes the room the block `name` that ends now leaves below it.
+    fn close_block(&mut self, name: &str) {
+        if self.omitted_below > 0 {
+            self.omitted_below -= 1;
+            return;
+        }
+        if let Some(index) = self.below.iter().rposition(|(open, _)| open == name) {
+            let (_, room) = self.below[index];
+            self.below.truncate(index);
+            self.leave(room);
+        }
+    }
+
+    /// Notes `room` between the last block and the next.
+    fn leave(&mut self, room: Room) {
+        if room.some {
+            self.spaced = true;
+        } else if !room.said {
+            self.assumed = true;
+        }
     }
 
     fn end_pre(&mut self) {
@@ -1212,7 +1332,8 @@ impl Builder {
 
     /// A block that is not text, hidden if the sender hid what it is in.
     fn push(&mut self, kind: BlockKind) {
-        self.push_block(kind, self.marking(), self.centers());
+        self.push_block(kind, self.marking(), self.centers(), false);
+        self.spaced = true;
     }
 
     /// Whether the sender's style centers what is read now.
@@ -1224,7 +1345,7 @@ impl Builder {
             .unwrap_or(false)
     }
 
-    fn push_block(&mut self, kind: BlockKind, hidden: bool, centered: bool) {
+    fn push_block(&mut self, kind: BlockKind, hidden: bool, centered: bool, joined: bool) {
         if self.limit.saturating_sub(self.used) < BLOCK_SIZE {
             self.truncated = true;
             return;
@@ -1235,6 +1356,7 @@ impl Builder {
             quote_depth: u8::try_from(self.quote_depth).unwrap_or(u8::MAX),
             hidden,
             centered,
+            joined,
         });
     }
 
@@ -1252,6 +1374,37 @@ impl Builder {
             undescribed_images: self.undescribed_images,
         }
     }
+}
+
+/// The parts of a table, whose rows and cells keep the room of paragraphs.
+const TABLE_PARTS: [&str; 7] = ["table", "tbody", "thead", "tfoot", "tr", "td", "th"];
+
+/// The blocks a browser gives room above and below, unless a style says
+/// otherwise; the others, as a `div`, leave none.
+const ROOMY_BLOCKS: [&str; 14] = [
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "dl",
+    "blockquote",
+    "pre",
+    "figure",
+    "hr",
+];
+
+/// Whether the element `name` starts and ends a block whose room counts.
+fn spaces(name: &str) -> bool {
+    BLOCK_ELEMENTS.contains(&name)
+        || matches!(
+            name,
+            "ul" | "ol" | "li" | "blockquote" | "pre" | "td" | "th" | "hr"
+        )
 }
 
 /// Whether two runs read alike, and so make one.

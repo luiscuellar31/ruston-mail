@@ -1519,6 +1519,20 @@ fn rich_body(
             }
             block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
+        room_after(ui, rest, pictures, reading);
+    }
+}
+
+/// The room after a block of a body, before the next one `rest` shows: none
+/// before a line the sender set tight against it, as a date under its label,
+/// so it reads as the next line of a paragraph would; a gap before anything
+/// else.
+fn room_after(ui: &mut egui::Ui, rest: &[RichBlock], pictures: Pictures<'_>, reading: Reading) {
+    let next = rest.iter().find(|block| shown(block, pictures, reading));
+    if next.is_some_and(|block| block.joined) {
+        // egui puts its item spacing after every block: this takes it back.
+        ui.add_space(-ui.spacing().item_spacing.y);
+    } else {
         ui.add_space(8.0);
     }
 }
@@ -1680,7 +1694,7 @@ fn blocks(
             }
             block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
-        ui.add_space(8.0);
+        room_after(ui, rest, pictures, reading);
     }
 }
 

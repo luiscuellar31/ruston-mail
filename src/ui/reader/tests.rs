@@ -404,6 +404,7 @@ fn the_senders_style_counts_unless_settings_leave_it_out() {
         quote_depth: 0,
         hidden: false,
         centered: true,
+        joined: false,
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -491,6 +492,41 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
 }
 
 #[test]
+fn lines_the_sender_set_tight_are_drawn_as_next_lines() {
+    let body = ruston_core::html::rich::parse(
+        "<p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p>\
+         <p>A paragraph of its own</p>",
+    );
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(600.0);
+        blocks(
+            ui,
+            &body.blocks,
+            0,
+            no_pictures(),
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
+    let shapes = output.shapes.clone();
+    output.drop_without_applying_deltas();
+
+    let label = text_rect(&shapes, "Check-in");
+    let date = text_rect(&shapes, "Thu, Dec 4");
+    let paragraph = text_rect(&shapes, "A paragraph of its own");
+    assert!(
+        (date.top() - label.bottom()).abs() < 1.0,
+        "the date sits right under its label: {label:?} {date:?}"
+    );
+    assert!(
+        paragraph.top() - date.bottom() >= 12.0,
+        "a paragraph keeps its room: {date:?} {paragraph:?}"
+    );
+}
+
+#[test]
 fn a_picture_inside_a_link_opens_it_through_the_prompt() {
     let picture = |link: Option<&str>| RichBlock {
         kind: BlockKind::Image {
@@ -501,6 +537,7 @@ fn a_picture_inside_a_link_opens_it_through_the_prompt() {
         quote_depth: 0,
         hidden: false,
         centered: false,
+        joined: false,
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -2142,6 +2179,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
             quote_depth: 0,
             hidden: false,
             centered: false,
+            joined: false,
         };
         let context = egui::Context::default();
         let mut height = 0.0;
@@ -3188,6 +3226,7 @@ fn quoted_text_waits_behind_its_button_unless_the_message_is_all_quote() {
         quote_depth,
         hidden: false,
         centered: false,
+        joined: false,
     };
     let reader = ConversationReader::new(ConversationDetail {
         id: "conversation".into(),

@@ -178,7 +178,10 @@ still opens, and you can still reply to it or forward it, without its text
 quoted.
 
 HTML mail is converted to native text and layout. Headings, lists, links, basic
-formatting, and quotes remain, but scripts and remote content do not run. Bold,
+formatting, and quotes remain, but scripts and remote content do not run. Lines
+the sender set with no room between them, such as a booking's date under its
+label or the lines of a signature, read as consecutive lines, here and in the
+command line, while paragraphs keep the space between them. Bold,
 italic, struck-through and centered text count whether the sender marked them
 with tags, with `align`, or set them with styles, as newsletters often do; a short centered
 line is centered, a longer one starts at the left. A link the sender drew as a

@@ -35,7 +35,7 @@ pub(super) fn to_markdown(html: &str) -> String {
         } else {
             format!("[{images} images not shown]")
         };
-        writer.push_block(&note, 0, false);
+        writer.push_block(&note, 0, false, false);
     }
     let mut text = writer.output.text;
     if body.truncated || writer.output.truncated {
@@ -131,7 +131,12 @@ impl Writer {
             BlockKind::Rule => ("---".to_owned(), false),
             BlockKind::Table(rows) => (table(rows), false),
         };
-        self.push_block(&text, usize::from(block.quote_depth), list_item);
+        self.push_block(
+            &text,
+            usize::from(block.quote_depth),
+            list_item,
+            block.joined,
+        );
     }
 
     /// A list item's block, its marker first when it starts the item, and
@@ -169,14 +174,18 @@ impl Writer {
         (item, first.is_some())
     }
 
-    fn push_block(&mut self, text: &str, quote_depth: usize, list_item: bool) {
+    /// Writes a block after a blank line, or on the next line when it is
+    /// the next item of a list or a line the sender set tight against the
+    /// last one (`joined`).
+    fn push_block(&mut self, text: &str, quote_depth: usize, list_item: bool, joined: bool) {
         let prefix = "> ".repeat(quote_depth.min(MAX_RENDER_DEPTH));
         if !self.output.text.is_empty() {
-            self.output.push(if self.prior_list_item && list_item {
-                "\n"
-            } else {
-                "\n\n"
-            });
+            self.output
+                .push(if (self.prior_list_item && list_item) || joined {
+                    "\n"
+                } else {
+                    "\n\n"
+                });
         }
         for (index, line) in text.lines().enumerate() {
             if index > 0 {
@@ -375,10 +384,23 @@ mod tests {
     }
 
     #[test]
+    fn lines_the_sender_set_without_room_follow_each_other() {
+        assert_eq!(
+            to_markdown(
+                "<p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p>\
+                 <p>After</p>"
+            ),
+            "Check-in\nThu, Dec 4\n\nAfter"
+        );
+    }
+
+    #[test]
     fn blocks_start_where_the_desktop_reader_starts_them() {
+        // Each on a line of its own; a blank line only where a browser
+        // leaves room, as after a list of terms and not between its lines.
         assert_eq!(
             to_markdown("<dl><dt>Term</dt><dd>One</dd><dd>Two</dd></dl><nav>Menu</nav>After"),
-            "Term\n\nOne\n\nTwo\n\nMenu\n\nAfter"
+            "Term\nOne\nTwo\n\nMenu\nAfter"
         );
     }
 
