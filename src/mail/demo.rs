@@ -8,8 +8,8 @@ use ruston_core::{AddressInfo, Quote};
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
-    ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail, MailAddress,
-    MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail, ListFilter,
+    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
 };
 
 mod fixtures;
@@ -94,7 +94,7 @@ impl DemoMailbox {
 
     /// The newest of the Inbox, as a check for new mail reads it.
     pub fn recent_inbox(&self, limit: u32, now: i64) -> Vec<IncomingMail> {
-        list_from(&self.lock(), &Folder::INBOX, 0, limit, now)
+        list_from(&self.lock(), &Folder::INBOX, |_, _| true, 0, limit, now)
             .conversations
             .into_iter()
             .map(|row| IncomingMail {
@@ -107,6 +107,8 @@ impl DemoMailbox {
             .collect()
     }
 
+    /// Every conversation of `folder`, a page at a time, as tests list them.
+    #[cfg(test)]
     pub fn list_conversations(
         &self,
         folder: &Folder,
@@ -114,8 +116,21 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
+        self.list_filtered(folder, ListFilter::All, page, page_size, now)
+    }
+
+    /// One page of the conversations of `folder` that `filter` shows.
+    pub fn list_filtered(
+        &self,
+        folder: &Folder,
+        filter: ListFilter,
+        page: u32,
+        page_size: u32,
+        now: i64,
+    ) -> Result<ConversationPage, MailboxError> {
         let fixtures = self.lock();
-        Ok(list_from(&fixtures, folder, page, page_size, now))
+        let shows = |_: usize, fixture: &Fixture| filter == ListFilter::All || fixture.unread;
+        Ok(list_from(&fixtures, folder, shows, page, page_size, now))
     }
 
     /// The fictional account's addresses, in the order Proton lists them.
@@ -165,15 +180,23 @@ impl DemoMailbox {
         detail_from(&fixtures, id, now).ok_or(MailboxError::Unavailable)
     }
 
+    /// The first `page_size` conversations of `folder` that `filter` shows,
+    /// with the counts, after a change. A conversation `listed` already stays
+    /// listed, as a Proton account's would until the list is loaded again.
     pub fn snapshot(
         &self,
         folder: &Folder,
+        filter: ListFilter,
+        listed: impl Fn(&str) -> bool,
         page_size: u32,
         now: i64,
     ) -> (ConversationPage, MailboxCounts) {
         let fixtures = self.lock();
+        let shows = |index: usize, fixture: &Fixture| {
+            filter == ListFilter::All || fixture.unread || listed(&conversation_id(index))
+        };
         (
-            list_from(&fixtures, folder, 0, page_size, now),
+            list_from(&fixtures, folder, shows, 0, page_size, now),
             counts_from(&fixtures),
         )
     }
@@ -340,9 +363,12 @@ fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
     fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
 }
 
+/// Page `page` of the conversations of `folder` that `shows` lets through,
+/// given each one's place in the mailbox.
 fn list_from(
     fixtures: &[Fixture],
     folder: &Folder,
+    shows: impl Fn(usize, &Fixture) -> bool,
     page: u32,
     page_size: u32,
     now: i64,
@@ -350,7 +376,7 @@ fn list_from(
     let matching = fixtures
         .iter()
         .enumerate()
-        .filter(|(_, fixture)| in_folder(fixture, folder))
+        .filter(|(index, fixture)| in_folder(fixture, folder) && shows(*index, fixture))
         .collect();
     page_of(matching, page, page_size, now)
 }

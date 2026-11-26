@@ -324,6 +324,15 @@ impl ConversationDetail {
     }
 }
 
+/// Which of a folder's conversations a listing shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListFilter {
+    #[default]
+    All,
+    /// Only those with a message still unread.
+    Unread,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ConversationPage {
     pub conversations: Vec<ConversationSummary>,

@@ -258,6 +258,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   of the loaded pages moves its later pages up by one: **Load more** asks for
   the page that holds the first row not loaded, and the rows it repeats are
   dropped as already listed. A row that comes back, as with Undo, counts again.
+  The Unread filter (`ListFilter`) asks Proton for a folder's unread
+  conversations only; the listing of all of them waits in the cache meanwhile,
+  so turning the filter off shows it at once, and a filtered listing is never
+  cached. A row read under the filter stays until the list loads again, but
+  counts as gone from Proton's pages the same way. Another folder opens
+  unfiltered. The demo, which lists from a snapshot after each change, keeps
+  the rows already listed the same way.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so
   the search does not turn the folder response into a stale one. A failed list

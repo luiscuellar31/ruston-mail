@@ -8,7 +8,9 @@ use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
     Notice, compact_layout, panel_ratios, panel_widths,
 };
-use crate::mail::{ConversationSummary, CustomKind, Folder, MailFolder, MailboxError, PlaceLook};
+use crate::mail::{
+    ConversationSummary, CustomKind, Folder, ListFilter, MailFolder, MailboxError, PlaceLook,
+};
 use crate::settings::{ComposePlacement, Panels, Settings};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
@@ -741,7 +743,9 @@ fn conversation_pane(
     // Center controls within one row, leaving the remaining height for mail.
     let search_size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
     ui.allocate_ui_with_layout(search_size, Layout::right_to_left(Align::Center), |ui| {
-        // Reserve the clear action before the field consumes the remaining width.
+        // Reserve the filter and the clear action before the field consumes
+        // the remaining width.
+        unread_filter(ui, mailbox, messages);
         if !query.is_empty() && ui.button("Clear").clicked() {
             messages.push(Message::SearchChanged(String::new()));
         }
@@ -816,6 +820,10 @@ fn conversation_pane(
             detail(ui, "Press Enter to search all of your mail.");
             load_more(ui, mailbox, messages);
         }),
+        (_, true) if mailbox.filter() == ListFilter::Unread => empty_state(ui, |ui| {
+            let message = format!("No unread conversations in {}.", mailbox.folder().name());
+            state_message(ui, &message, muted);
+        }),
         (_, true) => empty_state(ui, |ui| {
             let message = format!("No conversations in {}.", mailbox.folder().name());
             state_message(ui, &message, muted);
@@ -851,6 +859,23 @@ fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
         .clicked()
     {
         messages.push(Message::RefreshMailbox);
+    }
+}
+
+/// Shows only the folder's unread conversations, or all of them again;
+/// selected while it does.
+fn unread_filter(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    let unread_only = mailbox.filter() == ListFilter::Unread;
+    if ui
+        .add(egui::Button::new("Unread").selected(unread_only))
+        .on_hover_text("Show only unread conversations")
+        .clicked()
+    {
+        messages.push(Message::ShowOnly(if unread_only {
+            ListFilter::All
+        } else {
+            ListFilter::Unread
+        }));
     }
 }
 

@@ -121,6 +121,13 @@ search starts once it has loaded. What Proton finds is titled **Search
 results**, since it comes from every folder. Clear the field to return to the
 open folder.
 
+**Unread**, beside the search field, lists only the open folder's
+conversations with something unread, as Proton finds them across the whole
+folder; press it again to list them all, back at once as they were. A
+conversation you read while it is on stays where it is until the list is
+loaded again, by **Refresh** or an automatic check, so the rows do not move
+while you read. Another folder opens with all its conversations.
+
 When Proton cannot be reached, a search can look on this device instead: turn
 on **Search this device when Proton cannot be reached** under Settings ›
 Advanced. It then searches the index that `ruston-cli index` builds, which

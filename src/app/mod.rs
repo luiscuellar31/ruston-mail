@@ -32,9 +32,9 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces, PlaceLook,
-    ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt,
-    SummaryKind, demo::DemoMailbox,
+    IncomingMail, ListFilter, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces,
+    PlaceLook, ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome,
+    SignInPrompt, SummaryKind, demo::DemoMailbox,
 };
 
 use attachments::AttachmentSave;
@@ -99,6 +99,9 @@ pub enum Message {
     /// already came to.
     DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
+    /// Lists only the open folder's unread conversations, or all of them
+    /// again.
+    ShowOnly(ListFilter),
     SelectConversation(String),
     /// Adds a row to the rows chosen, or takes it out, as a Command click
     /// (Ctrl on Windows and Linux) does.
@@ -732,6 +735,7 @@ impl App {
                 return self.finish_duplicate_logout(epoch, result);
             }
             Message::SelectFolder(folder) => return self.select_folder(folder),
+            Message::ShowOnly(filter) => return self.show_only(filter),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft
                 // folded above it.
@@ -1403,7 +1407,13 @@ impl App {
         let mailbox = self.mailbox.as_ref()?;
         let folder = mailbox.folder().clone();
         let page_size = mailbox.loaded_conversation_limit();
-        let (page, counts) = service.snapshot(&folder, page_size, crate::mail::demo::now());
+        let (page, counts) = service.snapshot(
+            &folder,
+            mailbox.filter(),
+            |id| mailbox.lists(id),
+            page_size,
+            crate::mail::demo::now(),
+        );
 
         self.active_mailbox()?.apply_action_snapshot(page, counts)
     }

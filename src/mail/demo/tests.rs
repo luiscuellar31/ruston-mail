@@ -722,6 +722,33 @@ fn mail_sent_from_the_second_address_is_kept_as_sent_from_it() {
     );
 }
 
+#[test]
+fn the_unread_filter_lists_only_conversations_with_unread_mail() {
+    let mailbox = DemoMailbox::new();
+    let inbox = sys(MailFolder::Inbox);
+    let listed = |filter| {
+        mailbox
+            .list_filtered(&inbox, filter, 0, 1_000, NOW)
+            .unwrap()
+    };
+    let all = listed(ListFilter::All);
+    let unread = listed(ListFilter::Unread);
+    assert!(!unread.conversations.is_empty());
+    assert!(unread.conversations.len() < all.conversations.len());
+    assert!(unread.conversations.iter().all(|row| row.unread));
+    assert_eq!(unread.total as usize, unread.conversations.len());
+
+    // Read, a conversation leaves it.
+    let first = unread.conversations[0].id.clone();
+    assert!(mailbox.set_unread(&first, false));
+    assert!(
+        listed(ListFilter::Unread)
+            .conversations
+            .iter()
+            .all(|row| row.id != first)
+    );
+}
+
 fn state_page(mailbox: &DemoMailbox, folder: MailFolder) -> ConversationPage {
     mailbox
         .list_conversations(&sys(folder), 0, 1_000, NOW)

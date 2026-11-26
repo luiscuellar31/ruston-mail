@@ -912,6 +912,38 @@ fn an_empty_list_centers_its_message_and_what_can_be_done() {
 }
 
 #[test]
+fn the_unread_button_shows_only_unread_mail_and_says_when_there_is_none() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    mailbox.finish_page(first.id, Ok(ConversationPage::default()));
+
+    let (texts, _) = pane_frame(&context, &mailbox, None);
+    let unread = rect_of(&texts, "Unread");
+    // Beside the search field, it leaves the title its room beside Refresh.
+    let search = rect_of(&texts, "Search mail…");
+    assert!((unread.center().y - search.center().y).abs() <= 2.0);
+    assert!(search.right() < unread.left());
+    assert!(rect_of(&texts, "Refresh").bottom() < unread.top());
+    let (_, asked) = pane_frame(&context, &mailbox, Some(unread.center()));
+    assert!(matches!(
+        asked.as_slice(),
+        [Message::ShowOnly(ListFilter::Unread)]
+    ));
+
+    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
+    mailbox.finish_page(request.id, Ok(ConversationPage::default()));
+    let (texts, _) = pane_frame(&context, &mailbox, None);
+    rect_of(&texts, "No unread conversations in Inbox.");
+    // Pressed again, it lists them all.
+    let (_, asked) = pane_frame(&context, &mailbox, Some(rect_of(&texts, "Unread").center()));
+    assert!(matches!(
+        asked.as_slice(),
+        [Message::ShowOnly(ListFilter::All)]
+    ));
+}
+
+#[test]
 fn a_search_that_fails_over_rows_says_so_and_tries_the_search_again() {
     let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
     mailbox.finish_page(first.id, Ok(pagination_page(0, 3, 3)));

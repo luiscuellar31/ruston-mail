@@ -107,6 +107,7 @@ fn opening_loads_first_inbox_page_with_unknown_counts() {
         PageRequest {
             id: 1,
             folder: Folder::INBOX,
+            filter: ListFilter::All,
             page: 0,
             page_size: PAGE_SIZE,
         }
@@ -375,4 +376,75 @@ fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
 
     // One move was refused and the other taken back: nothing left the pages.
     assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
+#[test]
+fn the_unread_filter_lists_only_unread_mail_and_gives_the_whole_list_back() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+
+    let request = mailbox
+        .show_only(ListFilter::Unread, 3)
+        .expect("a first page of unread conversations");
+    assert_eq!((request.filter, request.page), (ListFilter::Unread, 0));
+    assert_eq!(mailbox.status(), ListStatus::Loading(3));
+    mailbox.finish_page(request.id, page_of(vec![unread("b")], 1));
+    assert_eq!(ids(&mailbox), ["b"]);
+    assert_eq!(mailbox.show_only(ListFilter::Unread, 4), None);
+
+    // Without the filter, the whole list is back at once.
+    assert_eq!(mailbox.show_only(ListFilter::All, 5), None);
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+}
+
+#[test]
+fn another_folder_opens_with_all_its_mail() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
+    mailbox.finish_page(request.id, page_of(vec![unread("b")], 1));
+
+    let archive = mailbox
+        .select_folder(sys(MailFolder::Archive), 4)
+        .expect("the Archive's first page");
+    assert_eq!(archive.filter, ListFilter::All);
+    assert_eq!(mailbox.filter(), ListFilter::All);
+
+    // The Inbox comes back as it was listed whole, not as the filter left it.
+    assert_eq!(mailbox.select_folder(Folder::INBOX, 5), None);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+}
+
+#[test]
+fn mail_read_under_the_unread_filter_stays_and_later_pages_follow_proton() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, full_page(0, 120));
+    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
+    let mut first = full_page(0, 120).unwrap();
+    for row in &mut first.conversations {
+        row.unread = true;
+    }
+    mailbox.finish_page(request.id, Ok(first));
+
+    let read = mailbox
+        .start_action_on(
+            "p3".into(),
+            SummaryKind::Conversation,
+            MailAction::SetUnread(false),
+            4,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&read, Ok(()));
+
+    // Read, it stays until the list is loaded again.
+    let row = mailbox
+        .conversations()
+        .iter()
+        .find(|row| row.id == "p3")
+        .expect("p3 is still listed");
+    assert!(!row.unread);
+    // Proton no longer lists it among the unread, so p50 is now on its first
+    // page: asking for the second would skip it.
+    let more = mailbox.load_more(5).unwrap();
+    assert_eq!((more.filter, more.page), (ListFilter::Unread, 0));
 }

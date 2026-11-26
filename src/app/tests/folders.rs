@@ -263,3 +263,38 @@ fn returning_to_a_loaded_folder_does_not_fetch_it_again() {
         inbox_ids
     );
 }
+
+#[test]
+fn under_the_unread_filter_the_demo_keeps_what_was_read_and_adds_nothing_read() {
+    let mut app = loaded_demo_app();
+    let _ = app.update(Message::ShowOnly(ListFilter::Unread));
+    let request = pending_list_request(&app);
+    let page = demo_service(&app).list_filtered(
+        &Folder::INBOX,
+        ListFilter::Unread,
+        0,
+        demo::PAGE_SIZE,
+        NOW,
+    );
+    let _ = app.update(Message::ConversationsLoaded(request, page));
+    let rows = |app: &App| -> Vec<(String, bool)> {
+        app.mailbox()
+            .unwrap()
+            .conversations()
+            .iter()
+            .map(|row| (row.id.clone(), row.unread))
+            .collect()
+    };
+    let listed = rows(&app);
+    assert!(listed.len() > 1 && listed.iter().all(|(_, unread)| *unread));
+
+    open_conversation(&mut app, &listed[0].0);
+
+    // Read now, it stays in its place and open, the next one is not opened
+    // in its stead, and no conversation read before joins the list.
+    let mailbox = app.mailbox().unwrap();
+    assert_eq!(mailbox.selected_conversation(), Some(listed[0].0.as_str()));
+    let mut expected = listed.clone();
+    expected[0].1 = false;
+    assert_eq!(rows(&app), expected);
+}

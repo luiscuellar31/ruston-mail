@@ -18,8 +18,8 @@ use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendE
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
-    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
-    OwnPlaces, PlaceLook, SummaryKind,
+    ListFilter, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
+    MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -148,10 +148,11 @@ impl ProtonMailService {
     pub async fn list_conversations(
         &self,
         folder: &Folder,
+        filter: ListFilter,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
-        let unread_only = false;
+        let unread_only = filter == ListFilter::Unread;
         let (total, conversations) =
             timed(
                 self.client

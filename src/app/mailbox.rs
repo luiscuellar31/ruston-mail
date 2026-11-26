@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
-    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, MailAction,
-    MailFolder, MailboxCounts, MailboxError, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, ListFilter,
+    MailAction, MailFolder, MailboxCounts, MailboxError, SummaryKind,
 };
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
@@ -23,6 +23,8 @@ const LISTING_CACHE_CAPACITY: usize = 8;
 pub struct PageRequest {
     pub id: RequestId,
     pub folder: Folder,
+    /// Which of the folder's conversations it lists.
+    pub filter: ListFilter,
     /// Zero-based server page.
     pub page: u32,
     pub page_size: u32,
@@ -370,6 +372,10 @@ pub struct SearchRequest {
 
 pub struct Mailbox {
     folder: Folder,
+    /// Which of the folder's conversations the list shows. Only a listing of
+    /// all of them is kept when the folder or the filter changes; rows read
+    /// while it shows only unread ones stay until it is loaded again.
+    filter: ListFilter,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
     row_ids: HashSet<String>,
@@ -467,6 +473,7 @@ impl Mailbox {
     ) -> (Self, PageRequest) {
         let mailbox = Self {
             folder,
+            filter: ListFilter::All,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
             row_ids: HashSet::new(),
@@ -515,6 +522,11 @@ impl Mailbox {
 
     pub fn folder(&self) -> &Folder {
         &self.folder
+    }
+
+    /// Which of the folder's conversations the list shows.
+    pub fn filter(&self) -> ListFilter {
+        self.filter
     }
 
     pub fn status(&self) -> ListStatus {
@@ -867,6 +879,12 @@ impl Mailbox {
         self.search
             .as_ref()
             .map_or(self.has_more, |search| search.has_more)
+    }
+
+    /// Whether the folder's loaded pages list `row_id`, whatever a search
+    /// shows meanwhile.
+    pub fn lists(&self, row_id: &str) -> bool {
+        self.row_ids.contains(row_id)
     }
 
     /// Whether the rows on screen hold this one, hidden by typing or not.
@@ -1660,6 +1678,22 @@ impl Mailbox {
         }
     }
 
+    /// Notes that Proton read `row_id`, or made it unread again. Read, it
+    /// leaves the pages Proton lists of unread conversations, though it stays
+    /// here until the list is loaded again; unread, it comes back to them.
+    fn read_changed(&mut self, row_id: &str, unread: bool) {
+        // Only a row of the loaded pages moves the pages after them.
+        let loaded = self.row_ids.contains(row_id) || self.groups.splits.contains_key(row_id);
+        if self.filter != ListFilter::Unread || !loaded {
+            return;
+        }
+        if unread {
+            self.moved_out.remove(row_id);
+        } else {
+            self.moved_out.insert(row_id.to_owned());
+        }
+    }
+
     /// Whether an explicit read or unread of `row_id` is on its way or waits.
     fn read_change_queued(&self, row_id: &str) -> bool {
         self.queued_actions()
@@ -1710,6 +1744,7 @@ impl Mailbox {
         // counts changed wherever the person went meanwhile. A thread split
         // into its messages is read in them.
         if self.shows(&request.folder) {
+            self.read_changed(&request.row_id, false);
             let members = self
                 .groups
                 .splits
@@ -2021,6 +2056,9 @@ impl Mailbox {
                 // Back where it was, it counts in Proton's pages again.
                 self.moved_out.remove(&request.row_id);
             }
+            if let MailAction::SetUnread(unread) = request.action {
+                self.read_changed(&request.row_id, unread);
+            }
             if !self.superseded(request) {
                 self.record_action(&request.row_id, &request.action);
             }
@@ -2196,20 +2234,50 @@ impl Mailbox {
 
         self.cache_active_listing();
         self.folder = folder;
+        // Each folder opens with all its conversations.
+        self.filter = ListFilter::All;
         self.set_reader(ReaderState::Empty);
         self.action_error = None;
-        // The offer belongs to the folder it was made in.
+        self.leave_listing();
+        self.show_listing(request)
+    }
+
+    /// Lists only the folder's unread conversations, or all of them again.
+    /// The open conversation stays in the reader.
+    pub fn show_only(&mut self, filter: ListFilter, request: RequestId) -> Option<PageRequest> {
+        if filter == self.filter {
+            return None;
+        }
+        // Kept as when leaving the folder, a listing of all of them is back
+        // at once when the filter goes.
+        self.cache_active_listing();
+        self.filter = filter;
+        self.leave_listing();
+        self.show_listing(request)
+    }
+
+    /// Forgets what belongs to the listing on screen, which another is about
+    /// to take the place of.
+    fn leave_listing(&mut self) {
+        // The offer belongs to the list it was made in.
         self.undo = None;
         self.relocated.clear();
         self.listed_again.clear();
         self.moving_out.clear();
         self.moved_out.clear();
-        // So do search results: a folder is a different question.
+        // So do search results: another list is a different question.
         self.search = None;
         self.search_request = None;
         self.search_deferred = false;
+    }
 
-        let cached = self.take_cached_listing(&FolderKey::of(&self.folder));
+    /// Shows the open folder's listing: the one kept from before, unless the
+    /// list shows only some of it, or else a first page to fetch.
+    fn show_listing(&mut self, request: RequestId) -> Option<PageRequest> {
+        let cached = match self.filter {
+            ListFilter::All => self.take_cached_listing(&FolderKey::of(&self.folder)),
+            ListFilter::Unread => None,
+        };
         // Only now, so the folder being opened is never the one let go.
         if self.cached_listings.len() > LISTING_CACHE_CAPACITY {
             self.cached_listings.remove(0);
@@ -2237,10 +2305,11 @@ impl Mailbox {
         }
     }
 
-    /// Stores only a real folder listing. An initial load has `next_page == 0`;
-    /// search results, reader state and transient actions deliberately stay out.
+    /// Stores only a real folder listing of all its conversations. An initial
+    /// load has `next_page == 0`; search results, reader state and transient
+    /// actions deliberately stay out.
     fn cache_active_listing(&mut self) {
-        if self.next_page == 0 {
+        if self.next_page == 0 || self.filter != ListFilter::All {
             return;
         }
         let dirty = self.active_dirty || matches!(self.status, ListStatus::Refreshing(_));
@@ -2577,6 +2646,7 @@ impl Mailbox {
         PageRequest {
             id,
             folder: self.folder.clone(),
+            filter: self.filter,
             page,
             page_size: self.page_size,
         }

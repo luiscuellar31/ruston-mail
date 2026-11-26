@@ -4,7 +4,7 @@
 use super::{
     App, Effects, ListStatus, Mailbox, Message, PageRequest, RequestId, SearchRequest, SessionEpoch,
 };
-use crate::mail::{ConversationPage, Folder, MailboxError, OwnPlaces};
+use crate::mail::{ConversationPage, Folder, ListFilter, MailboxError, OwnPlaces};
 
 impl App {
     /// Proton owns the folder counts; reload them after a change.
@@ -81,6 +81,16 @@ impl App {
             .active_mailbox()
             .and_then(|mailbox| mailbox.select_folder(folder, request));
 
+        self.fetch_page(page)
+    }
+
+    /// Lists only the open folder's unread conversations, or all of them
+    /// again.
+    pub(super) fn show_only(&mut self, filter: ListFilter) -> Effects {
+        let request = self.next_request();
+        let page = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.show_only(filter, request));
         self.fetch_page(page)
     }
 
@@ -219,11 +229,20 @@ impl App {
             return Effects::none();
         };
 
-        let (id, folder, page, page_size) =
-            (request.id, request.folder, request.page, request.page_size);
+        let PageRequest {
+            id,
+            folder,
+            filter,
+            page,
+            page_size,
+        } = request;
 
         Effects::perform(
-            async move { backend.list_conversations(&folder, page, page_size).await },
+            async move {
+                backend
+                    .list_conversations(&folder, filter, page, page_size)
+                    .await
+            },
             move |result| Message::ConversationsLoaded(id, result),
         )
     }
