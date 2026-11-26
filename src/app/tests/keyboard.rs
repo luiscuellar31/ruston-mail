@@ -134,6 +134,24 @@ fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
 }
 
 #[test]
+fn f9_folds_and_unfolds_the_sidebar_even_beside_settings() {
+    let mut app = loaded_demo_app();
+    press(&mut app, Key::F9);
+    assert!(app.settings().sidebar_folded);
+
+    // Settings shows beside the sidebar, which still folds.
+    let _ = app.update(Message::ShowSettings(true));
+    press(&mut app, Key::F9);
+    assert!(!app.settings().sidebar_folded);
+
+    // A link prompt over the window takes only Escape.
+    let _ = app.update(Message::ShowSettings(false));
+    let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
+    press(&mut app, Key::F9);
+    assert!(!app.settings().sidebar_folded);
+}
+
+#[test]
 fn escape_answers_the_link_prompt_before_the_draft_behind_it() {
     let mut app = loaded_demo_app();
     open_conversation(&mut app, "demo-0");

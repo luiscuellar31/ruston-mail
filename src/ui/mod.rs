@@ -623,6 +623,12 @@ impl DesktopApp {
                 Self::bring_forward(context, destination);
             }
             macos::Action::Zoom(step) => self.step_zoom(step, context),
+            macos::Action::ToggleSidebar
+                if self.app.auth_state().is_authenticated() && !self.prompt_open() =>
+            {
+                let folded = self.app.settings().sidebar_folded;
+                self.dispatch(Message::FoldSidebar(!folded), context);
+            }
             macos::Action::Edit(edit) => {
                 let events = edit.events();
                 if self.composer_window_focused(context) {
@@ -1205,6 +1211,7 @@ impl eframe::App for DesktopApp {
             if let Some(menu) = &self.native_menu {
                 menu.adopt_windows();
                 menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
+                menu.set_sidebar_folded(self.app.settings().sidebar_folded);
             }
         }
         self.check_window_close(context);
@@ -1367,6 +1374,16 @@ fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
     }
     if !focus.menu_open && input.key_pressed(egui::Key::Escape) {
         presses.push(KeyPress::plain(Key::Escape));
+    }
+    // F9 shows or hides the side pane, as GNOME's guidelines, KDE and
+    // Thunderbird have it; it types nothing, so a text field leaves it. On
+    // macOS the View menu's Control-Command-S does it instead.
+    if cfg!(not(target_os = "macos"))
+        && !focus.menu_open
+        && input.modifiers.is_none()
+        && input.key_pressed(egui::Key::F9)
+    {
+        presses.push(KeyPress::plain(Key::F9));
     }
     // A focused widget keeps the arrows and Enter: egui moves focus with the
     // arrows and presses a focused button with Enter. Delete waits too, as a

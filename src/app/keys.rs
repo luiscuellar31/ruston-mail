@@ -22,6 +22,8 @@ enum Shortcut {
     Compose,
     Send,
     Trash,
+    /// Fold the sidebar into its strip of icons, or unfold it.
+    ToggleSidebar,
 }
 
 /// The meaning of a key press, or `None` when it is not a shortcut. Plain
@@ -56,6 +58,7 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
         Key::Enter => Some(Shortcut::Open),
         Key::Escape => Some(Shortcut::Dismiss),
         Key::Delete => Some(Shortcut::Trash),
+        Key::F9 => Some(Shortcut::ToggleSidebar),
         _ => None,
     }
 }
@@ -69,6 +72,7 @@ pub enum Key {
     Escape,
     Backspace,
     Delete,
+    F9,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,9 +148,10 @@ impl App {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // Settings blocks mailbox shortcuts except Escape and its toggle;
-        // link prompts allow only Escape.
-        let shortcut_blocked = (self.showing_settings && shortcut != Shortcut::ToggleSettings)
+        // Settings blocks mailbox shortcuts except Escape, its toggle and the
+        // sidebar's, which stays beside it; link prompts allow only Escape.
+        let shortcut_blocked = (self.showing_settings
+            && !matches!(shortcut, Shortcut::ToggleSettings | Shortcut::ToggleSidebar))
             || self.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
@@ -260,6 +265,10 @@ impl App {
                 }
                 self.apply_action(crate::mail::MailAction::MoveTo(trash))
             }
+            Shortcut::ToggleSidebar => {
+                self.remember(|settings| settings.sidebar_folded = !settings.sidebar_folded);
+                Effects::none()
+            }
         }
     }
 }
@@ -359,6 +368,7 @@ mod tests {
         assert_eq!(shortcut(command(Key::Backspace)), Some(Shortcut::Trash));
         assert_eq!(shortcut(command(Key::Delete)), Some(Shortcut::Trash));
         assert_eq!(shortcut(plain(Key::Delete)), Some(Shortcut::Trash));
+        assert_eq!(shortcut(plain(Key::F9)), Some(Shortcut::ToggleSidebar));
 
         // A modifier turns a plain shortcut into somebody else's business.
         assert_eq!(shortcut(command(Key::Character('j'))), None);
@@ -366,5 +376,7 @@ mod tests {
         assert_eq!(shortcut(plain(Key::Character('r'))), None);
         assert_eq!(shortcut(plain(Key::Character('z'))), None);
         assert_eq!(shortcut(plain(Key::Backspace)), None);
+        assert_eq!(shortcut(command(Key::F9)), None);
+        assert_eq!(shortcut(shift(Key::F9)), None);
     }
 }

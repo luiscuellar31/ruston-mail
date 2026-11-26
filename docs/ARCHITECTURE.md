@@ -515,7 +515,16 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   that says what a search covers is kept, empty, while nothing is typed, and
   is shortened rather than wrapped, so typing never moves the list.
   The sidebar scrolls its folders and labels independently, reserving the
-  account, Settings, and sign-out actions at the bottom. The Proton adapter
+  account, Settings, and sign-out actions at the bottom. Folded
+  (`Settings::sidebar_folded`), it is a panel of its own, a fixed strip of
+  icons, so the sidebar's panel keeps its width for when it unfolds:
+  `layout::widths_beside_rail` gives the list its share of the rest, and while
+  folded only that share is saved, never the sidebar's. One column ignores
+  the fold. The button that folds it is placed by hand in a child `Ui`, which
+  takes no room the panel would grow to fit. The View menu's Control-Command-S
+  folds it on macOS, and `F9` elsewhere, read by `key_presses` as a mailbox
+  shortcut that Settings, shown beside the sidebar, lets through.
+  The Proton adapter
   lists the account's folders in tree order, each before its subfolders and
   in Proton's order among siblings, and sends with them an `OwnPlaces` map of
   `PlaceLook`s: a folder's depth, from its `ParentID`, and a label's color.

@@ -301,6 +301,7 @@ fn resetting_layout_preserves_other_preferences() {
         sidebar: 0.35,
         conversations: 0.6,
     };
+    app.settings.sidebar_folded = true;
     app.settings.appearance = Appearance::Light;
     let revision = app.settings_revision();
 
@@ -309,6 +310,10 @@ fn resetting_layout_preserves_other_preferences() {
     assert!(matches!(effect, Some(Effect::Ui(UiEffect::ResetLayout))));
     assert_eq!(app.settings.window, Window::default());
     assert_eq!(app.settings.panels, Panels::default());
+    assert!(
+        !app.settings.sidebar_folded,
+        "the sidebar unfolds with the layout"
+    );
     assert_eq!(app.settings.appearance, Appearance::Light);
     assert_eq!(app.settings_revision(), revision + 1);
     assert!(app.mailbox().is_some());
@@ -346,4 +351,16 @@ fn third_party_notices_open_in_the_background_only_when_shipped() {
         Some(Effect::Background(_))
     ));
     assert!(app.showing_settings());
+}
+
+#[test]
+fn the_sidebar_stays_folded_until_unfolded() {
+    let mut app = authenticated_app();
+    let revision = app.settings_revision();
+
+    let _ = app.update(Message::FoldSidebar(true));
+    assert!(app.settings().sidebar_folded);
+    assert_eq!(app.settings_revision(), revision + 1, "it is saved");
+    let _ = app.update(Message::FoldSidebar(false));
+    assert!(!app.settings().sidebar_folded);
 }

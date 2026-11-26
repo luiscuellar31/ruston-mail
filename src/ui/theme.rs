@@ -183,6 +183,11 @@ pub enum Icon {
     Mail,
     Lock,
     Unlock,
+    /// Writing a new message.
+    Compose,
+    Settings,
+    /// Folding the sidebar, or unfolding it.
+    Sidebar,
 }
 
 impl Icon {
@@ -204,6 +209,13 @@ impl Icon {
             Self::Mail => egui::include_image!("../../assets/icons/bootstrap/envelope.svg"),
             Self::Lock => egui::include_image!("../../assets/icons/bootstrap/lock-fill.svg"),
             Self::Unlock => egui::include_image!("../../assets/icons/bootstrap/unlock.svg"),
+            Self::Compose => {
+                egui::include_image!("../../assets/icons/bootstrap/pencil-square.svg")
+            }
+            Self::Settings => egui::include_image!("../../assets/icons/bootstrap/gear.svg"),
+            Self::Sidebar => {
+                egui::include_image!("../../assets/icons/bootstrap/layout-sidebar.svg")
+            }
         }
     }
 }
@@ -283,7 +295,7 @@ impl Widget for IconButton<'_> {
 
 /// An icon button's size: as tall as a button of words, which grows with the
 /// text, so a row of both keeps one height, and never under its usual size.
-fn icon_button_size(ui: &egui::Ui) -> egui::Vec2 {
+pub fn icon_button_size(ui: &egui::Ui) -> egui::Vec2 {
     // Measured as a button lays its words out, rounded to the same pixels.
     let font = egui::TextStyle::Button.resolve(ui.style());
     let line = ui
@@ -302,10 +314,19 @@ pub fn icon_menu<R>(
     button: IconButton<'_>,
     content: impl FnOnce(&mut egui::Ui) -> R,
 ) -> Option<egui::InnerResponse<R>> {
-    use egui::containers::menu::MenuConfig;
     let response = ui.add_enabled(enabled, button);
+    menu_below(ui, &response, content)
+}
+
+/// The menu a click on `button` opens, as egui's `MenuButton` opens one.
+pub fn menu_below<R>(
+    ui: &egui::Ui,
+    button: &Response,
+    content: impl FnOnce(&mut egui::Ui) -> R,
+) -> Option<egui::InnerResponse<R>> {
+    use egui::containers::menu::MenuConfig;
     let config = MenuConfig::find(ui);
-    egui::Popup::menu(&response)
+    egui::Popup::menu(button)
         .close_behavior(config.close_behavior)
         .style(config.style.clone())
         .info(

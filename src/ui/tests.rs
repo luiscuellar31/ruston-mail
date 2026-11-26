@@ -754,6 +754,37 @@ fn ctrl_alt_types_on_windows_instead_of_taking_ctrl_shortcuts() {
 }
 
 #[test]
+fn f9_folds_the_sidebar_where_no_menu_does() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    theme::install(&context);
+    let mut press = |modifiers| {
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Key {
+                    key: egui::Key::F9,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers,
+                },
+            ],
+            ..Default::default()
+        };
+        context
+            .run_ui(raw, |ui| desktop.keyboard_shortcuts(ui.ctx()))
+            .drop_without_applying_deltas();
+        desktop.app.settings().sidebar_folded
+    };
+
+    // Held with Ctrl, or Cmd, it is no shortcut of the mailbox.
+    assert!(!press(egui::Modifiers::COMMAND));
+    // On macOS the View menu folds it, with Control-Command-S.
+    assert_eq!(press(egui::Modifiers::NONE), cfg!(not(target_os = "macos")));
+}
+
+#[test]
 fn zoom_keys_in_the_composer_window_reach_the_shell() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());

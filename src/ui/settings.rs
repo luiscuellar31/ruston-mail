@@ -692,7 +692,7 @@ pub(super) fn zoom_step(current: f32, step: ZoomStep) -> f32 {
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
-const SHORTCUTS: [(&str, &str); 11] = [
+const SHORTCUTS: [(&str, &str); 12] = [
     ("j  /  Down", "Open the next conversation"),
     ("k  /  Up", "Open the previous one"),
     (
@@ -709,6 +709,7 @@ const SHORTCUTS: [(&str, &str); 11] = [
     (COMMAND_N, "Write a new message"),
     (COMMAND_ENTER, "Send the message being written"),
     (COMMAND_TRASH, "Move selected conversation to Trash"),
+    (FOLD_SIDEBAR, "Fold or unfold the sidebar"),
     (COMMAND_ZOOM, "Zoom in, zoom out, or back to 100%"),
 ];
 
@@ -726,6 +727,8 @@ const COMMAND_ENTER: &str = "Cmd + Enter";
 const COMMAND_TRASH: &str = "Cmd + Backspace";
 #[cfg(target_os = "macos")]
 const COMMAND_ZOOM: &str = "Cmd + Plus / Minus / 0";
+#[cfg(target_os = "macos")]
+const FOLD_SIDEBAR: &str = "Ctrl + Cmd + S";
 
 #[cfg(not(target_os = "macos"))]
 const COMMAND_R: &str = "Ctrl + R";
@@ -741,6 +744,8 @@ const COMMAND_ENTER: &str = "Ctrl + Enter";
 const COMMAND_TRASH: &str = "Delete / Ctrl + Backspace";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_ZOOM: &str = "Ctrl + Plus / Minus / 0";
+#[cfg(not(target_os = "macos"))]
+const FOLD_SIDEBAR: &str = "F9";
 
 /// One key and what it does, with the keys in a column of their own so the
 /// descriptions line up however wide the window is.

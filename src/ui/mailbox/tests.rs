@@ -332,7 +332,13 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
                 },
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| {
-                        let scroll = sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                        let scroll = sidebar(
+                            ui,
+                            &app,
+                            app.mailbox().unwrap(),
+                            SidebarPlace::Column,
+                            &mut messages,
+                        );
                         scroll_id = scroll.id;
                         assert!(scroll.content_size.y > scroll.inner_rect.height());
                         assert!(scroll.content_size.x <= scroll.inner_rect.width() + 1.0);
@@ -354,7 +360,13 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut messages,
+                    );
                 });
             },
         );
@@ -392,7 +404,13 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut messages,
+                    );
                 });
             },
         )
@@ -424,7 +442,13 @@ fn an_account_block_that_cannot_fit_stops_asking_for_frames() {
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut Vec::new(),
+                    );
                 });
             },
         );
@@ -451,7 +475,13 @@ fn the_accounts_own_folders_and_labels_come_under_headings() {
         ));
         let output = context.run_ui(egui::RawInput::default(), |root| {
             egui::CentralPanel::default().show(root, |ui| {
-                sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+                sidebar_content(
+                    ui,
+                    &app,
+                    app.mailbox().unwrap(),
+                    SidebarPlace::Column,
+                    &mut Vec::new(),
+                );
             });
         });
         let shapes = output.shapes.clone();
@@ -616,6 +646,226 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
             .outer_rect
             .width();
     assert_eq!(sidebar_before, sidebar_after);
+}
+
+#[test]
+fn folding_the_sidebar_gives_its_room_to_the_reader_and_unfolding_takes_it_back() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let mut state = UiState::default();
+    let wide = egui::vec2(1100.0, 700.0);
+    // A few frames, with the resizes they ask for applied, as the window does.
+    let mut frames = |app: &mut App| {
+        for _ in 0..3 {
+            let (messages, _) =
+                mailbox_frame(&context, app, &mut state, wide, None, Default::default());
+            for message in messages {
+                if matches!(message, Message::PanelsResized(_)) {
+                    let _ = app.update(message);
+                }
+            }
+        }
+    };
+    let width = |id: &str| {
+        egui::containers::panel::PanelState::load(&context, egui::Id::new(id))
+            .map(|panel| panel.outer_rect.width())
+    };
+
+    frames(&mut app);
+    let (sidebar, list, ratios) = (
+        width(SIDEBAR_PANEL_ID),
+        width(CONVERSATION_PANEL_ID),
+        app.panels(),
+    );
+
+    let _ = app.update(Message::FoldSidebar(true));
+    frames(&mut app);
+    assert_eq!(width(RAIL_PANEL_ID), Some(rail_width(1.0)));
+    assert_eq!(
+        width(CONVERSATION_PANEL_ID),
+        list,
+        "the list keeps its width"
+    );
+    assert_eq!(
+        app.panels().sidebar,
+        ratios.sidebar,
+        "the sidebar's share waits"
+    );
+
+    let _ = app.update(Message::FoldSidebar(false));
+    frames(&mut app);
+    assert_eq!(width(SIDEBAR_PANEL_ID), sidebar);
+    assert_eq!(width(CONVERSATION_PANEL_ID), list);
+    // The shares come back to within what a whole point of width rounds.
+    let back = app.panels();
+    assert!((back.sidebar - ratios.sidebar).abs() <= PANEL_RATIO_TOLERANCE);
+    assert!((back.conversations - ratios.conversations).abs() <= PANEL_RATIO_TOLERANCE);
+}
+
+/// What a frame of the mailbox in `size` asks for after a click at
+/// `click`, and the name, place and choice of everything a screen reader
+/// can press in it.
+fn accessible_frame(
+    context: &egui::Context,
+    app: &App,
+    state: &mut UiState,
+    size: egui::Vec2,
+    click: Option<egui::Pos2>,
+) -> (Vec<Message>, Vec<(String, egui::Rect, bool)>) {
+    let events = click.map_or_else(Vec::new, |pos| {
+        let press = |pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+    });
+    let mut messages = Vec::new();
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        },
+        |root| show(root, app, None, state, &mut messages),
+    );
+    let buttons = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| &update.nodes)
+        .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            let chosen = node.toggled() == Some(egui::accesskit::Toggled::True);
+            Some((node.label()?.to_owned(), rect, chosen))
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    (messages, buttons)
+}
+
+#[test]
+fn the_folded_sidebar_names_each_icon_and_goes_where_the_sidebar_does() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let _ = app.update(Message::CountsLoaded(
+        crate::test_support::OPENING_COUNTS,
+        Ok(crate::mail::demo::DemoMailbox::new().counts()),
+    ));
+    let mut state = UiState::default();
+    let wide = egui::vec2(1100.0, 700.0);
+    let mut frame = |app: &App, click| accessible_frame(&context, app, &mut state, wide, click);
+
+    // Unfolded, the sidebar offers to fold, once it has settled.
+    for _ in 0..2 {
+        let _ = frame(&app, None);
+    }
+    let (_, buttons) = frame(&app, None);
+    let hide = buttons
+        .iter()
+        .find(|(name, _, _)| name == "Hide sidebar")
+        .expect("the sidebar offers to fold")
+        .1;
+    let (asked, _) = frame(&app, Some(hide.center()));
+    assert!(matches!(asked.as_slice(), [Message::FoldSidebar(true)]));
+
+    let _ = app.update(Message::FoldSidebar(true));
+    for _ in 0..2 {
+        let _ = frame(&app, None);
+    }
+    let (_, buttons) = frame(&app, None);
+    let named = |wanted: &str| {
+        buttons
+            .iter()
+            .find(|(name, _, _)| name == wanted)
+            .unwrap_or_else(|| panic!("no {wanted} in {buttons:?}"))
+            .clone()
+    };
+    let unread = crate::mail::demo::DemoMailbox::new()
+        .counts()
+        .unread(&Folder::INBOX)
+        .unwrap();
+    let (_, inbox, chosen) = named(&format!("Inbox, {unread} unread"));
+    assert!(chosen, "the open folder shows as chosen");
+    assert!(inbox.width() < 60.0, "an icon, not a row: {inbox:?}");
+    for (name, expected) in [
+        ("Show sidebar", Message::FoldSidebar(false)),
+        ("New message", Message::OpenCompose),
+        (
+            "Drafts",
+            Message::SelectFolder(Folder::System(MailFolder::Drafts)),
+        ),
+        ("Settings", Message::ShowSettings(true)),
+    ] {
+        let (_, rect, _) = named(name);
+        let (asked, _) = frame(&app, Some(rect.center()));
+        // The list's new share, which this test does not apply, is asked for
+        // again on each frame.
+        let asked: Vec<Message> = asked
+            .into_iter()
+            .filter(|message| !matches!(message, Message::PanelsResized(_)))
+            .collect();
+        assert_eq!(asked.len(), 1, "{name}: {}", asked.len());
+        assert_eq!(
+            std::mem::discriminant(&asked[0]),
+            std::mem::discriminant(&expected),
+            "{name}"
+        );
+        if let (Message::SelectFolder(folder), Message::SelectFolder(wanted)) =
+            (&asked[0], &expected)
+        {
+            assert_eq!(folder, wanted);
+        }
+        if let (Message::FoldSidebar(folded), Message::FoldSidebar(wanted)) = (&asked[0], &expected)
+        {
+            assert_eq!(folded, wanted);
+        }
+    }
+    // The demo has no folders or labels of its own, so neither menu shows.
+    assert!(
+        buttons
+            .iter()
+            .all(|(name, _, _)| name != "Folders" && name != "Labels")
+    );
+}
+
+#[test]
+fn one_column_never_offers_to_fold_the_sidebar() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::FoldSidebar(true));
+    let mut state = UiState {
+        compact_view: CompactView::Folders,
+        ..UiState::default()
+    };
+    let narrow = egui::vec2(480.0, 700.0);
+    let mut buttons = Vec::new();
+    for _ in 0..3 {
+        buttons = accessible_frame(&context, &app, &mut state, narrow, None).1;
+    }
+    // One column shows the whole sidebar, folded or not, with no way to fold it.
+    let names: Vec<&str> = buttons.iter().map(|(name, _, _)| name.as_str()).collect();
+    assert!(names.contains(&"New message"), "{names:?}");
+    assert!(!names.contains(&"Hide sidebar") && !names.contains(&"Show sidebar"));
 }
 
 #[test]
@@ -2832,7 +3082,13 @@ fn subfolders_sit_under_their_parent_and_labels_wear_their_color() {
 
     let output = context.run_ui(egui::RawInput::default(), |root| {
         egui::CentralPanel::default().show(root, |ui| {
-            sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+            sidebar_content(
+                ui,
+                &app,
+                app.mailbox().unwrap(),
+                SidebarPlace::Column,
+                &mut Vec::new(),
+            );
         });
     });
     let shapes = output.shapes.clone();

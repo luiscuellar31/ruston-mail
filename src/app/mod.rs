@@ -47,6 +47,7 @@ pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{
     MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
+    widths_beside_rail,
 };
 pub use links::PendingLink;
 use mailbox::ActionStart;
@@ -165,6 +166,8 @@ pub enum Message {
     ActionFinished(Vec<ActionRequest>, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
+    /// Folds the sidebar into a strip of icons, or unfolds it.
+    FoldSidebar(bool),
     /// A settings write finished: the revision it wrote, and whether the file
     /// holds it now.
     SettingsWritten(u64, bool),
@@ -885,6 +888,9 @@ impl App {
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
             }
+            Message::FoldSidebar(folded) => {
+                self.remember(|settings| settings.sidebar_folded = folded);
+            }
             Message::SettingsWritten(revision, written) => {
                 self.finish_settings_write(revision, written);
             }
@@ -892,6 +898,7 @@ impl App {
                 self.remember(|settings| {
                     settings.window = Window::default();
                     settings.panels = Panels::default();
+                    settings.sidebar_folded = false;
                 });
                 return Effects::ui(UiEffect::ResetLayout);
             }

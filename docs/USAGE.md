@@ -84,6 +84,15 @@ in the color it has in Proton. Unread counts update as mail changes. If your fol
 cannot be loaded, the open folder stays open and the next refresh tries again.
 Folders and labels scroll independently when they do not fit. The account,
 Settings, and sign-out actions remain at the bottom of the sidebar.
+The button beside **Ruston Mail** folds the sidebar into a strip of icons and
+gives its room to the reader: **New message**, Proton's folders, each with a
+dot while it holds unread mail, your folders and your labels behind a menu
+each, and **Settings** at the foot; each says its name when the pointer rests
+on it. The strip's top button unfolds it again, as does **View > Show
+Sidebar** (`Ctrl+Cmd+S`) on macOS; on Linux and Windows `F9` folds and
+unfolds it. Ruston Mail remembers the choice, and
+**Reset window and pane sizes** unfolds it; a window narrow enough for one
+column always shows the whole sidebar.
 While the desktop has focus, it checks for new mail about once a minute. While
 open without focus, it checks about every three minutes, including minimized
 windows. Returning after at least 30 seconds can trigger an earlier check,
@@ -449,7 +458,8 @@ for native window buttons according to their measured size and interface zoom.
 confirmation as its close button; closing the main window quits. **Edit** has
 Cut, Copy, Paste and Select All for text, as well as in native file dialogs,
 along with the system's Emoji & Symbols and Dictation; Undo and Redo keep
-working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Actual Size**
+working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Hide Sidebar**
+(`Ctrl+Cmd+S`), **Actual Size**
 (`Cmd+0`), **Zoom In** (`Cmd++`) and **Zoom Out** (`Cmd+-`), which step the
 interface scale from Settings, and **Enter Full Screen**. **Window > Minimize**
 (`Cmd+M`), **Zoom** and the list of open windows work as in other Mac apps.
@@ -589,6 +599,7 @@ always draw with OpenGL.
 | `Shift` + `Down` or `Up` | Choose the next or previous conversation too |
 | `Cmd`/`Ctrl` + `A` | Choose every conversation listed, outside a text field |
 | `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation, or all those chosen, to Trash |
+| `F9` on Linux/Windows, `Ctrl` + `Cmd` + `S` on macOS | Fold the sidebar into a strip of icons, or unfold it |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
 Shortcuts do not run while a text field is using the same key. When `Tab` has

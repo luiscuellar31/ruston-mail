@@ -40,6 +40,20 @@ pub fn widths(ratios: Panels, window_width: f32) -> PanelWidths {
     }
 }
 
+/// Sidebar, conversation list and reader widths with the sidebar folded into
+/// a rail of `rail` points: the list keeps its share of what is left.
+pub fn widths_beside_rail(ratios: Panels, window_width: f32, rail: f32) -> PanelWidths {
+    let remaining = (window_width - 2.0 * DIVIDER_WIDTH - rail).max(2.0 * MIN_PANEL_WIDTH);
+    let conversations =
+        (remaining * ratios.conversations).clamp(MIN_PANEL_WIDTH, remaining - MIN_PANEL_WIDTH);
+
+    PanelWidths {
+        sidebar: rail,
+        conversations,
+        reader: remaining - conversations,
+    }
+}
+
 /// Converts actual widths back to the stable nested ratios used by the
 /// existing settings file.
 pub fn ratios(sidebar: f32, conversations: f32, window_width: f32) -> Panels {
@@ -104,6 +118,28 @@ mod tests {
 
         assert!((restored.sidebar - expected.sidebar).abs() < f32::EPSILON);
         assert!((restored.conversations - expected.conversations).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn beside_a_folded_sidebar_the_list_keeps_its_share_of_the_rest() {
+        let rail = 51.0;
+        let shares = Panels::default();
+        for window in [MIN_COLUMNS_WIDTH, DEFAULT_WINDOW, 2_560.0] {
+            let widths = widths_beside_rail(shares, window, rail);
+            assert_eq!(widths.sidebar, rail);
+            assert!(widths.conversations >= MIN_PANEL_WIDTH, "{window}");
+            assert!(widths.reader >= MIN_PANEL_WIDTH, "{window}");
+            assert_eq!(
+                widths.sidebar + widths.conversations + widths.reader + 2.0 * DIVIDER_WIDTH,
+                window
+            );
+            // The share the list is saved with reads back the same.
+            let saved = ratios(rail, widths.conversations, window);
+            assert!(
+                (saved.conversations - shares.conversations).abs() < 1e-6,
+                "{window}"
+            );
+        }
     }
 
     #[test]

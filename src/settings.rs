@@ -39,6 +39,10 @@ pub const MAX_NOTICE_SECONDS: u64 = 10;
 pub struct Settings {
     pub window: Window,
     pub panels: Panels,
+    /// Whether the sidebar is folded into a strip of icons beside the list.
+    /// `panels` keeps the share it unfolds to.
+    #[serde(default)]
+    pub sidebar_folded: bool,
     /// Which folder a run opens in. The last folder each account read, in
     /// [`Self::accounts`], is kept whatever this says, so going back to
     /// [`StartFolder::LastRead`] still knows where that was.
@@ -148,6 +152,7 @@ impl Default for Settings {
         Self {
             window: Window::default(),
             panels: Panels::default(),
+            sidebar_folded: false,
             start: StartFolder::LastRead,
             // Keep the initial reader choices predictable on a fresh install.
             mark_read_on_open: true,
@@ -206,7 +211,8 @@ impl Default for Window {
 pub struct Panels {
     /// Where the sidebar ends, as a fraction of the window.
     pub sidebar: f32,
-    /// Where the conversation list ends, as a fraction of the rest.
+    /// Where the conversation list ends, as a fraction of the rest: what the
+    /// sidebar leaves, or its folded strip.
     pub conversations: f32,
 }
 

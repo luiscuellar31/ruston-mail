@@ -6,7 +6,7 @@ use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme
 use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
-    Notice, compact_layout, panel_ratios, panel_widths,
+    Notice, compact_layout, panel_ratios, panel_widths, widths_beside_rail,
 };
 use crate::mail::{
     ConversationSummary, CustomKind, Folder, ListFilter, MailFolder, MailboxError, PlaceLook,
@@ -18,6 +18,9 @@ const CONVERSATION_PANEL_ID: &str = "conversation-list";
 /// The columns shown while a saved session opens, kept apart from the
 /// mailbox's so their fixed widths never become its own.
 const OPENING_SIDEBAR_ID: &str = "opening-sidebar";
+/// The sidebar folded into a strip of icons, a panel of its own so the
+/// sidebar's width is kept for when it unfolds.
+const RAIL_PANEL_ID: &str = "mailbox-rail";
 const OPENING_CONVERSATIONS_ID: &str = "opening-conversations";
 /// Drawing the saved panel ratios measures back ratios a little off them, so
 /// a smaller difference is not a resize: saving it would rewrite the settings
@@ -56,17 +59,34 @@ pub(super) fn show(
         bottom_notice(&context, app, mailbox, state, settings, messages);
         return;
     }
-    let widths = panel_widths(app.panels(), window_width);
+    let folded = app.settings().sidebar_folded;
+    let rail = rail_width(theme::text_scale(&context));
+    let widths = if folded {
+        widths_beside_rail(app.panels(), window_width, rail)
+    } else {
+        panel_widths(app.panels(), window_width)
+    };
     let inset = theme::titlebar_inset(&context);
 
-    let sidebar = egui::Panel::left(SIDEBAR_PANEL_ID)
-        .default_size(widths.sidebar)
-        .size_range(MIN_PANEL_WIDTH..=(window_width - 2.0 * MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
-        .resizable(true)
-        .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
-        .show(root, |ui| {
-            sidebar(ui, app, mailbox, messages);
-        });
+    let sidebar = if folded {
+        egui::Panel::left(RAIL_PANEL_ID)
+            .default_size(rail)
+            .size_range(rail..=rail)
+            .resizable(false)
+            .frame(rail_frame(root, inset))
+            .show(root, |ui| folded_sidebar(ui, app, mailbox, messages))
+    } else {
+        egui::Panel::left(SIDEBAR_PANEL_ID)
+            .default_size(widths.sidebar)
+            .size_range(
+                MIN_PANEL_WIDTH..=(window_width - 2.0 * MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH),
+            )
+            .resizable(true)
+            .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
+            .show(root, |ui| {
+                sidebar(ui, app, mailbox, SidebarPlace::Column, messages);
+            })
+    };
 
     // The list, and where a notice sits: at the foot of the list, or of
     // Settings' page, above its buttons.
@@ -106,7 +126,14 @@ pub(super) fn show(
     let stored = app.panels();
     let sidebar = sidebar.response.rect.width();
     let actual = match conversations {
+        // Folded, the sidebar keeps the share it unfolds to, and only the
+        // list can have been dragged.
+        Some(conversations) if folded => Panels {
+            conversations: panel_ratios(sidebar, conversations, window_width).conversations,
+            ..stored
+        },
         Some(conversations) => panel_ratios(sidebar, conversations, window_width),
+        None if folded => stored,
         // Settings covers the conversation list, so only the sidebar can
         // have been dragged.
         None => Panels {
@@ -128,13 +155,27 @@ pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
     let window_width = root.available_width();
     let inset = theme::titlebar_inset(root.ctx());
     if !compact_layout(window_width) {
-        let widths = panel_widths(app.panels(), window_width);
+        let folded = app.settings().sidebar_folded;
+        let widths = if folded {
+            widths_beside_rail(
+                app.panels(),
+                window_width,
+                rail_width(theme::text_scale(root.ctx())),
+            )
+        } else {
+            panel_widths(app.panels(), window_width)
+        };
         egui::Panel::left(OPENING_SIDEBAR_ID)
             .default_size(widths.sidebar)
             .size_range(widths.sidebar..=widths.sidebar)
             .resizable(false)
             .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
-            .show(root, sidebar_skeleton);
+            .show(root, |ui| {
+                // A folded sidebar opens as an empty strip.
+                if !folded {
+                    sidebar_skeleton(ui);
+                }
+            });
         egui::Panel::left(OPENING_CONVERSATIONS_ID)
             .default_size(widths.conversations)
             .size_range(widths.conversations..=widths.conversations)
@@ -242,7 +283,7 @@ fn show_compact(
             }
             match state.compact_view {
                 CompactView::Folders => {
-                    sidebar(ui, app, mailbox, messages);
+                    sidebar(ui, app, mailbox, SidebarPlace::Page, messages);
                 }
                 CompactView::Mail => compact_mail(ui, app, mailbox, state, messages),
                 CompactView::Reader => reading_pane(ui, app, mailbox, state, messages),
@@ -318,10 +359,19 @@ fn reading_pane(
     }
 }
 
+/// Where the sidebar shows: beside the list, where it can fold into a strip
+/// of icons, or on its own, as one column shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SidebarPlace {
+    Column,
+    Page,
+}
+
 fn sidebar(
     ui: &mut egui::Ui,
     app: &App,
     mailbox: &Mailbox,
+    place: SidebarPlace,
     messages: &mut Vec<Message>,
 ) -> egui::scroll_area::ScrollAreaOutput<()> {
     ui.scope_builder(
@@ -353,18 +403,49 @@ fn sidebar(
                 .id_salt("sidebar-scroll")
                 .min_scrolled_height(0.0)
                 .auto_shrink([false, false])
-                .show(ui, |ui| sidebar_content(ui, app, mailbox, messages))
+                .show(ui, |ui| sidebar_content(ui, app, mailbox, place, messages))
         },
     )
     .inner
 }
 
-fn sidebar_content(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
-    ui.heading(
-        egui::RichText::new("Ruston Mail")
-            .size(theme::text_size(ui, theme::APP_NAME_SIZE))
-            .strong(),
-    );
+fn sidebar_content(
+    ui: &mut egui::Ui,
+    app: &App,
+    mailbox: &Mailbox,
+    place: SidebarPlace,
+    messages: &mut Vec<Message>,
+) {
+    let fold = theme::icon_button_size(ui);
+    let title = ui
+        .scope(|ui| {
+            // Beside the list, the title leaves the button that folds the
+            // sidebar its room at the right.
+            if place == SidebarPlace::Column {
+                ui.set_max_width(ui.available_width() - fold.x - ui.spacing().item_spacing.x);
+            }
+            ui.heading(
+                egui::RichText::new("Ruston Mail")
+                    .size(theme::text_size(ui, theme::APP_NAME_SIZE))
+                    .strong(),
+            )
+        })
+        .inner;
+    if place == SidebarPlace::Column {
+        let button = egui::Rect::from_center_size(
+            egui::pos2(ui.max_rect().right() - fold.x / 2.0, title.rect.center().y),
+            fold,
+        );
+        // Placed by hand, in a child that takes no room from the sidebar: a
+        // button counted in its width would widen it on every frame.
+        if ui
+            .new_child(egui::UiBuilder::new().max_rect(button))
+            .add(theme::IconButton::new(theme::Icon::Sidebar, "Hide sidebar"))
+            .clicked()
+        {
+            messages.push(Message::FoldSidebar(true));
+        }
+    }
     ui.add_space(12.0);
 
     if new_message_button(ui).clicked() {
@@ -627,20 +708,7 @@ fn folder_button(
     if let Some(count) = unread {
         button = button.right_text(place_text(ui, count.to_string(), selected));
     }
-    let button = chosen_place(ui, button, selected);
-    let layout = ui
-        .scope(|ui| {
-            // egui's grey hover is brighter than the soft violet of the
-            // selection; a place under the pointer gets a quieter tint of it.
-            let colors = theme::colors(ui);
-            let widgets = &mut ui.visuals_mut().widgets;
-            widgets.hovered.weak_bg_fill = colors.sidebar_hover;
-            widgets.hovered.bg_stroke = Stroke::NONE;
-            widgets.active.weak_bg_fill = colors.accent_soft;
-            widgets.active.bg_stroke = Stroke::NONE;
-            button.atom_ui(ui)
-        })
-        .inner;
+    let layout = place_layout(ui, chosen_place(ui, button, selected));
     let icon_color = if icon == theme::Icon::Label {
         label_color(look)
     } else if selected {
@@ -676,6 +744,176 @@ fn folder_button(
     if response.clicked() {
         messages.push(Message::SelectFolder(folder));
     }
+}
+
+/// Lays out a place of the sidebar. egui's grey hover is brighter than the
+/// soft violet of the selection; a place under the pointer gets a quieter
+/// tint of it.
+fn place_layout(ui: &mut egui::Ui, button: egui::Button<'_>) -> egui::AtomLayoutResponse {
+    ui.scope(|ui| {
+        let colors = theme::colors(ui);
+        let widgets = &mut ui.visuals_mut().widgets;
+        widgets.hovered.weak_bg_fill = colors.sidebar_hover;
+        widgets.hovered.bg_stroke = Stroke::NONE;
+        widgets.active.weak_bg_fill = colors.accent_soft;
+        widgets.active.bg_stroke = Stroke::NONE;
+        button.atom_ui(ui)
+    })
+    .inner
+}
+
+/// How wide the folded sidebar is: its icons, as tall as a place of the
+/// sidebar, with room either side.
+fn rail_width(scale: f32) -> f32 {
+    FOLDER_HEIGHT * scale + 2.0 * f32::from(RAIL_PADDING)
+}
+
+/// The folded sidebar's frame: the sidebar's, with less room either side.
+fn rail_frame(ui: &egui::Ui, inset: f32) -> egui::Frame {
+    let mut frame = theme::top_panel_frame(theme::colors(ui).sidebar, inset);
+    frame.inner_margin.left = RAIL_PADDING;
+    frame.inner_margin.right = RAIL_PADDING;
+    frame
+}
+
+/// The sidebar folded into a strip of icons, top to bottom: the way to
+/// unfold it, writing a new message, Proton's folders, the account's
+/// folders and labels behind a menu each, and Settings at the foot. Each
+/// says its name on hover and to screen readers.
+fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+    egui::Panel::bottom("rail-settings")
+        .frame(egui::Frame::NONE.inner_margin(egui::Margin {
+            top: theme::PANEL_PADDING,
+            ..Default::default()
+        }))
+        .show(ui, |ui| {
+            if rail_place(
+                ui,
+                theme::Icon::Settings,
+                "Settings",
+                app.showing_settings(),
+                false,
+            )
+            .clicked()
+            {
+                messages.push(Message::ShowSettings(true));
+            }
+        });
+    ui.spacing_mut().scroll = theme::panel_scroll_style();
+    egui::ScrollArea::vertical()
+        .id_salt("rail-scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            if rail_place(ui, theme::Icon::Sidebar, "Show sidebar", false, false).clicked() {
+                messages.push(Message::FoldSidebar(false));
+            }
+            ui.add_space(12.0);
+            if rail_new_message(ui).clicked() {
+                messages.push(Message::OpenCompose);
+            }
+            ui.add_space(12.0);
+            // Settings covers the mail panes, so it alone shows as chosen.
+            let current = (!app.showing_settings()).then(|| mailbox.folder());
+            for folder in MailFolder::ALL.into_iter().map(Folder::System) {
+                let unread = mailbox
+                    .counts()
+                    .and_then(|counts| counts.unread(&folder))
+                    .filter(|count| *count > 0);
+                let name = unread.map_or_else(
+                    || folder.name().to_owned(),
+                    |count| format!("{}, {count} unread", folder.name()),
+                );
+                let icon = folder_icon(&folder);
+                let chosen = current == Some(&folder);
+                if rail_place(ui, icon, &name, chosen, unread.is_some()).clicked() {
+                    messages.push(Message::SelectFolder(folder));
+                }
+            }
+            for (kind, icon, name) in [
+                (CustomKind::Folder, theme::Icon::Folder, "Folders"),
+                (CustomKind::Label, theme::Icon::Label, "Labels"),
+            ] {
+                let places: Vec<&Folder> = app
+                    .folders()
+                    .iter()
+                    .filter(|folder| folder.kind() == Some(kind))
+                    .collect();
+                if places.is_empty() {
+                    continue;
+                }
+                let chosen = current.is_some_and(|open| places.contains(&open));
+                let button = rail_place(ui, icon, name, chosen, false);
+                theme::menu_below(ui, &button, |ui| {
+                    for place in places {
+                        let depth = f32::from(app.place_look(place).depth);
+                        ui.horizontal(|ui| {
+                            ui.add_space(depth * SUBFOLDER_INDENT);
+                            let open = current == Some(place);
+                            if ui
+                                .add(egui::Button::selectable(open, place.name()))
+                                .clicked()
+                            {
+                                messages.push(Message::SelectFolder(place.clone()));
+                            }
+                        });
+                    }
+                });
+            }
+        });
+}
+
+/// One icon of the folded sidebar, chosen as a place of the sidebar is, with
+/// a dot when it holds unread mail.
+fn rail_place(
+    ui: &mut egui::Ui,
+    icon: theme::Icon,
+    name: &str,
+    chosen: bool,
+    unread: bool,
+) -> egui::Response {
+    let side = theme::text_size(ui, FOLDER_HEIGHT);
+    let button = egui::Button::new(theme::icon_atom())
+        .min_size(egui::vec2(side, side))
+        .selected(chosen)
+        .frame(true)
+        .frame_when_inactive(chosen);
+    let layout = place_layout(ui, chosen_place(ui, button, chosen));
+    let color = if chosen {
+        theme::colors(ui).selected_folder_text
+    } else {
+        ui.style().interact(&layout.response).fg_stroke.color
+    };
+    theme::paint_atom_icon(ui, &layout, icon, color);
+    let response = layout.response;
+    if unread {
+        ui.painter().circle_filled(
+            response.rect.right_top() + egui::vec2(-RAIL_DOT_INSET, RAIL_DOT_INSET),
+            LABEL_DOT_RADIUS,
+            theme::ACCENT,
+        );
+    }
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, chosen, name));
+    response.on_hover_text(name)
+}
+
+/// New message, folded into its icon, in the accent as the sidebar's button.
+fn rail_new_message(ui: &mut egui::Ui) -> egui::Response {
+    let side = theme::text_size(ui, FOLDER_HEIGHT);
+    let layout = ui
+        .scope(|ui| {
+            theme::primary_visuals(ui);
+            egui::Button::new(theme::icon_atom())
+                .min_size(egui::vec2(side, side))
+                .stroke(Stroke::NONE)
+                .atom_ui(ui)
+        })
+        .inner;
+    theme::paint_atom_icon(ui, &layout, theme::Icon::Compose, theme::ON_ACCENT);
+    let response = layout.response;
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "New message"));
+    response.on_hover_text("New message")
 }
 
 /// The color a label's icon wears: the one it has in Proton, as Proton's own
@@ -1122,6 +1360,10 @@ const ROW_HORIZONTAL_PADDING: f32 = 18.0;
 const ROW_META_WIDTH: f32 = 70.0;
 /// The corners of a row, and of the outline drawn while its menu is open.
 const ROW_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
+/// The room either side of the folded sidebar's icons.
+const RAIL_PADDING: i8 = 10;
+/// How far a folder's unread dot sits from its icon's corner.
+const RAIL_DOT_INSET: f32 = 6.0;
 /// The most labels a row shows as dots; it counts the rest.
 const ROW_LABEL_DOTS: usize = 3;
 /// A label's dot on a row, the size of the unread one, and the room between
