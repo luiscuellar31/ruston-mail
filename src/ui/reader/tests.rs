@@ -1198,6 +1198,7 @@ fn loading_reader(
         labels: Vec::new(),
         messages: (0..count)
             .map(|index| MailMessage {
+                address_id: String::new(),
                 id: format!("message-{index}"),
                 verdict: Verdict::Unverified,
                 sender: address(Some("Alex Rivera"), "alex@example.com"),
@@ -1619,6 +1620,7 @@ fn an_unreadable_message_shows_a_notice_and_can_still_be_answered() {
 #[test]
 fn a_collapsed_card_shows_the_real_address_beside_the_lock() {
     let message = MailMessage {
+        address_id: String::new(),
         id: "message".into(),
         verdict: Verdict::Verified,
         sender: address(Some("PayPal <service@paypal.com>"), "phish@proton.me"),
@@ -1700,6 +1702,7 @@ fn header_shapes_at(
 
 fn header_message(name: Option<&str>) -> MailMessage {
     MailMessage {
+        address_id: String::new(),
         id: "message".into(),
         verdict: Verdict::Unverified,
         sender: address(name, "alex@example.com"),
@@ -1986,6 +1989,7 @@ fn each_sender_line_has_its_height_spoken_label_and_tooltips() {
         ),
     ] {
         let message = MailMessage {
+            address_id: String::new(),
             id: "message".into(),
             verdict: Verdict::Unverified,
             sender: sender.clone(),
@@ -2072,6 +2076,7 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
 #[test]
 fn message_header_is_one_full_width_click_target() {
     let message = MailMessage {
+        address_id: String::new(),
         id: "message".into(),
         verdict: Verdict::Unverified,
         sender: address(Some("Alex Rivera"), "alex@example.com"),
@@ -2165,6 +2170,7 @@ fn an_expanded_message_card_only_uses_its_content_height() {
         subject: Some("Short message".into()),
         labels: Vec::new(),
         messages: vec![MailMessage {
+            address_id: String::new(),
             id: "message".into(),
             verdict: Verdict::Unverified,
             sender: address(Some("Alex Rivera"), "alex@example.com"),
@@ -2417,6 +2423,7 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
                         "sender@proton.me"
                     };
                     let message = MailMessage {
+                        address_id: String::new(),
                         id: "message".into(),
                         sender: address(name, sender),
                         to: Vec::new(),

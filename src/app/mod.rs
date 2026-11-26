@@ -284,6 +284,8 @@ pub enum Message {
     /// Leaves one of the original's files, by ID, out of a forward.
     LeaveOutForwarded(String),
     ComposeChanged(ComposeField, String),
+    /// Sends the draft from another of the account's addresses.
+    ComposeSender(String),
     /// A recipient field lost focus; its addresses are complete enough to look up.
     ComposeRecipientsLeft,
     /// How Proton will protect the message for the looked-up recipients.
@@ -998,6 +1000,7 @@ impl App {
             Message::ToggleComposeQuote => self.toggle_compose_quote(),
             Message::LeaveOutForwarded(id) => self.leave_out_forwarded(&id),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
+            Message::ComposeSender(address) => self.choose_compose_sender(address),
             Message::ComposeRecipientsLeft => return self.check_compose_protection(),
             Message::ComposeProtectionChecked(epoch, id, checks) => {
                 self.finish_protection_check(epoch, id, checks);

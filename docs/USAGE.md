@@ -366,7 +366,10 @@ attachments already stored on Proton do not count toward this local file limit.
 
 ## Writing
 
-Select **Write** for a new message. Recipient fields accept multiple addresses
+Select **Write** for a new message. When your account has more than one
+address, **From**, above **To**, chooses the one the message goes out from; a
+new message starts with the first in Proton's order, as Proton's web client
+does. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped. Domains are written in ASCII: unaccented letters,
 digits, and hyphens. Type an international domain, including one with accents,
@@ -449,8 +452,8 @@ people you sent it to. These recipients are in the composer's **To** and **Cc**
 fields, where you can add or remove anyone before sending, and the composer
 warns when the message's Reply-To sends the reply somewhere other than its
 sender. The subject
-is written for you. Replies and forwards are sent from the address the original
-message reached. The original's text is quoted under yours when it can be
+is written for you. Replies and forwards go out from the address the original
+message reached, which **From** shows and can change. The original's text is quoted under yours when it can be
 opened, unless you untick **Quote the original under your text** in the
 composer; a forward also carries the original's files, images in its body
 included. The composer lists the attachments a forward sends, each with

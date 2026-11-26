@@ -5,7 +5,7 @@ mod outgoing;
 mod proton;
 mod threading;
 
-pub use ruston_core::Verdict;
+pub use ruston_core::{AddressInfo, Verdict};
 use std::sync::Arc;
 
 /// Shared bound for scheduled inspections and their backend requests.
@@ -46,6 +46,15 @@ impl MailBackend {
 
     pub fn demo() -> Self {
         Self::Demo(demo::DemoMailbox::new())
+    }
+
+    /// The account's addresses mail can go out from, in Proton's order: new
+    /// mail goes from the first unless another is chosen.
+    pub fn addresses(&self) -> Vec<AddressInfo> {
+        match self {
+            Self::Proton(service) => service.addresses().to_vec(),
+            Self::Demo(service) => service.addresses(),
+        }
     }
 
     pub fn page_size(&self) -> u32 {

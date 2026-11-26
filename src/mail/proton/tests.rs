@@ -208,6 +208,7 @@ fn api_error(http_status: u16) -> Error {
 fn decrypted_messages_map_to_reader_models() {
     let meta = MessageMetadata {
         id: "message".into(),
+        address_id: "address-2".into(),
         sender: person("", "alex@example.com"),
         to_list: vec![person("Demo", "demo@example.com")],
         cc_list: vec![person("", "team@example.org")],
@@ -227,6 +228,8 @@ fn decrypted_messages_map_to_reader_models() {
     );
 
     assert_eq!(message.id, "message");
+    // The account's address it reached, which an answer goes out from.
+    assert_eq!(message.address_id, "address-2");
     assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
     assert_eq!(message.sender.name, None);
     assert_eq!(message.sender.address, "alex@example.com");
@@ -1229,4 +1232,29 @@ fn folders_follow_their_parents_and_labels_keep_their_colors() {
     for odd in ["", "#fff", "#gg0000", "#ééé"] {
         assert_eq!(hex_color(odd), None, "{odd}");
     }
+}
+
+#[test]
+fn the_address_chosen_to_send_from_reaches_core() {
+    let outgoing = Outgoing {
+        kind: OutgoingKind::New,
+        from: Some("alias@proton.me".into()),
+        to: vec!["ana@example.org".into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Thursday".into(),
+        body: "See you then.".into(),
+        format: super::super::BodyFormat::PlainText,
+        attachments: Vec::new(),
+    };
+    assert_eq!(
+        send_options(&outgoing).from.as_deref(),
+        Some("alias@proton.me")
+    );
+    // Unchosen, core picks: the primary address, or the one an original reached.
+    let unchosen = Outgoing {
+        from: None,
+        ..outgoing
+    };
+    assert_eq!(send_options(&unchosen).from, None);
 }

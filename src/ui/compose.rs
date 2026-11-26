@@ -185,6 +185,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             quote_choice(ui, compose, leaving, messages);
         }
     }
+    sender_choice(ui, compose, leaving, messages);
     recipient_fields(ui, compose, leaving, messages);
     ui.add_space(4.0);
     if compose.asks_for_subject() {
@@ -282,6 +283,33 @@ fn discard_prompt(context: &egui::Context) -> Option<Message> {
         ],
         Message::CancelDiscard,
     )
+}
+
+/// Which of the account's addresses the message goes out from, offered
+/// when it has more than one: the first unless the message answers mail
+/// that reached another.
+fn sender_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
+    let choices = compose.sender_choices();
+    let Some(sender) = compose.sender().filter(|_| !choices.is_empty()) else {
+        return;
+    };
+    let name = ui.label(egui::RichText::new("From").color(theme::colors(ui).muted));
+    let mut chosen = sender.to_owned();
+    ui.add_enabled_ui(!leaving, |ui| {
+        egui::ComboBox::from_id_salt(("compose-sender", compose.id()))
+            .selected_text(sender)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for address in choices {
+                    ui.selectable_value(&mut chosen, address.clone(), address.as_str());
+                }
+            })
+            .response
+            .labelled_by(name.id);
+    });
+    if chosen != sender {
+        messages.push(Message::ComposeSender(chosen));
+    }
 }
 
 /// To, and Cc and Bcc once asked for; what the typed addresses mean for how

@@ -249,6 +249,10 @@ impl MessageBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailMessage {
     pub id: String,
+    /// Proton's ID for the account's address the message belongs to: the
+    /// one it reached, or the one it went out from. An answer goes out from
+    /// that address unless another is chosen.
+    pub address_id: String,
     pub sender: MailAddress,
     pub to: Vec<MailAddress>,
     pub cc: Vec<MailAddress>,

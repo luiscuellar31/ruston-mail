@@ -83,6 +83,7 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
             .iter()
             .enumerate()
             .map(|(time, message_id)| MailMessage {
+                address_id: String::new(),
                 id: (*message_id).to_owned(),
                 verdict: crate::mail::Verdict::Unverified,
                 sender: MailAddress::default(),

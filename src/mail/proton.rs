@@ -9,9 +9,9 @@ use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, Label, LabelCount,
-    MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions, UnreadableMessage,
-    Verdict,
+    AddressInfo, Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, Label,
+    LabelCount, MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions,
+    UnreadableMessage, Verdict,
 };
 
 use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError};
@@ -57,6 +57,8 @@ const MAX_LISTED_CORRESPONDENTS: usize = 3;
 pub struct ProtonMailService {
     client: Client,
     email: Option<String>,
+    /// The addresses mail can go out from, in Proton's order.
+    addresses: Vec<AddressInfo>,
     own_addresses: OwnAddresses,
     inspection_limiter: Arc<Semaphore>,
     listed: ListedAttachments,
@@ -104,6 +106,12 @@ impl ListedAttachments {
 impl ProtonMailService {
     pub fn email(&self) -> Option<&str> {
         self.email.as_deref()
+    }
+
+    /// The addresses mail can go out from, in Proton's order: new mail goes
+    /// from the first unless another is chosen.
+    pub fn addresses(&self) -> &[AddressInfo] {
+        &self.addresses
     }
 
     /// The Proton account signed in, the same from one session to the next.
@@ -205,21 +213,7 @@ impl ProtonMailService {
     /// Sends a message. Proton answers with the sent message's ID, which
     /// nothing here uses yet.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
-        let options = SendOptions {
-            to: outgoing.to.clone(),
-            cc: outgoing.cc.clone(),
-            bcc: outgoing.bcc.clone(),
-            subject: outgoing.subject.clone(),
-            body: outgoing.wire_body(),
-            html: outgoing.is_html(),
-            attachments: outgoing.attachments.clone(),
-            quote: outgoing.kind.quote(),
-            leave_out: outgoing.kind.leave_out().to_vec(),
-            // ruston-core picks the sender: the primary address, or for an
-            // answer the address the original reached.
-            // Scheduling and self-destruct are not offered yet.
-            ..SendOptions::default()
-        };
+        let options = send_options(outgoing);
 
         // Core writes the subjects of answers and keys forwarded attachments
         // for the draft, and Proton threads them; a reply goes to the
@@ -464,8 +458,8 @@ impl ProtonMailService {
 
     pub(super) fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
-        let own_addresses = client
-            .addresses()
+        let addresses = client.addresses();
+        let own_addresses = addresses
             .iter()
             .map(|address| threading::normalize_address(&address.email))
             .collect();
@@ -473,6 +467,7 @@ impl ProtonMailService {
         Self {
             client,
             email,
+            addresses,
             own_addresses,
             inspection_limiter: Arc::new(Semaphore::new(INSPECTION_CONCURRENCY)),
             listed: ListedAttachments::default(),
@@ -777,6 +772,26 @@ fn known_time(seconds: i64) -> Option<i64> {
     (seconds > 0).then_some(seconds)
 }
 
+/// What core is asked to send for `outgoing`.
+fn send_options(outgoing: &Outgoing) -> SendOptions {
+    SendOptions {
+        to: outgoing.to.clone(),
+        cc: outgoing.cc.clone(),
+        bcc: outgoing.bcc.clone(),
+        subject: outgoing.subject.clone(),
+        body: outgoing.wire_body(),
+        html: outgoing.is_html(),
+        attachments: outgoing.attachments.clone(),
+        quote: outgoing.kind.quote(),
+        leave_out: outgoing.kind.leave_out().to_vec(),
+        // Without a chosen sender, ruston-core picks one: the primary
+        // address, or for an answer the address the original reached.
+        from: outgoing.from.clone(),
+        // Scheduling and self-destruct are not offered yet.
+        ..SendOptions::default()
+    }
+}
+
 fn mail_address(person: &Recipient) -> MailAddress {
     MailAddress {
         name: non_blank(&person.name),
@@ -868,6 +883,7 @@ fn message_without_body(
         unread: meta.is_unread(),
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
+        address_id: meta.address_id,
         id: meta.id,
     }
 }

@@ -223,6 +223,7 @@ fn newest_message_matches_the_list_time() {
 fn outgoing(subject: &str) -> Outgoing {
     Outgoing {
         kind: OutgoingKind::New,
+        from: None,
         to: vec!["alex@example.com".into()],
         cc: Vec::new(),
         bcc: Vec::new(),
@@ -684,6 +685,41 @@ fn derived_counts_match_every_folder_after_repeated_actions() {
             .count() as u32;
         assert_eq!(counts.unread(&sys(folder)), Some(unread), "{folder:?}");
     }
+}
+
+#[test]
+fn mail_sent_from_the_second_address_is_kept_as_sent_from_it() {
+    let mailbox = DemoMailbox::new();
+    let addresses: Vec<String> = mailbox
+        .addresses()
+        .into_iter()
+        .map(|address| address.email)
+        .collect();
+    assert_eq!(addresses, ["demo@example.com", "demo@example.org"]);
+
+    mailbox
+        .send_now(&Outgoing {
+            from: Some("demo@example.org".into()),
+            ..outgoing("From the other address")
+        })
+        .unwrap();
+    let row = state_page(&mailbox, MailFolder::Sent)
+        .conversations
+        .into_iter()
+        .max_by_key(|row| row.time)
+        .expect("the message is in Sent");
+    let sent = &mailbox.conversation_detail(&row.id, NOW).unwrap().messages[0];
+    assert_eq!(sent.sender.address, "demo@example.org");
+    // An answer to it goes from the same address.
+    assert_eq!(sent.address_id, "demo-address-2");
+
+    let shipped = mailbox.conversation_detail("demo-0", NOW).unwrap();
+    assert!(
+        shipped
+            .messages
+            .iter()
+            .all(|message| message.address_id == "demo-address-1")
+    );
 }
 
 fn state_page(mailbox: &DemoMailbox, folder: MailFolder) -> ConversationPage {

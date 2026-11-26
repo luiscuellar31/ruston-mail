@@ -3,8 +3,8 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use ruston_core::Quote;
 use ruston_core::model::enums::message_flag;
+use ruston_core::{AddressInfo, Quote};
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
@@ -31,6 +31,15 @@ const THREAD_GAP: i64 = 3 * HOUR + 17 * MINUTE;
 const DEMO_USER_NAME: &str = "Demo User";
 const DEMO_USER_ADDRESS: &str = "demo@example.com";
 
+/// The fictional account's addresses, each with the ID Proton would give
+/// it, in the order Proton lists them: new mail goes from the first unless
+/// another is chosen. Like many Proton accounts, it has its name under a
+/// second domain.
+const DEMO_ADDRESSES: [(&str, &str); 2] = [
+    ("demo-address-1", DEMO_USER_ADDRESS),
+    ("demo-address-2", "demo@example.org"),
+];
+
 /// What joins a conversation's correspondents in [`Fixture::correspondents`].
 const CORRESPONDENT_SEPARATOR: &str = ", ";
 
@@ -54,6 +63,9 @@ struct Fixture {
     to: Vec<String>,
     /// Written in this run rather than shipped with the demo.
     composed: bool,
+    /// Which of [`DEMO_ADDRESSES`] the demo user writes from and is
+    /// written to at.
+    address: usize,
 }
 
 /// Process-local mutable state for the offline mailbox.
@@ -104,6 +116,17 @@ impl DemoMailbox {
     ) -> Result<ConversationPage, MailboxError> {
         let fixtures = self.lock();
         Ok(list_from(&fixtures, folder, page, page_size, now))
+    }
+
+    /// The fictional account's addresses, in the order Proton lists them.
+    pub fn addresses(&self) -> Vec<AddressInfo> {
+        DEMO_ADDRESSES
+            .iter()
+            .map(|(id, email)| AddressInfo {
+                id: (*id).to_owned(),
+                email: (*email).to_owned(),
+            })
+            .collect()
     }
 
     /// Searches every folder, the way the server does for a real account.
@@ -212,6 +235,11 @@ impl DemoMailbox {
             html: outgoing.is_html(),
             to: everyone,
             composed: true,
+            // Core sends from the first address unless another is chosen.
+            address: DEMO_ADDRESSES
+                .iter()
+                .position(|(_, email)| outgoing.from.as_deref() == Some(*email))
+                .unwrap_or_default(),
         });
 
         Ok(())
@@ -514,7 +542,7 @@ fn correspondent_addresses(fixture: &Fixture) -> impl Iterator<Item = MailAddres
 }
 
 fn fixture_participants(fixture: &Fixture) -> Vec<MailAddress> {
-    std::iter::once(demo_user())
+    std::iter::once(demo_user(fixture))
         .chain(correspondent_addresses(fixture))
         .chain(
             fixture
@@ -548,14 +576,14 @@ fn message(
     let from_demo_user = newer.is_multiple_of(2) == fixture.outgoing;
 
     let (sender, mut recipients) = if from_demo_user {
-        (demo_user(), participants.to_vec())
+        (demo_user(fixture), participants.to_vec())
     } else {
         let sender = if participants.is_empty() {
             MailAddress::default()
         } else {
             participants[(position / 2) % participants.len()].clone()
         };
-        let recipients = std::iter::once(demo_user())
+        let recipients = std::iter::once(demo_user(fixture))
             .chain(
                 participants
                     .iter()
@@ -593,9 +621,14 @@ fn message(
         to_list: recipients.iter().map(core_recipient).collect(),
         ..ruston_core::MessageMetadata::default()
     };
-    let reply = ruston_core::reply_recipients(&meta, &[], &[demo_user().address]);
+    let own: Vec<String> = DEMO_ADDRESSES
+        .iter()
+        .map(|(_, email)| (*email).to_owned())
+        .collect();
+    let reply = ruston_core::reply_recipients(&meta, &[], &own);
     MailMessage {
         id: message_id(index, position),
+        address_id: DEMO_ADDRESSES[fixture.address].0.to_owned(),
         verdict: super::Verdict::Unverified,
         reply_to: reply.to,
         reply_all_cc: reply.cc,
@@ -617,10 +650,11 @@ fn message(
     }
 }
 
-fn demo_user() -> MailAddress {
+/// The demo user, at the address `fixture` involves.
+fn demo_user(fixture: &Fixture) -> MailAddress {
     MailAddress {
         name: Some(DEMO_USER_NAME.to_owned()),
-        address: DEMO_USER_ADDRESS.to_owned(),
+        address: DEMO_ADDRESSES[fixture.address].1.to_owned(),
     }
 }
 

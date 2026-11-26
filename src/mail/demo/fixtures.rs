@@ -150,6 +150,7 @@ fn mail(
         html: false,
         to: Vec::new(),
         composed: false,
+        address: 0,
     }
 }
 

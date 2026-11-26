@@ -388,7 +388,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   demo answers its fictional mail with core's `reply_recipients`, given the
   flags Proton would set (received, sent, or a draft never sent), so a reply
   goes where it would with an account; its tests find conversations by what
-  they are, not by their place among the fixtures.
+  they are, not by their place among the fixtures. Its account has two
+  addresses, so the composer's choice of sender shows, and a message sent from
+  the second is kept as sent from it.
   Actions on a conversation row use Proton's conversation endpoints, one
   request each: a move, a star or a custom label applies to every message in
   the conversation, as in Proton's web client. A sign-in has two minutes of
@@ -784,7 +786,11 @@ attachments, recipients, replies and packages each have a module under
 `mail/send/`. The
 result returns to the app as a message. A reply opens with To, and Cc for
 Reply all, filled in as core would address it; whatever the fields then hold
-is sent, as for a new message or a forward. One draft is open at a time: asking
+is sent, as for a new message or a forward. A draft keeps the account's
+addresses, in Proton's order, and the one it goes out from: an answer starts
+with the address the original reached, found by the message's `address_id` as
+the terminal interface finds it, and a new message leaves the choice to core,
+which sends from the first. One draft is open at a time: asking
 for a new message, a reply or a forward while one is open leaves it as it is,
 marks it so the composer says why, and, in its own window, returns
 `UiEffect::RaiseComposer`, which the shell turns into un-minimizing and

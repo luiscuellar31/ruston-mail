@@ -23,6 +23,44 @@ fn screen_readers_hear_each_field_by_its_name() {
 }
 
 #[test]
+fn the_composer_asks_which_address_sends_above_to() {
+    use egui::accesskit::Role;
+
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    let _ = app.update(Message::OpenCompose);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        show(ui, app.compose().unwrap(), &mut Vec::new());
+    });
+    let from = crate::ui::test_support::text_rect(&output.shapes, "From");
+    let sender = crate::ui::test_support::text_rect(&output.shapes, "demo@example.com");
+    let to = crate::ui::test_support::text_rect(&output.shapes, "To");
+    assert!(
+        from.bottom() <= sender.top() && sender.bottom() <= to.top(),
+        "From {from:?}, its address {sender:?}, To {to:?}"
+    );
+    // Screen readers hear the choice by its label.
+    let nodes: std::collections::HashMap<_, _> = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| update.nodes.iter().cloned())
+        .collect();
+    let labelled_from = nodes.values().any(|node| {
+        node.role() == Role::ComboBox
+            && node
+                .labelled_by()
+                .iter()
+                .filter_map(|id| nodes.get(id))
+                .any(|label| label.label().or(label.value()) == Some("From"))
+    });
+    output.drop_without_applying_deltas();
+    assert!(labelled_from);
+}
+
+#[test]
 fn a_small_composer_keeps_actions_visible_and_fields_scrollable() {
     let context = egui::Context::default();
     theme::install(&context);
