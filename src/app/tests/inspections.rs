@@ -150,6 +150,7 @@ fn an_inspection_asked_before_a_rename_still_frees_its_place() {
             starred: false,
             message_count: 2,
             has_attachments: false,
+            labels: Vec::new(),
         }],
         total: 1,
         inspect_candidates: vec!["thread-1".into()],
@@ -218,6 +219,7 @@ fn a_page_with_candidates_starts_inspecting_them() {
             starred: false,
             message_count: 2,
             has_attachments: false,
+            labels: Vec::new(),
         }],
         total: 1,
         inspect_candidates: vec!["demo-cand-1".into(), "demo-cand-2".into()],
@@ -309,6 +311,7 @@ fn an_inspection_that_finds_separate_threads_splits_the_row() {
             starred: false,
             message_count: 1,
             has_attachments: false,
+            labels: Vec::new(),
         },
         ConversationSummary {
             id: "split-2".into(),
@@ -322,6 +325,7 @@ fn an_inspection_that_finds_separate_threads_splits_the_row() {
             starred: false,
             message_count: 1,
             has_attachments: false,
+            labels: Vec::new(),
         },
     ];
 
@@ -364,6 +368,7 @@ fn an_inspection_from_another_session_or_folder_changes_nothing() {
         starred: false,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     }];
 
     // Wrong epoch

@@ -30,6 +30,7 @@ fn summary(id: &str) -> ConversationSummary {
         starred: false,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     }
 }
 
@@ -55,6 +56,7 @@ fn searchable_summary(
         starred: false,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     }
 }
 

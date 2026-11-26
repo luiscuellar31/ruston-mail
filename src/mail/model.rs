@@ -201,6 +201,9 @@ pub struct ConversationSummary {
     /// Whether any message carries a file: the list shows a paperclip, and
     /// files are fetched only when someone saves one.
     pub has_attachments: bool,
+    /// Proton's IDs of the labels and folders it is filed under, Proton's
+    /// own included: the list marks the account's labels among them.
+    pub labels: Vec<String>,
 }
 
 /// A mail address. Either part may be missing in server data.

@@ -833,7 +833,7 @@ fn conversation_pane(
             if let ListStatus::Failed(error, attempt) = status {
                 failure_line(ui, error, attempt, messages);
             }
-            conversation_list(ui, mailbox, state, messages);
+            conversation_list(ui, mailbox, &row_labels(app), state, messages);
         }
     }
 }
@@ -1122,6 +1122,16 @@ const ROW_HORIZONTAL_PADDING: f32 = 18.0;
 const ROW_META_WIDTH: f32 = 70.0;
 /// The corners of a row, and of the outline drawn while its menu is open.
 const ROW_CORNER_RADIUS: CornerRadius = CornerRadius::same(8);
+/// The most labels a row shows as dots; it counts the rest.
+const ROW_LABEL_DOTS: usize = 3;
+/// A label's dot on a row, the size of the unread one, and the room between
+/// two of them.
+const LABEL_DOT_RADIUS: f32 = 3.5;
+const LABEL_DOT_GAP: f32 = 3.0;
+/// How far the paperclip reaches either side of its middle.
+const CLIP_HALF_WIDTH: f32 = 2.5;
+/// The room between the marks at the end of a subject line, and before them.
+const MARK_GAP: f32 = 6.0;
 /// The width of the search field's outline, inside its padding.
 const SEARCH_OUTLINE: i8 = 1;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
@@ -1227,6 +1237,7 @@ impl ConversationScroll {
 fn conversation_list(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
+    labels: &[RowLabel],
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -1283,7 +1294,7 @@ fn conversation_list(
                         continue;
                     };
                     let chosen = mailbox.is_chosen(&conversation.id);
-                    list_row(ui, mailbox, conversation, chosen, &now, messages);
+                    list_row(ui, mailbox, conversation, labels, chosen, &now, messages);
                 }
             });
             state.conversation_scroll = Some(ConversationScroll::capture(
@@ -1325,13 +1336,14 @@ fn list_row(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     conversation: &ConversationSummary,
+    labels: &[RowLabel],
     selected: bool,
     now: &ZonedDateTime,
     messages: &mut Vec<Message>,
 ) {
     let response = ui
         .push_id(&conversation.id, |ui| {
-            conversation_row(ui, conversation, selected, now)
+            conversation_row(ui, conversation, labels, selected, now)
         })
         .inner;
     if response.clicked() {
@@ -1415,9 +1427,77 @@ fn row_lines(rect: egui::Rect, scale: f32) -> RowLines {
     }
 }
 
+/// One of the account's labels, as a conversation row marks it.
+struct RowLabel<'a> {
+    id: &'a str,
+    name: &'a str,
+    color: Color32,
+}
+
+/// The account's labels, in the sidebar's order, as rows mark them.
+fn row_labels(app: &App) -> Vec<RowLabel<'_>> {
+    app.folders()
+        .iter()
+        .filter_map(|folder| match folder {
+            Folder::Custom {
+                id,
+                name,
+                kind: CustomKind::Label,
+            } => Some(RowLabel {
+                id,
+                name,
+                color: label_color(app.place_look(folder)),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Paints a dot in each label's color, the first ones up to
+/// [`ROW_LABEL_DOTS`], and how many more there are, ending at `right` on the
+/// line at `y`. Where they went, or `None` without a label.
+fn paint_label_dots(
+    painter: &egui::Painter,
+    labels: &[&RowLabel],
+    right: f32,
+    y: f32,
+    font: FontId,
+    muted: Color32,
+) -> Option<egui::Rect> {
+    if labels.is_empty() {
+        return None;
+    }
+    let mut painted = egui::Rect::NOTHING;
+    let mut left = right;
+    let more = labels.len().saturating_sub(ROW_LABEL_DOTS);
+    if more > 0 {
+        let count = painter.text(
+            egui::pos2(left, y),
+            Align2::RIGHT_CENTER,
+            format!("+{more}"),
+            font,
+            muted,
+        );
+        painted = painted.union(count);
+        left = count.left() - LABEL_DOT_GAP;
+    }
+    // The first label ends up leftmost, as names read.
+    for label in labels.iter().take(ROW_LABEL_DOTS).rev() {
+        let center = egui::pos2(left - LABEL_DOT_RADIUS, y);
+        painter.circle_filled(center, LABEL_DOT_RADIUS, label.color);
+        painted = painted.union(egui::Rect::from_center_size(
+            center,
+            egui::Vec2::splat(2.0 * LABEL_DOT_RADIUS),
+        ));
+        left = center.x - LABEL_DOT_RADIUS - LABEL_DOT_GAP;
+    }
+    Some(painted)
+}
+
 fn conversation_row(
     ui: &mut egui::Ui,
     conversation: &ConversationSummary,
+    labels: &[RowLabel],
     selected: bool,
     now: &ZonedDateTime,
 ) -> egui::Response {
@@ -1425,6 +1505,11 @@ fn conversation_row(
         .correspondents
         .as_deref()
         .unwrap_or("(Unknown)");
+    // The account's labels this conversation carries, in the sidebar's order.
+    let marks: Vec<&RowLabel> = labels
+        .iter()
+        .filter(|label| conversation.labels.iter().any(|id| id == label.id))
+        .collect();
     let subject = conversation.subject.as_deref().unwrap_or("(No subject)");
     let time = conversation
         .time
@@ -1476,15 +1561,6 @@ fn conversation_row(
         sender_color,
         text_width,
     );
-    theme::paint_truncated_text_aligned(
-        &painter,
-        egui::pos2(lines.text_left, lines.subject_y),
-        Align2::LEFT_CENTER,
-        subject,
-        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
-        subject_color,
-        text_width,
-    );
 
     let meta_font = FontId::proportional(theme::FOOTNOTE_SIZE * scale);
     painter.text(
@@ -1511,22 +1587,50 @@ fn conversation_row(
             theme::colors(ui).muted,
         )
         .left();
+    let mut marks_left = facts_left;
     if conversation.has_attachments {
-        theme::paint_clip(
-            &painter,
-            egui::pos2(facts_left - 9.0, lines.subject_y),
-            theme::colors(ui).muted,
-        );
+        let clip = egui::pos2(facts_left - 9.0, lines.subject_y);
+        theme::paint_clip(&painter, clip, theme::colors(ui).muted);
+        marks_left = clip.x - CLIP_HALF_WIDTH;
     }
+    let dots = paint_label_dots(
+        &painter,
+        &marks,
+        marks_left - MARK_GAP,
+        lines.subject_y,
+        FontId::proportional(theme::FOOTNOTE_SIZE * scale),
+        theme::colors(ui).muted,
+    );
+    // The subject gives way to the dots, never the other way round.
+    let subject_right = dots.map_or(lines.text_right, |dots| {
+        (dots.left() - MARK_GAP).min(lines.text_right)
+    });
+    theme::paint_truncated_text_aligned(
+        &painter,
+        egui::pos2(lines.text_left, lines.subject_y),
+        Align2::LEFT_CENTER,
+        subject,
+        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
+        subject_color,
+        subject_right - lines.text_left,
+    );
 
+    let label_names: Vec<&str> = marks.iter().map(|label| label.name).collect();
     response.widget_info(|| {
         egui::WidgetInfo::selected(
             egui::WidgetType::Button,
             true,
             selected,
-            row_description(conversation, correspondents, subject, &time),
+            row_description(conversation, correspondents, subject, &time, &label_names),
         )
     });
+    // The dots' names, for the pointer resting on them.
+    let response = match dots {
+        Some(dots) if ui.rect_contains_pointer(dots.expand(LABEL_DOT_GAP)) => {
+            response.on_hover_text_at_pointer(label_names.join(", "))
+        }
+        _ => response,
+    };
     // A row of a list rather than a link, so it keeps the arrow, as native
     // lists do.
     response
@@ -1539,6 +1643,7 @@ fn row_description(
     correspondents: &str,
     subject: &str,
     time: &str,
+    labels: &[&str],
 ) -> String {
     let mut parts = Vec::new();
     if conversation.unread {
@@ -1557,6 +1662,9 @@ fn row_description(
     }
     if conversation.has_attachments {
         parts.push("attachment".to_owned());
+    }
+    if !labels.is_empty() {
+        parts.push(format!("labeled {}", labels.join(", ")));
     }
     parts.join(", ")
 }

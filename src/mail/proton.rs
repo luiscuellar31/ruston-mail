@@ -657,6 +657,11 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         .chain(&conversation.recipients)
         .map(mail_address)
         .collect();
+    let labels = conversation
+        .labels
+        .iter()
+        .map(|label| label.id.clone())
+        .collect();
 
     ConversationSummary {
         subject: non_blank(&conversation.subject),
@@ -668,6 +673,7 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
         has_attachments: conversation.num_attachments > 0,
+        labels,
         id: conversation.id,
         kind: SummaryKind::Conversation,
     }
@@ -745,6 +751,7 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
         has_attachments: message.num_attachments > 0,
+        labels: message.label_ids,
         id: message.id,
         kind: SummaryKind::Message,
     }

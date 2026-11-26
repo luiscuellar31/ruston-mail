@@ -553,8 +553,9 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         unread: fixture.unread,
         starred: fixture.starred,
         message_count: u32::try_from(fixture.message_count()).unwrap_or(u32::MAX),
-        // The fictional mailbox carries no files.
+        // The fictional mailbox carries no files, and has no labels.
         has_attachments: false,
+        labels: Vec::new(),
     }
 }
 

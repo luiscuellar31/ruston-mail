@@ -826,6 +826,7 @@ fn pagination_row(id: &str, time: i64) -> ConversationSummary {
         starred: false,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     }
 }
 
@@ -1037,7 +1038,7 @@ fn pagination_frame(
             )),
             ..input
         },
-        |ui| conversation_list(ui, mailbox, state, &mut messages),
+        |ui| conversation_list(ui, mailbox, &[], state, &mut messages),
     );
     let mut button = None;
     let mut subjects = std::collections::HashMap::new();
@@ -2434,6 +2435,7 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
         starred: true,
         message_count: 3,
         has_attachments: true,
+        labels: Vec::new(),
     };
     let now = ZonedDateTime::now();
     // At every text size, since the row grows with its text.
@@ -2445,7 +2447,7 @@ fn a_row_is_exactly_the_height_the_list_places_it_at() {
         context
             .run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(320.0);
-                height = conversation_row(ui, &conversation, true, &now)
+                height = conversation_row(ui, &conversation, &[], true, &now)
                     .rect
                     .height();
             })
@@ -2475,7 +2477,7 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
         let mut row = egui::Rect::NOTHING;
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(320.0);
-            row = conversation_row(ui, &conversation, false, &now).rect;
+            row = conversation_row(ui, &conversation, &[], false, &now).rect;
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -2522,6 +2524,7 @@ fn unread_rows_are_brighter_than_rows_already_read() {
                 starred: false,
                 message_count: 1,
                 has_attachments: false,
+                labels: Vec::new(),
             };
             let mut palette = (
                 Color32::TRANSPARENT,
@@ -2530,7 +2533,7 @@ fn unread_rows_are_brighter_than_rows_already_read() {
             );
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(320.0);
-                conversation_row(ui, &conversation, false, &now);
+                conversation_row(ui, &conversation, &[], false, &now);
                 palette = (
                     ui.visuals().strong_text_color(),
                     ui.visuals().text_color(),
@@ -2567,6 +2570,109 @@ fn unread_rows_are_brighter_than_rows_already_read() {
 }
 
 #[test]
+fn a_row_marks_the_account_labels_it_carries_in_their_colors() {
+    let colors = [
+        Color32::from_rgb(0x3b, 0x82, 0xf6),
+        Color32::from_rgb(0x22, 0xc5, 0x5e),
+        Color32::from_rgb(0xf5, 0x9e, 0x0b),
+        Color32::from_rgb(0xef, 0x44, 0x44),
+        Color32::from_rgb(0x8b, 0x5c, 0xf6),
+    ];
+    let names = ["Work", "Family", "Travel", "Urgent", "Later"];
+    let labels: Vec<RowLabel> = names
+        .iter()
+        .zip(colors)
+        .map(|(name, color)| RowLabel {
+            id: name,
+            name,
+            color,
+        })
+        .collect();
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let now = ZonedDateTime::now();
+    // The dots a row with `carried` draws, left to right, what the list
+    // shows of its subject, the row's height, and what a screen reader hears.
+    let render = |carried: &[&str]| {
+        let conversation = ConversationSummary {
+            subject: Some("Minutes of the planning meeting and the next steps".into()),
+            starred: true,
+            message_count: 7,
+            labels: carried.iter().map(|id| (*id).to_owned()).collect(),
+            ..pagination_row("row", 0)
+        };
+        let mut height = 0.0;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(320.0);
+            height = conversation_row(ui, &conversation, &labels, false, &now)
+                .rect
+                .height();
+        });
+        let mut dots: Vec<(f32, Color32)> = Vec::new();
+        let mut subject = egui::Rect::NOTHING;
+        let mut more = None;
+        for clipped in &output.shapes {
+            match &clipped.shape {
+                egui::epaint::Shape::Circle(circle) if colors.contains(&circle.fill) => {
+                    dots.push((circle.center.x, circle.fill));
+                }
+                egui::epaint::Shape::Text(text) => {
+                    let rect = text.galley.rect.translate(text.pos.to_vec2());
+                    let shown = text.galley.text();
+                    if shown.starts_with("Minutes") {
+                        subject = rect;
+                    } else if shown.starts_with('+') {
+                        more = Some((shown.to_owned(), rect));
+                    }
+                }
+                _ => {}
+            }
+        }
+        dots.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let heard = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .find_map(|(_, node)| {
+                node.label()
+                    .filter(|label| label.contains("Test sender"))
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        (dots, subject, more, height, heard)
+    };
+
+    // Proton's own labels and folders get no dot; the account's come in the
+    // sidebar's order, whatever order Proton gave them in.
+    let (dots, subject, more, height, heard) = render(&["Travel", "0", "Work"]);
+    let drawn: Vec<Color32> = dots.iter().map(|(_, color)| *color).collect();
+    assert_eq!(drawn, [colors[0], colors[2]]);
+    assert!(more.is_none());
+    assert!(
+        subject.right() < dots[0].0 - LABEL_DOT_RADIUS,
+        "{subject:?} runs under {dots:?}"
+    );
+    assert_eq!(height, row_height(1.0), "the row keeps its height");
+    assert!(heard.ends_with("labeled Work, Travel"), "{heard}");
+
+    // Past three, the rest are counted.
+    let (dots, _, more, _, _) = render(&names);
+    assert_eq!(dots.len(), ROW_LABEL_DOTS);
+    let (count, count_rect) = more.expect("the labels past three are counted");
+    assert_eq!(count, "+2");
+    assert!(dots[ROW_LABEL_DOTS - 1].0 < count_rect.left());
+
+    // Without the account's labels the row is drawn as before.
+    let (dots, subject, _, _, _) = render(&["0", "10"]);
+    let (_, plain, _, _, _) = render(&[]);
+    assert!(dots.is_empty());
+    assert_eq!(subject, plain);
+}
+
+#[test]
 fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
     let conversation = ConversationSummary {
         id: "row".into(),
@@ -2580,6 +2686,7 @@ fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
         starred: true,
         message_count: 3,
         has_attachments: true,
+        labels: Vec::new(),
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -2589,7 +2696,7 @@ fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
         let mut rect = egui::Rect::NOTHING;
         let output = context.run_ui(input, |ui| {
             ui.set_width(320.0);
-            rect = conversation_row(ui, &conversation, true, &now).rect;
+            rect = conversation_row(ui, &conversation, &[], true, &now).rect;
         });
         let node = output
             .platform_output
@@ -2648,6 +2755,7 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
         starred: false,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     };
     let context = egui::Context::default();
     let now = ZonedDateTime::now();
@@ -2656,7 +2764,7 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
         context
             .run_ui(input, |ui| {
                 ui.set_width(280.0);
-                let response = conversation_row(ui, &conversation, false, &now);
+                let response = conversation_row(ui, &conversation, &[], false, &now);
                 result = (response.rect, response.clicked());
             })
             .drop_without_applying_deltas();

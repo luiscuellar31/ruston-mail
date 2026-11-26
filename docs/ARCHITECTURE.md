@@ -243,7 +243,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   overlapping dates are merged. Each split retains its server conversation
   metadata and member IDs, with a reverse message-to-conversation index. Refresh
   reuses the displayed members when that conversation's metadata is unchanged
-  apart from read/star flags. Deeper split rows are classified by their parent's
+  apart from read/star flags and labels, its folder's included, which the next
+  inspection brings for each member. Deeper split rows are classified by their parent's
   time and identity, so an older member cannot survive as an unrelated page row.
   Changed conversations invalidate their old members before using the new server
   row. Inspection replaces all prior members together, with fresh metadata and
@@ -519,7 +520,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   in Proton's order among siblings, and sends with them an `OwnPlaces` map of
   `PlaceLook`s: a folder's depth, from its `ParentID`, and a label's color.
   `App` keeps those looks apart from the `Folder`s, whose equality and saved
-  form stay the place alone, and the sidebar indents and colors by them; that block asks for
+  form stay the place alone, and the sidebar indents and colors by them. Each
+  `ConversationSummary` carries the label IDs Proton lists it with, and a row
+  marks those of the account's labels with a dot in their colors; a label
+  Proton confirms is added to or taken from the rows at once. That block asks for
   one more frame only while its measured height is new, so a window too short
   for it does not redraw on every frame;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.

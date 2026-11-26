@@ -230,7 +230,10 @@ The reader can:
   Spam it is **Not spam**.
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label from the tag button, which is filled while the
-  conversation carries one.
+  conversation carries one. In the list, a conversation shows a dot in the
+  color of each of your labels it carries, up to three and a count of the
+  rest, before its count of messages; their names show when the pointer rests
+  on them.
 - Undo the latest move while its notice remains visible at the foot of the
   list, for 5 seconds unless you choose another time under Settings →
   Interface; it stays while the pointer rests on it. Under a label,

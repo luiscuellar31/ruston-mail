@@ -896,6 +896,8 @@ fn conversation_maps_to_summary() {
             starred: true,
             message_count: 3,
             has_attachments: false,
+            // Every label and folder it is filed under, for the list to mark.
+            labels: vec![label_ids::INBOX.into(), label_ids::STARRED.into()],
         }
     );
 }

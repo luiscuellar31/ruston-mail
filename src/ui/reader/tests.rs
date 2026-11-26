@@ -1179,6 +1179,7 @@ fn loading_reader(
         starred: false,
         message_count: count,
         has_attachments: false,
+        labels: Vec::new(),
     };
     let (mut mailbox, page) = Mailbox::open(folder, 50, 1, 2);
     mailbox.finish_page(
@@ -2059,6 +2060,7 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
         starred: true,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     };
     let row_flags: Vec<(&str, bool, MailAction)> = flags(row.unread, row.starred)
         .into_iter()
@@ -3144,6 +3146,7 @@ fn starred_row(id: &str, unread: bool) -> ConversationSummary {
         starred: true,
         message_count: 1,
         has_attachments: false,
+        labels: Vec::new(),
     }
 }
 

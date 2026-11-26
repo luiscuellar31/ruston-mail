@@ -199,11 +199,13 @@ struct SplitConversation {
 
 impl SplitConversation {
     fn matches(&self, source: &ConversationSummary) -> bool {
-        // Read/star flags do not change threading. Reinspection refreshes the
-        // individual flags while these rows remain visible.
+        // Read/star flags and labels, the folder's among them, do not change
+        // threading. Reinspection refreshes each message's own while these
+        // rows remain visible.
         let mut current = source.clone();
         current.unread = self.source.unread;
         current.starred = self.source.starred;
+        current.labels.clone_from(&self.source.labels);
         current == self.source
     }
 }
@@ -2157,7 +2159,15 @@ impl Mailbox {
             match action {
                 MailAction::SetUnread(unread) => row.unread = *unread,
                 MailAction::SetStarred(starred) => row.starred = *starred,
-                MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
+                MailAction::SetLabel { label, on } => {
+                    if let Some(id) = label.custom_id() {
+                        row.labels.retain(|known| known != id);
+                        if *on {
+                            row.labels.push(id.to_owned());
+                        }
+                    }
+                }
+                MailAction::MoveTo(_) => {}
             }
         }
         if !self.leaves_view(&self.folder, action) {
