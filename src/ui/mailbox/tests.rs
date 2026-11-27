@@ -1731,7 +1731,7 @@ fn pagination_frame(
             )),
             ..input
         },
-        |ui| conversation_list(ui, mailbox, &[], state, &mut messages),
+        |ui| conversation_list(ui, mailbox, &[], &[], state, &mut messages),
     );
     let mut button = None;
     let mut subjects = std::collections::HashMap::new();
@@ -3694,6 +3694,160 @@ fn rows_chosen_together_are_highlighted_and_their_menu_acts_on_all() {
                 if *to == Folder::System(MailFolder::Archive)
         ),
         "the menu of a row chosen with others acts on all of them"
+    );
+}
+
+/// The demo listing "demo-3", and "demo-4" with the label Work, in an
+/// account that made a folder, Receipts, and two labels, Work and Travel.
+fn rows_beside_the_accounts_places() -> App {
+    let mut settings = Settings::default();
+    settings.mark_read_on_open = false;
+    let (mut app, _) = App::boot(true, settings);
+    let mut labelled = pagination_row("demo-4", 900);
+    labelled.labels = vec!["work".into()];
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(ConversationPage {
+            conversations: vec![pagination_row("demo-3", 1000), labelled],
+            total: 2,
+            inspect_candidates: Vec::new(),
+        }),
+    ));
+    let _ = app.update(Message::FoldersLoaded(
+        1,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![
+                Folder::custom("receipts", "Receipts"),
+                Folder::label("work", "Work"),
+                Folder::label("travel", "Travel"),
+            ],
+            ..Default::default()
+        }),
+    ));
+    app
+}
+
+/// Where the last shape showing `text` was drawn: a menu's, drawn above the
+/// sidebar and the reader, which may show the same words.
+fn last_text_rect(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<egui::Rect> {
+    shapes
+        .iter()
+        .rev()
+        .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, text))
+}
+
+/// A plain click of `button` at `pos`, then the frames a menu it opens takes
+/// to show: measured on the first, drawn on the next. What the last one drew.
+fn click_and_settle(
+    frame: &mut impl FnMut(egui::RawInput) -> (Vec<Message>, Vec<egui::epaint::ClippedShape>),
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+) -> Vec<egui::epaint::ClippedShape> {
+    frame(click_with(pos, button, egui::Modifiers::NONE));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        shapes = frame(Default::default()).1;
+    }
+    shapes
+}
+
+#[test]
+fn a_rows_menu_moves_it_into_a_folder_and_switches_its_labels() {
+    let app = rows_beside_the_accounts_places();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let primary = egui::PointerButton::Primary;
+    let secondary = egui::PointerButton::Secondary;
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
+
+    let shapes = click_and_settle(&mut frame, row.center(), secondary);
+    let move_to = last_text_rect(&shapes, "Move to…").expect("the menu offers Move to…");
+    let shapes = click_and_settle(&mut frame, move_to.center(), primary);
+    let receipts = last_text_rect(&shapes, "Receipts").expect("Move to… lists the folders");
+    assert!(
+        receipts.left() > move_to.right(),
+        "it opens beside the menu"
+    );
+    let (asked, _) = frame(click_with(
+        receipts.center(),
+        primary,
+        egui::Modifiers::NONE,
+    ));
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyRowAction(id, crate::mail::MailAction::MoveTo(to))]
+                if id == "demo-4" && *to == Folder::custom("receipts", "Receipts")
+        ),
+        "the row moves without being opened"
+    );
+    // The menu closes behind the click.
+    frame(Default::default());
+
+    let shapes = click_and_settle(&mut frame, row.center(), secondary);
+    let labels = last_text_rect(&shapes, "Labels").expect("the menu offers the labels");
+    let shapes = click_and_settle(&mut frame, labels.center(), primary);
+    assert!(last_text_rect(&shapes, "Travel").is_some());
+    // The row carries Work, so its box is checked and a click takes it off.
+    let work = last_text_rect(&shapes, "Work").expect("Labels lists the labels");
+    let (asked, _) = frame(click_with(work.center(), primary, egui::Modifiers::NONE));
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyRowAction(id, crate::mail::MailAction::SetLabel { label, on: false })]
+                if id == "demo-4" && *label == Folder::label("work", "Work")
+        ),
+        "the label comes off that row"
+    );
+}
+
+#[test]
+fn the_menu_of_rows_chosen_together_moves_all_into_a_folder_and_labels_none() {
+    let mut app = rows_beside_the_accounts_places();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let primary = egui::PointerButton::Primary;
+    let named = |shapes: &[egui::epaint::ClippedShape], text| {
+        shapes
+            .iter()
+            .filter(|clipped| {
+                crate::ui::test_support::shape_text_rect(&clipped.shape, text).is_some()
+            })
+            .count()
+    };
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("a row chosen");
+    let headings = named(&shapes, "Labels");
+
+    let shapes = click_and_settle(&mut frame, row.center(), egui::PointerButton::Secondary);
+    // Labels are applied one conversation at a time, as in the reader: the
+    // sidebar's heading is the only one.
+    assert_eq!(named(&shapes, "Labels"), headings);
+    let move_to = last_text_rect(&shapes, "Move to…").expect("the menu offers Move to…");
+    let shapes = click_and_settle(&mut frame, move_to.center(), primary);
+    let receipts = last_text_rect(&shapes, "Receipts").expect("Move to… lists the folders");
+    let (asked, _) = frame(click_with(
+        receipts.center(),
+        primary,
+        egui::Modifiers::NONE,
+    ));
+
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyAction(crate::mail::MailAction::MoveTo(to))]
+                if *to == Folder::custom("receipts", "Receipts")
+        ),
+        "all the rows chosen move"
     );
 }
 

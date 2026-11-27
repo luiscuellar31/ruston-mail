@@ -243,7 +243,7 @@ fn a_rows_menu_acts_while_the_list_refreshes() {
     let frame = |input: egui::RawInput| {
         let mut messages = Vec::new();
         let output = context.run_ui(input, |ui| {
-            conversation_menu(ui, &mailbox, &row, &mut messages);
+            conversation_menu(ui, &mailbox, &row, &[], &mut messages);
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -3270,7 +3270,7 @@ fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
     let frame = |input: egui::RawInput| {
         let mut messages = Vec::new();
         let output = context.run_ui(input, |ui| {
-            selection_menu(ui, &mailbox, &mut messages);
+            selection_menu(ui, &mailbox, &[], &mut messages);
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();

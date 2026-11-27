@@ -1337,7 +1337,14 @@ fn conversation_pane(
             if let ListStatus::Failed(error, attempt) = status {
                 failure_line(ui, error, attempt, messages);
             }
-            conversation_list(ui, mailbox, &row_labels(app), state, messages);
+            conversation_list(
+                ui,
+                mailbox,
+                &row_labels(app),
+                app.folders(),
+                state,
+                messages,
+            );
         }
     }
 }
@@ -1790,6 +1797,7 @@ fn conversation_list(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     labels: &[RowLabel],
+    places: &[Folder],
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -1845,8 +1853,7 @@ fn conversation_list(
                         load_more(ui, mailbox, messages);
                         continue;
                     };
-                    let chosen = mailbox.is_chosen(&conversation.id);
-                    list_row(ui, mailbox, conversation, labels, chosen, &now, messages);
+                    list_row(ui, mailbox, conversation, labels, places, &now, messages);
                 }
             });
             state.conversation_scroll = Some(ConversationScroll::capture(
@@ -1889,10 +1896,11 @@ fn list_row(
     mailbox: &Mailbox,
     conversation: &ConversationSummary,
     labels: &[RowLabel],
-    selected: bool,
+    places: &[Folder],
     now: &ZonedDateTime,
     messages: &mut Vec<Message>,
 ) {
+    let selected = mailbox.is_chosen(&conversation.id);
     let response = ui
         .push_id(&conversation.id, |ui| {
             conversation_row(ui, conversation, labels, selected, now)
@@ -1911,9 +1919,9 @@ fn list_row(
     }
     let menu = response.context_menu(|ui| {
         if mailbox.selected_together(&conversation.id) {
-            reader::selection_menu(ui, mailbox, messages);
+            reader::selection_menu(ui, mailbox, places, messages);
         } else {
-            reader::conversation_menu(ui, mailbox, conversation, messages);
+            reader::conversation_menu(ui, mailbox, conversation, places, messages);
         }
     });
     if menu.is_some() {

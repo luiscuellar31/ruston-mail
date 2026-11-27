@@ -309,7 +309,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   persistent scroll data is added.
   The reader's buttons act on the rows chosen (`Message::ApplyAction`); a row's
   context menu names its row (`Message::ApplyRowAction`) and offers the same
-  moves and flags, built by `reader::moves` and `reader::flags`. Both reach
+  moves and flags, built by `reader::moves` and `reader::flags`, with the
+  toolbar's Move to… list and, for one row, its label list
+  (`reader::destination_list`, `reader::label_list`) in menus beside it. Both reach
   `App::apply_to_rows`, which acts through the demo service or
   `Mailbox::start_actions_on`, so a row acted on from its menu is never opened
   or read automatically. The mailbox also keeps the rows chosen together with

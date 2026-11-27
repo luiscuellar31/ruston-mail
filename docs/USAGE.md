@@ -254,9 +254,11 @@ The reader can:
   **Move to…** can still put it back.
 
 Right-click a conversation in the list, or click it with two fingers on a
-trackpad, for the same moves the reader offers it, **Mark as read** or **Mark as
-unread**, and **Add star** or **Remove star**. They act on that conversation
-without opening it, so it is not marked read, and the open one stays open.
+trackpad, for the same moves the reader offers it, **Move to…** among them,
+**Mark as read** or **Mark as unread**, **Add star** or **Remove star**, and
+**Labels**, which checks the labels it carries. **Move to…** and **Labels** open
+their lists beside the menu. They act on that conversation without opening it,
+so it is not marked read, and the open one stays open.
 
 To act on several conversations at once, choose them in the list: click one
 with `Cmd` (`Ctrl` on Linux and Windows) to add it to those chosen or take it
