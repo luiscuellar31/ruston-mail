@@ -34,8 +34,10 @@ fn system_rundll32() -> std::io::Result<std::path::PathBuf> {
     use std::ffi::OsString;
     use std::os::windows::ffi::OsStringExt;
     use std::path::PathBuf;
+    use windows_sys::Win32::Foundation::MAX_PATH;
 
-    let mut buffer = [0_u16; 260];
+    // The longest path the API writes without a long-path prefix.
+    let mut buffer = [0_u16; MAX_PATH as usize];
     // SAFETY: the length passed is the buffer's own; the API writes at most
     // that many UTF-16 units and returns how many it wrote, or 0 on failure.
     let length = unsafe {
