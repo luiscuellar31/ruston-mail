@@ -1047,6 +1047,69 @@ fn the_unread_filter_lines_up_with_the_search_field_and_refresh() {
 }
 
 #[test]
+fn the_folded_sidebar_keeps_each_icon_on_its_row_and_in_its_middle() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::CountsLoaded(
+        crate::test_support::OPENING_COUNTS,
+        Ok(crate::mail::demo::DemoMailbox::new().counts()),
+    ));
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        // The mailbox, then Settings, which list other places.
+        for settings in [false, true] {
+            let _ = app.update(Message::ShowSettings(settings));
+            let mut places = |folded: bool| {
+                let _ = app.update(Message::FoldSidebar(folded));
+                let mut buttons = Vec::new();
+                for _ in 0..3 {
+                    buttons = accessible_frame(&context, &app, &mut state, size, None).1;
+                }
+                // The sidebar's own places, above its foot.
+                buttons
+                    .into_iter()
+                    .filter(|(name, rect, _)| {
+                        rect.right() < 240.0 && !matches!(name.as_str(), "Settings" | "Exit demo")
+                    })
+                    .map(|(name, rect, _)| {
+                        let name = if name == "Hide sidebar" {
+                            "Show sidebar".into()
+                        } else {
+                            name
+                        };
+                        (name, rect)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (unfolded, folded) = (places(false), places(true));
+            let at = format!("at {scale}, Settings: {settings}");
+            assert!(folded.len() >= 8, "{at}: {folded:?}");
+            let middle = rail_width(scale) / 2.0;
+            // Within half a point, which egui's rounding to whole points can
+            // take from an odd room to share.
+            let near = |a: f32, b: f32| (a - b).abs() <= 0.51;
+            for (name, rect) in &folded {
+                let row = unfolded
+                    .iter()
+                    .find(|(unfolded, _)| unfolded == name)
+                    .unwrap_or_else(|| panic!("{at}: no {name} unfolded"))
+                    .1;
+                assert!(
+                    near(rect.center().y, row.center().y),
+                    "{at}: {name} at {rect:?}, its row at {row:?}"
+                );
+                assert!(near(rect.width(), rect.height()), "{at}: {name} {rect:?}");
+                assert!(near(rect.center().x, middle), "{at}: {name} {rect:?}");
+            }
+        }
+    }
+}
+
+#[test]
 fn one_column_never_offers_to_fold_the_sidebar() {
     let context = egui::Context::default();
     theme::install(&context);

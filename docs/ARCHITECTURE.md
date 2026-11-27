@@ -522,7 +522,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   (`Settings::sidebar_folded`), it is a panel of its own, a fixed strip of
   icons, so the sidebar's panel keeps its width for when it unfolds:
   `layout::widths_beside_rail` gives the list its share of the rest, and while
-  folded only that share is saved, never the sidebar's. One column ignores
+  folded only that share is saved, never the sidebar's. Each of the strip's
+  buttons is a square in its middle, in a row as tall as the place it stands
+  for in the unfolded sidebar (`rail_slot`), so folding moves no icon up or
+  down. One column ignores
   the fold. The button that folds it is placed by hand in a child `Ui`, which
   takes no room the panel would grow to fit, beside a title row as tall as the
   button, whose top a shorter row would leave for the scroll area to cut off. The View menu's Control-Command-S

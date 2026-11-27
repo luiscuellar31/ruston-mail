@@ -412,6 +412,26 @@ fn sidebar(
     .inner
 }
 
+/// The app's name, at the head of the sidebar.
+fn app_name(ui: &egui::Ui) -> egui::RichText {
+    egui::RichText::new("Ruston Mail")
+        .size(theme::text_size(ui, theme::APP_NAME_SIZE))
+        .strong()
+}
+
+/// How tall the sidebar's first row is: its name, or the button beside it
+/// that folds the sidebar, whichever is taller. Its skeleton and the folded
+/// sidebar give their first row the same height.
+fn title_row_height(ui: &egui::Ui) -> f32 {
+    let name = egui::WidgetText::from(app_name(ui).heading()).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Heading,
+    );
+    name.size().y.max(theme::icon_button_size(ui).y)
+}
+
 fn sidebar_content(
     ui: &mut egui::Ui,
     app: &App,
@@ -422,11 +442,8 @@ fn sidebar_content(
     let fold = theme::icon_button_size(ui);
     let title = ui
         .scope(|ui| {
-            let name = egui::RichText::new("Ruston Mail")
-                .size(theme::text_size(ui, theme::APP_NAME_SIZE))
-                .strong();
             if place != SidebarPlace::Column {
-                return ui.heading(name);
+                return ui.heading(app_name(ui));
             }
             // Beside the list, the title leaves the button that folds the
             // sidebar its room at the right, in a row as tall as that button:
@@ -434,9 +451,9 @@ fn sidebar_content(
             // sidebar's scroll area, which cuts it off.
             ui.set_max_width(ui.available_width() - fold.x - ui.spacing().item_spacing.x);
             ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), fold.y),
+                egui::vec2(ui.available_width(), title_row_height(ui)),
                 Layout::left_to_right(Align::Center),
-                |ui| ui.heading(name),
+                |ui| ui.heading(app_name(ui)),
             )
             .inner
         })
@@ -833,7 +850,12 @@ fn back_to_mail_button(ui: &mut egui::Ui) -> egui::Response {
 /// Settings' sections in the folded sidebar, under the way back to the
 /// mailbox, each named on hover and to screen readers.
 fn settings_rail(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
-    if rail_place(ui, theme::Icon::Back, "Back to mail", false, false).clicked() {
+    let height = theme::text_size(ui, NEW_MESSAGE_HEIGHT);
+    let side = theme::text_size(ui, FOLDER_HEIGHT);
+    let back = rail_slot(ui, height, side, |ui| {
+        rail_button(ui, theme::Icon::Back, "Back to mail", false, false, side)
+    });
+    if back.clicked() {
         messages.push(Message::ShowSettings(false));
     }
     ui.add_space(12.0);
@@ -890,7 +912,12 @@ fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
         .id_salt("rail-scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if rail_place(ui, theme::Icon::Sidebar, "Show sidebar", false, false).clicked() {
+            // As tall as the button that folds the sidebar, in its row.
+            let side = theme::icon_button_size(ui).y;
+            let unfold = rail_slot(ui, title_row_height(ui), side, |ui| {
+                rail_button(ui, theme::Icon::Sidebar, "Show sidebar", false, false, side)
+            });
+            if unfold.clicked() {
                 messages.push(Message::FoldSidebar(false));
             }
             ui.add_space(12.0);
@@ -898,7 +925,9 @@ fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
                 settings_rail(ui, app, messages);
                 return;
             }
-            if rail_new_message(ui).clicked() {
+            let height = theme::text_size(ui, NEW_MESSAGE_HEIGHT);
+            let side = theme::text_size(ui, FOLDER_HEIGHT);
+            if rail_slot(ui, height, side, rail_new_message).clicked() {
                 messages.push(Message::OpenCompose);
             }
             ui.add_space(12.0);
@@ -961,12 +990,57 @@ fn rail_place(
     unread: bool,
 ) -> egui::Response {
     let side = theme::text_size(ui, FOLDER_HEIGHT);
-    let button = egui::Button::new(theme::icon_atom())
+    rail_slot(ui, side, side, |ui| {
+        rail_button(ui, icon, name, chosen, unread, side)
+    })
+}
+
+/// A row of the folded sidebar as tall as the one it stands for in the
+/// unfolded sidebar, so folding moves nothing up or down, with a button
+/// `side` wide in its middle both ways.
+fn rail_slot<R>(
+    ui: &mut egui::Ui,
+    height: f32,
+    side: f32,
+    add: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), height),
+        Layout::left_to_right(Align::Center),
+        |ui| {
+            ui.add_space(((ui.available_width() - side) / 2.0).max(0.0));
+            add(ui)
+        },
+    )
+    .inner
+}
+
+/// A square button of the folded sidebar, `side` wide, its icon in the
+/// middle, chosen as a place of the sidebar is, with a dot when it holds
+/// unread mail.
+fn rail_button(
+    ui: &mut egui::Ui,
+    icon: theme::Icon,
+    name: &str,
+    chosen: bool,
+    unread: bool,
+    side: f32,
+) -> egui::Response {
+    // Growing either side of the icon, which keeps it in the middle.
+    let icon_atoms = (egui::Atom::grow(), theme::icon_atom(), egui::Atom::grow());
+    let button = egui::Button::new(icon_atoms)
         .min_size(egui::vec2(side, side))
         .selected(chosen)
         .frame(true)
         .frame_when_inactive(chosen);
-    let layout = place_layout(ui, chosen_place(ui, button, chosen));
+    let layout = ui
+        .scope(|ui| {
+            // The square is all the button is: padding would widen it past
+            // the strip, off its middle.
+            ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            place_layout(ui, chosen_place(ui, button, chosen))
+        })
+        .inner;
     let color = if chosen {
         theme::colors(ui).selected_folder_text
     } else {
@@ -992,7 +1066,8 @@ fn rail_new_message(ui: &mut egui::Ui) -> egui::Response {
     let layout = ui
         .scope(|ui| {
             theme::primary_visuals(ui);
-            egui::Button::new(theme::icon_atom())
+            ui.spacing_mut().button_padding = egui::Vec2::ZERO;
+            egui::Button::new((egui::Atom::grow(), theme::icon_atom(), egui::Atom::grow()))
                 .min_size(egui::vec2(side, side))
                 .stroke(Stroke::NONE)
                 .atom_ui(ui)
