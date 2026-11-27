@@ -17,6 +17,38 @@ use tokio::sync::Semaphore;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Answers the draft a send makes first, as `draft-1`.
+async fn mount_draft(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+        )
+        .mount(server)
+        .await;
+}
+
+/// Accepts sending `draft-1`, once.
+async fn mount_send(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .expect(1)
+        .mount(server)
+        .await;
+}
+
+/// What the request that sent `draft-1` carried.
+async fn sent_body(server: &MockServer) -> Value {
+    let requests = server.received_requests().await.unwrap();
+    let send = requests
+        .iter()
+        .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
+        .unwrap();
+    serde_json::from_slice(&send.body).unwrap()
+}
+
 fn recipient_keys(keys: &[u32], unverified: &[u32]) -> api::keys::RecipientKeys {
     let with_flags = |flags: &[u32]| {
         flags
@@ -78,14 +110,7 @@ async fn an_address_that_turned_email_encryption_off_gets_a_cleartext_package() 
     let server = MockServer::start().await;
     let (me, _) = test_address("me@proton.me", "address-1");
     let (_, forwarding_public) = test_address("fwd@proton.me", "forwarding-address");
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     // A Proton address that forwards elsewhere: its key is not for mail.
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
@@ -96,12 +121,7 @@ async fn an_address_that_turned_email_encryption_off_gets_a_cleartext_package() 
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_send(&server).await;
 
     test_support::client(&server, vec![me])
         .send(&SendOptions {
@@ -112,12 +132,7 @@ async fn an_address_that_turned_email_encryption_off_gets_a_cleartext_package() 
         .await
         .unwrap();
 
-    let requests = server.received_requests().await.unwrap();
-    let send = requests
-        .iter()
-        .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&send.body).unwrap();
+    let body = sent_body(&server).await;
     let types: Vec<_> = body["Packages"]
         .as_array()
         .unwrap()
@@ -291,20 +306,8 @@ async fn recipients_keys_are_asked_for_together() {
         .expect(3)
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
+    mount_send(&server).await;
 
     let started = std::time::Instant::now();
     test_support::client(&server, vec![me])
@@ -505,12 +508,7 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
         )
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_send(&server).await;
 
     let client = test_support::client(&server, vec![me]);
     let opts = SendOptions {
@@ -520,12 +518,7 @@ async fn forwarded_attachments_are_keyed_for_every_recipient() {
     };
     client.forward(&parent_id, &opts).await.unwrap();
 
-    let requests = server.received_requests().await.unwrap();
-    let send = requests
-        .iter()
-        .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&send.body).unwrap();
+    let body = sent_body(&server).await;
     let packages = body["Packages"].as_array().unwrap();
     let package = |kind: i64| {
         packages
@@ -574,14 +567,7 @@ async fn a_forward_leaves_out_the_attachments_it_is_told_to() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .respond_with(
@@ -698,12 +684,7 @@ async fn each_recipient_of_a_mixed_send_gets_the_copy_their_keys_allow() {
         )
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_send(&server).await;
     let html = "<p>The <b>plan</b></p>";
 
     test_support::client(&server, vec![me.clone()])
@@ -917,14 +898,7 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
     let (me, _) = test_address("me@proton.me", "address-1");
     let (friend, friend_public) = test_address("friend@proton.me", "friend-address");
     let (outsider, outsider_public) = test_address("pgp@example.org", "outsider-address");
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .and(query_param("Email", "friend@proton.me"))
@@ -944,12 +918,7 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_send(&server).await;
     let html = "<p>Hi Alex,<br>How are you?</p>\n<p>See you <b>Thursday</b>.</p>";
 
     test_support::client(&server, vec![me])
@@ -963,12 +932,7 @@ async fn an_html_body_reaches_pgp_inline_recipients_as_plain_text() {
         .await
         .unwrap();
 
-    let requests = server.received_requests().await.unwrap();
-    let send = requests
-        .iter()
-        .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&send.body).unwrap();
+    let body = sent_body(&server).await;
     let packages = body["Packages"].as_array().unwrap();
     let provider = crypto::provider();
     // What `recipient` reads in the package of `kind`, and its stated type.
@@ -1046,12 +1010,7 @@ async fn password_protected_recipients_get_keys_that_open_with_the_password() {
         .expect(1)
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages/draft-1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
-        .expect(1)
-        .mount(&server)
-        .await;
+    mount_send(&server).await;
 
     let client = test_support::client(&server, vec![me]);
     let opts = SendOptions {
@@ -1064,12 +1023,7 @@ async fn password_protected_recipients_get_keys_that_open_with_the_password() {
         .await
         .unwrap();
 
-    let requests = server.received_requests().await.unwrap();
-    let send = requests
-        .iter()
-        .find(|request| request.url.path() == "/mail/v4/messages/draft-1")
-        .unwrap();
-    let body: Value = serde_json::from_slice(&send.body).unwrap();
+    let body = sent_body(&server).await;
     let package = body["Packages"]
         .as_array()
         .unwrap()
@@ -1198,14 +1152,7 @@ async fn answers_leave_from_the_address_the_original_reached() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .respond_with(
@@ -1276,14 +1223,7 @@ async fn mail_never_goes_out_from_an_address_that_cannot_send() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .respond_with(
@@ -1361,14 +1301,7 @@ async fn answers_tell_proton_how_they_answer_and_mark_the_subject_once() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .respond_with(
@@ -1435,14 +1368,7 @@ async fn a_reply_goes_where_its_writer_chose_or_else_where_the_original_asks() {
         })))
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("GET"))
         .and(path("/core/v4/keys/all"))
         .respond_with(
@@ -1557,14 +1483,7 @@ async fn an_answer_quotes_the_original_it_already_fetched() {
         )
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("POST"))
         .and(path("/mail/v4/messages/draft-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
@@ -1628,14 +1547,7 @@ async fn answer_text(
         )
         .mount(&server)
         .await;
-    Mock::given(method("POST"))
-        .and(path("/mail/v4/messages"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
-        )
-        .mount(&server)
-        .await;
+    mount_draft(&server).await;
     Mock::given(method("POST"))
         .and(path("/mail/v4/messages/draft-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
