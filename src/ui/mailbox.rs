@@ -422,16 +422,23 @@ fn sidebar_content(
     let fold = theme::icon_button_size(ui);
     let title = ui
         .scope(|ui| {
-            // Beside the list, the title leaves the button that folds the
-            // sidebar its room at the right.
-            if place == SidebarPlace::Column {
-                ui.set_max_width(ui.available_width() - fold.x - ui.spacing().item_spacing.x);
+            let name = egui::RichText::new("Ruston Mail")
+                .size(theme::text_size(ui, theme::APP_NAME_SIZE))
+                .strong();
+            if place != SidebarPlace::Column {
+                return ui.heading(name);
             }
-            ui.heading(
-                egui::RichText::new("Ruston Mail")
-                    .size(theme::text_size(ui, theme::APP_NAME_SIZE))
-                    .strong(),
+            // Beside the list, the title leaves the button that folds the
+            // sidebar its room at the right, in a row as tall as that button:
+            // centered on a shorter title, its top would stick out above the
+            // sidebar's scroll area, which cuts it off.
+            ui.set_max_width(ui.available_width() - fold.x - ui.spacing().item_spacing.x);
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), fold.y),
+                Layout::left_to_right(Align::Center),
+                |ui| ui.heading(name),
             )
+            .inner
         })
         .inner;
     if place == SidebarPlace::Column {

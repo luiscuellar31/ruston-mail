@@ -922,6 +922,61 @@ fn settings_list_their_sections_where_the_folders_were() {
 }
 
 #[test]
+fn the_button_that_folds_the_sidebar_is_drawn_whole() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (app, _) = App::boot(true, Settings::default());
+    let mut state = UiState::default();
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        let mut frame = || {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |root| show(root, &app, None, &mut state, &mut Vec::new()),
+            )
+        };
+        frame().drop_without_applying_deltas();
+        let output = frame();
+        let button = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .find(|(_, node)| node.label() == Some("Hide sidebar"))
+            .and_then(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            })
+            .expect("the sidebar offers to fold");
+        // Its frame and its icon, each whole inside what it is clipped to.
+        let drawn: Vec<_> = output
+            .shapes
+            .iter()
+            .map(|clipped| (clipped.shape.visual_bounding_rect(), clipped.clip_rect))
+            .filter(|(rect, _)| rect.is_positive() && button.expand(2.0).contains_rect(*rect))
+            .collect();
+        output.drop_without_applying_deltas();
+        assert!(!drawn.is_empty(), "nothing drawn for {button:?}");
+        for (rect, clip) in drawn {
+            assert!(
+                clip.expand(0.01).contains_rect(rect),
+                "at {scale}: {rect:?} cut by {clip:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn one_column_never_offers_to_fold_the_sidebar() {
     let context = egui::Context::default();
     theme::install(&context);

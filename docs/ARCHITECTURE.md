@@ -521,7 +521,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `layout::widths_beside_rail` gives the list its share of the rest, and while
   folded only that share is saved, never the sidebar's. One column ignores
   the fold. The button that folds it is placed by hand in a child `Ui`, which
-  takes no room the panel would grow to fit. The View menu's Control-Command-S
+  takes no room the panel would grow to fit, beside a title row as tall as the
+  button, whose top a shorter row would leave for the scroll area to cut off. The View menu's Control-Command-S
   folds it on macOS, and `F9` elsewhere, read by `key_presses` as a mailbox
   shortcut that Settings, shown beside the sidebar, lets through.
   The Proton adapter
