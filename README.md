@@ -3,6 +3,8 @@
   <h1>Ruston Mail</h1>
 
   <p><strong>An unofficial desktop client for Proton Mail, written in Rust.</strong></p>
+  <p><a href="https://github.com/luiscuellar31/ruston-mail/releases/latest"><img src="https://img.shields.io/github/v/release/luiscuellar31/ruston-mail?label=latest%20release" alt="Latest release"></a></p>
+  <p><a href="#download">Download</a> · <a href="#features">Features</a> · <a href="#screenshots">Screenshots</a> · <a href="#documentation">Documentation</a></p>
 
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/main-window-dark.png">
@@ -41,12 +43,28 @@ rough edges.
   loaded, and links ask before they open. The app talks only to Proton, and to
   GitHub only if you turn on update checks.
 
+## Screenshots
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/compose-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshots/compose-light.png">
+    <img src="assets/screenshots/compose-light.png" alt="Writing a message" width="32%">
+  </picture>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/screenshots/settings-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/screenshots/settings-light.png">
+    <img src="assets/screenshots/settings-light.png" alt="Settings" width="32%">
+  </picture>
+  <img src="assets/screenshots/terminal.png" alt="The terminal interface with a conversation open" width="32%">
+</p>
+
 ## Limitations
 
 The desktop app can't save drafts or sign in with a security key yet, and it
 can't create, rename, or delete folders and labels. It can move mail to Trash,
 but it never deletes anything for good. The [user guide](docs/USAGE.md) has the
-details.
+details, and the [roadmap](#roadmap) says what comes first.
 
 ## Download
 
@@ -59,8 +77,10 @@ Pick the file for your system from the
 | macOS 11 or later, Intel | `ruston-mail-<version>-x86_64-UNSIGNED.dmg` |
 | Linux x86_64, glibc 2.35 or later | `ruston-mail-<version>-x86_64.AppImage` |
 | Linux ARM64, glibc 2.35 or later | `ruston-mail-<version>-aarch64.AppImage` |
-| Windows 10 or later, x86_64 | `ruston-mail-<version>-x86_64-setup-UNSIGNED.exe`, or the portable `ruston-mail-<version>-x86_64-windows-UNSIGNED.zip` |
-| Windows 10 or later, ARM64 | `ruston-mail-<version>-arm64-setup-UNSIGNED.exe`, or the portable `ruston-mail-<version>-arm64-windows-UNSIGNED.zip` |
+| Windows 10 or later, x86_64 | `ruston-mail-<version>-x86_64-setup-UNSIGNED.exe` |
+| Windows 10 or later, x86_64, portable | `ruston-mail-<version>-x86_64-windows-UNSIGNED.zip` |
+| Windows 10 or later, ARM64 | `ruston-mail-<version>-arm64-setup-UNSIGNED.exe` |
+| Windows 10 or later, ARM64, portable | `ruston-mail-<version>-arm64-windows-UNSIGNED.zip` |
 
 Every release also includes a `SHA256SUMS.txt`. To check that a download
 arrived intact, run this in the folder that holds both files:
@@ -70,11 +90,19 @@ shasum -a 256 -c SHA256SUMS.txt --ignore-missing   # macOS
 sha256sum -c SHA256SUMS.txt --ignore-missing       # Linux
 ```
 
-On Windows, compare the hash PowerShell prints with the file's line in
-`SHA256SUMS.txt`:
+On Windows, PowerShell prints `True` when the file matches:
 
 ```powershell
-Get-FileHash .\ruston-mail-<version>-x86_64-setup-UNSIGNED.exe
+$file = 'ruston-mail-<version>-x86_64-setup-UNSIGNED.exe'
+(Get-FileHash $file).Hash -eq (-split (Select-String -Path SHA256SUMS.txt -SimpleMatch "  $file").Line)[0]
+```
+
+A checksum catches a damaged download, not a replaced one. To confirm that a
+file was built by this repository's release workflow, use the
+[GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify ruston-mail-<version>-x86_64.AppImage --repo luiscuellar31/ruston-mail
 ```
 
 ### macOS
@@ -105,6 +133,13 @@ won't run unsigned apps.
 
 To use Ruston Mail without installing it, extract the ZIP and start
 `ruston.exe`. Its `README.txt` explains email links and how to remove it.
+
+### Updates
+
+Ruston Mail looks for a newer version only if you turn on **Check for updates**
+under **Settings › About**. It then asks GitHub as it starts and once a day,
+tells you when a newer release is out, and opens its page when you choose
+**Download**: nothing is downloaded or installed for you.
 
 ## Command line
 
@@ -154,6 +189,17 @@ covers PowerShell, Linux launchers, Windows builds, packaging, and releases.
 - [Development](docs/DEVELOPMENT.md)
 - [Architecture and code map](docs/ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)
+
+## Roadmap
+
+- Save drafts in the desktop app.
+- Create, rename, and delete folders and labels.
+- Sign in with a security key.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before
+opening a pull request: branch from `dev` and open the pull request against it.
 
 ## License
 
