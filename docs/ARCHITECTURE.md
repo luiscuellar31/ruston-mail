@@ -509,7 +509,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   rendering never sends `PanelsResized`, so returning to columns preserves the
   saved ratios and egui's remembered divider widths. Explicit UI identities
   keep list and reader scroll/expansion state when their parent pane changes.
-  Search controls reserve one horizontal row in both layouts, leaving the
+  Search controls reserve one horizontal row in both layouts, as tall as the
+  search field, whose height is known before the buttons beside it are laid
+  out: they take it, and Unread takes Refresh's width while the field keeps at
+  least 160 points, so the two stand as a column, leaving the
   remaining height for visible, selectable conversations. Centered controls
   must not allocate the list's full remaining height. The line under them
   that says what a search covers is kept, empty, while nothing is typed, and

@@ -977,6 +977,76 @@ fn the_button_that_folds_the_sidebar_is_drawn_whole() {
 }
 
 #[test]
+fn the_unread_filter_lines_up_with_the_search_field_and_refresh() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        // Three columns, and one column showing the list.
+        for size in [egui::vec2(1100.0, 700.0), egui::vec2(480.0, 700.0)] {
+            let mut state = UiState::default();
+            let mut frame = || {
+                context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |root| show(root, &app, None, &mut state, &mut Vec::new()),
+                )
+            };
+            frame().drop_without_applying_deltas();
+            let output = frame();
+            let bounds = |name: &str| {
+                output
+                    .platform_output
+                    .accesskit_update
+                    .iter()
+                    .flat_map(|update| &update.nodes)
+                    .find(|(_, node)| node.label() == Some(name))
+                    .and_then(|(_, node)| node.bounds())
+                    .map(|bounds| {
+                        egui::Rect::from_min_max(
+                            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("no {name} at {size:?}"))
+            };
+            let (field, unread, refresh) =
+                (bounds("Search mail"), bounds("Unread"), bounds("Refresh"));
+            output.drop_without_applying_deltas();
+            let at = format!("{size:?} at {scale}");
+            let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+            // Edge to edge with the field, beside it.
+            assert!(
+                near(unread.top(), field.top()),
+                "{at}: {unread:?} {field:?}"
+            );
+            assert!(
+                near(unread.bottom(), field.bottom()),
+                "{at}: {unread:?} {field:?}"
+            );
+            // Under Refresh, as wide, where the field keeps its room.
+            assert!(
+                near(unread.right(), refresh.right()),
+                "{at}: {unread:?} {refresh:?}"
+            );
+            assert!(field.width() >= MIN_SEARCH_WIDTH, "{at}: {field:?}");
+            assert!(
+                near(unread.left(), refresh.left()),
+                "{at}: {unread:?} {refresh:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn one_column_never_offers_to_fold_the_sidebar() {
     let context = egui::Context::default();
     theme::install(&context);

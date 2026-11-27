@@ -1067,19 +1067,27 @@ fn conversation_pane(
     ui.add_space(6.0);
 
     let mut query = mailbox.search_query().to_owned();
-    // Center controls within one row, leaving the remaining height for mail.
-    let search_size = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+    // One row as tall as the search field, a line of text inside its margin,
+    // known before the buttons beside it are laid out: they take its height
+    // and are centered on it, leaving the remaining height for mail.
+    let field_height =
+        ui.text_style_height(&egui::TextStyle::Body) + 2.0 * f32::from(SEARCH_MARGIN_Y);
+    let search_size = egui::vec2(ui.available_width(), field_height);
     ui.allocate_ui_with_layout(search_size, Layout::right_to_left(Align::Center), |ui| {
         // Reserve the filter and the clear action before the field consumes
         // the remaining width.
-        unread_filter(ui, mailbox, messages);
-        if !query.is_empty() && ui.button("Clear").clicked() {
+        unread_filter(ui, mailbox, field_height, messages);
+        if !query.is_empty()
+            && ui
+                .add(egui::Button::new("Clear").min_size(egui::vec2(0.0, field_height)))
+                .clicked()
+        {
             messages.push(Message::SearchChanged(String::new()));
         }
         // The text starts where the rows' text does, inside the outline.
         let frame = theme::field_frame(ui).inner_margin(egui::Margin::symmetric(
             ROW_HORIZONTAL_PADDING as i8 - SEARCH_OUTLINE,
-            8 - SEARCH_OUTLINE,
+            SEARCH_MARGIN_Y - SEARCH_OUTLINE,
         ));
         let response = ui.add(
             theme::text_field(ui, &mut query)
@@ -1171,15 +1179,8 @@ fn conversation_pane(
 fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     let quiet = app.refreshing_on_its_own();
     let shown = matches!(mailbox.status(), ListStatus::Refreshing(_)) && !quiet;
-    let widest = egui::WidgetText::from("Refreshing…").into_galley(
-        ui,
-        Some(egui::TextWrapMode::Extend),
-        f32::INFINITY,
-        egui::TextStyle::Button,
-    );
-    let button = egui::Button::new(if shown { "Refreshing…" } else { "Refresh" }).min_size(
-        egui::vec2(widest.size().x + 2.0 * ui.spacing().button_padding.x, 0.0),
-    );
+    let button = egui::Button::new(if shown { "Refreshing…" } else { "Refresh" })
+        .min_size(egui::vec2(refresh_width(ui), 0.0));
     // Pressed during the app's own refresh, it shows that one instead.
     if ui
         .add_enabled(!mailbox.is_busy() || quiet, button)
@@ -1189,12 +1190,31 @@ fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
     }
 }
 
+/// The width Refresh keeps whatever it says, its longer title's.
+fn refresh_width(ui: &egui::Ui) -> f32 {
+    let widest = egui::WidgetText::from("Refreshing…").into_galley(
+        ui,
+        Some(egui::TextWrapMode::Extend),
+        f32::INFINITY,
+        egui::TextStyle::Button,
+    );
+    widest.size().x + 2.0 * ui.spacing().button_padding.x
+}
+
 /// Shows only the folder's unread conversations, or all of them again;
-/// selected while it does.
-fn unread_filter(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
+/// selected while it does. As tall as the search field beside it, and as
+/// wide as Refresh above it, so the two stand as a column, unless that
+/// would leave the field too narrow to read.
+fn unread_filter(ui: &mut egui::Ui, mailbox: &Mailbox, height: f32, messages: &mut Vec<Message>) {
     let unread_only = mailbox.filter() == ListFilter::Unread;
+    let room = ui.available_width() - MIN_SEARCH_WIDTH - ui.spacing().item_spacing.x;
+    let width = refresh_width(ui).min(room);
     if ui
-        .add(egui::Button::new("Unread").selected(unread_only))
+        .add(
+            egui::Button::new("Unread")
+                .selected(unread_only)
+                .min_size(egui::vec2(width, height)),
+        )
         .on_hover_text("Show only unread conversations")
         .clicked()
     {
@@ -1465,6 +1485,11 @@ const CLIP_HALF_WIDTH: f32 = 2.5;
 const MARK_GAP: f32 = 6.0;
 /// The width of the search field's outline, inside its padding.
 const SEARCH_OUTLINE: i8 = 1;
+/// The search field's room above and below its text, its outline included.
+const SEARCH_MARGIN_Y: i8 = 8;
+/// The narrowest the search field gets for the Unread filter to match
+/// Refresh's width; narrower lists keep the filter to its own width.
+const MIN_SEARCH_WIDTH: f32 = 160.0;
 const ROW_LINE_CENTER_OFFSET: f32 = 12.5;
 
 /// A row's height when text is drawn at `scale`.
