@@ -1436,7 +1436,7 @@ fn apply_appearance(context: &egui::Context, settings: &Settings) {
 
 /// Whether Windows' "Animation effects" are off, under Accessibility ›
 /// Visual effects. Read on every pass, which costs one call, so a change
-/// shows on the next frame. Other systems' settings are not read yet.
+/// shows on the next frame.
 #[cfg(target_os = "windows")]
 fn system_reduces_motion() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1455,7 +1455,15 @@ fn system_reduces_motion() -> bool {
     read != 0 && animated == 0
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Whether macOS's "Reduce motion" is on, under Accessibility › Display.
+/// Read on every pass, as Windows' is, so a change shows on the next frame.
+#[cfg(target_os = "macos")]
+fn system_reduces_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// Linux's reduced-motion setting is not read yet.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn system_reduces_motion() -> bool {
     false
 }
