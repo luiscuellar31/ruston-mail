@@ -2880,7 +2880,7 @@ fn a_bottom_notice_keeps_within_its_list_or_the_window_however_narrow() {
         let notice = context
             .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
             .expect("the notice is drawn");
-        let room = if compact_layout(size.x) {
+        let room = if compact_layout(size.x, MIN_PANEL_WIDTH) {
             egui::Rect::from_min_size(egui::Pos2::ZERO, size)
         } else {
             egui::containers::panel::PanelState::load(

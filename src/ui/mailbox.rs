@@ -5,8 +5,9 @@ use jiff::ZonedDateTime;
 use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
 use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
-    App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
-    Notice, SettingsSection, compact_layout, panel_ratios, panel_widths, widths_beside_rail,
+    App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, MIN_READER_WIDTH,
+    Mailbox, Message, Notice, SettingsSection, compact_layout, panel_ratios, panel_widths,
+    widths_beside_rail,
 };
 use crate::mail::{
     ConversationSummary, CustomKind, Folder, ListFilter, MailFolder, MailboxError, PlaceLook,
@@ -57,7 +58,7 @@ pub(super) fn show(
     let mailbox = app.mailbox().expect("authenticated mailbox");
     let context = root.ctx().clone();
     let window_width = root.available_width();
-    if compact_layout(window_width) {
+    if one_column(root, app) {
         let settings = show_compact(root, app, mailbox, settings_draft, state, messages);
         bottom_notice(&context, app, mailbox, state, settings, messages);
         return;
@@ -82,7 +83,8 @@ pub(super) fn show(
         egui::Panel::left(SIDEBAR_PANEL_ID)
             .default_size(widths.sidebar)
             .size_range(
-                MIN_PANEL_WIDTH..=(window_width - 2.0 * MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH),
+                MIN_PANEL_WIDTH
+                    ..=(window_width - MIN_PANEL_WIDTH - MIN_READER_WIDTH).max(MIN_PANEL_WIDTH),
             )
             .resizable(true)
             .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
@@ -104,11 +106,11 @@ pub(super) fn show(
             (None, page)
         }
         None => {
-            let remaining =
-                (window_width - sidebar.response.rect.width()).max(2.0 * MIN_PANEL_WIDTH);
+            let remaining = (window_width - sidebar.response.rect.width())
+                .max(MIN_PANEL_WIDTH + MIN_READER_WIDTH);
             let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
                 .default_size(widths.conversations)
-                .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_PANEL_WIDTH).max(MIN_PANEL_WIDTH))
+                .size_range(MIN_PANEL_WIDTH..=(remaining - MIN_READER_WIDTH).max(MIN_PANEL_WIDTH))
                 .resizable(true)
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
                 .show(root, |ui| {
@@ -159,7 +161,8 @@ pub(super) fn show(
 pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
     let window_width = root.available_width();
     let inset = theme::titlebar_inset(root.ctx());
-    if !compact_layout(window_width) {
+    let compact = one_column(root, app);
+    if !compact {
         let folded = app.settings().sidebar_folded;
         let widths = if folded {
             widths_beside_rail(
@@ -197,7 +200,6 @@ pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
                 conversation_skeleton(ui);
             });
     }
-    let compact = compact_layout(window_width);
     let frame = if compact {
         // One column has its way between the panes above, as its mailbox does.
         egui::Panel::top(OPENING_NAVIGATION_ID)
@@ -956,6 +958,17 @@ fn settings_rail(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
             messages.push(Message::ShowSettingsSection(section));
         }
     }
+}
+
+/// Whether the window shows one column: too narrow for the sidebar, folded
+/// or not, the list and a reader whose toolbar fits on one line.
+fn one_column(ui: &egui::Ui, app: &App) -> bool {
+    let sidebar = if app.settings().sidebar_folded {
+        rail_width(theme::text_scale(ui.ctx()))
+    } else {
+        MIN_PANEL_WIDTH
+    };
+    compact_layout(ui.available_width(), sidebar)
 }
 
 /// How wide the folded sidebar is: its icons, as tall as a place of the

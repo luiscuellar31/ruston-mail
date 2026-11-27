@@ -975,8 +975,9 @@ fn a_narrow_reader_keeps_its_buttons_and_body_inside_the_pane() {
     let context = egui::Context::default();
     theme::install(&context);
     let mut state = UiState::default();
-    // The reader at its narrowest: a 200 pt pane without its padding.
-    let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(168.0, 900.0));
+    // The reader at its narrowest, without its padding.
+    let narrowest = crate::app::MIN_READER_WIDTH - 2.0 * f32::from(theme::PANEL_PADDING);
+    let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(narrowest, 900.0));
     let input = egui::RawInput {
         screen_rect: Some(pane),
         ..Default::default()
@@ -1010,6 +1011,19 @@ fn a_narrow_reader_keeps_its_buttons_and_body_inside_the_pane() {
         }
     }
     text_rect(&shapes, "Forward");
+    // Every action, the folder and label menus too, on the toolbar's one line.
+    let card = cards(&shapes)[0];
+    let toolbar: Vec<_> = buttons(&shapes)
+        .into_iter()
+        .filter(|button| button.bottom() < card.top())
+        .collect();
+    assert!(toolbar.len() >= 7, "{toolbar:?}");
+    assert!(
+        toolbar
+            .iter()
+            .all(|button| (button.center().y - toolbar[0].center().y).abs() < 1.0),
+        "the toolbar wrapped: {toolbar:?}"
+    );
 }
 
 #[test]

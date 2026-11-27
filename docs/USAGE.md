@@ -7,7 +7,10 @@ place, and on Windows and Linux whether it was maximized. A place on a screen
 that is no longer connected is not reused.
 
 When a small window or a high interface scale leaves too little room for all
-three panes, the app shows one pane at a time. The window can be as narrow as
+three panes, the app shows one pane at a time. The reader keeps at least 410
+points, room for its buttons on one line, so the three panes need a window of
+about 812 points, or about 663 with the sidebar folded into its strip; dragging
+a divider never narrows the reader past that either. The window can be as narrow as
 480 points, so it fits half a laptop screen in this mode. Use **Folders**, **Mail**, and
 **Reading** at the top to move between them; **Reading** becomes **Message**
 while writing in the reading pane. Opening a conversation switches to its

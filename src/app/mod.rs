@@ -46,8 +46,8 @@ pub use compose::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Sendi
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{
-    MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
-    widths_beside_rail,
+    MIN_PANEL_WIDTH, MIN_READER_WIDTH, compact as compact_layout, ratios as panel_ratios,
+    widths as panel_widths, widths_beside_rail,
 };
 pub use links::PendingLink;
 use mailbox::ActionStart;

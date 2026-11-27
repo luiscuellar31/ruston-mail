@@ -504,8 +504,12 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `App::update`; password visibility stays only in transient UI state. The
   desktop dispatch clears it on submit, cancellation, or a move away from a
   password step.
-- [`app/layout.rs`](../src/app/layout.rs) owns the minimum width for usable
-  columns and chooses compact presentation below 602 available egui points.
+- [`app/layout.rs`](../src/app/layout.rs) owns the minimum widths for usable
+  columns, 200 points for the sidebar and the list and 410 for the reader,
+  room for its toolbar on one line with the label menu at the usual text size,
+  and chooses compact presentation when they cannot fit beside the sidebar as
+  it is: below 812 available egui points, or, folded, the strip's width and
+  612. Dragging a divider stops at the same minimums.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) then shows a single pane with Folders,
   Mail, and Reading/Message navigation; Mail repeats over the list why the last
   action failed, which columns show under the reader's buttons. The local
