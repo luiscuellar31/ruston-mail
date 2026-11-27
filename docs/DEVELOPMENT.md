@@ -105,7 +105,10 @@ and `ruston-cli.exe` and checks them with
 architecture, that the desktop is a window app and the CLI a console program,
 that they load only DLLs Windows includes, their manifest, and their version
 information against each package. This catches a missing resource or C
-runtime. Then [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts
+runtime. [`test-mailto-registration.ps1`](../packaging/windows/test-mailto-registration.ps1)
+registers it as a `mailto` handler twice and unregisters it, checking that
+other apps' registrations and the default email app stay as they were. Then
+[`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts
 the desktop once: runners have no GPU, so its window must open and draw with
 WARP, as in a virtual machine.
 A Windows-only test also sets and reads back the process AppUserModelID through

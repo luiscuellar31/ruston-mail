@@ -19,7 +19,7 @@ function Stop-Test([string]$Message) { throw "[FAIL] $Message" }
 $app = Join-Path $env:LOCALAPPDATA 'Programs\Ruston Mail'
 $programs = [Environment]::GetFolderPath('Programs')
 $shortcut = Join-Path $programs 'Ruston Mail.lnk'
-$progId = 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto'
+$mailtoClassKey = 'HKCU:\Software\Classes\com.luiscuellar.ruston-mail.mailto'
 $apps = 'HKCU:\Software\RegisteredApplications'
 if (-not (Test-Path $apps)) { New-Item -Path $apps | Out-Null }
 New-ItemProperty -Path $apps -Name 'Other app' -Value 'Software\Other\Capabilities' -PropertyType String -Force | Out-Null
@@ -44,7 +44,7 @@ if ($appId -ne 'com.luiscuellar.ruston-mail') { Stop-Test "The shortcut carries 
 $target = $link.GetLink.Path
 if ($target -ne (Join-Path $app 'ruston.exe')) { Stop-Test "The shortcut points at '$target'" }
 
-$command = (Get-Item "$progId\shell\open\command").GetValue('')
+$command = (Get-Item "$mailtoClassKey\shell\open\command").GetValue('')
 if ($command -ne ('"{0}" "%1"' -f (Join-Path $app 'ruston.exe'))) { Stop-Test "The mailto command is '$command'" }
 if ((Get-ItemPropertyValue $apps -Name 'Ruston Mail') -ne 'Software\Ruston Mail\Capabilities') {
     Stop-Test 'Ruston Mail is not a registered application'
@@ -64,7 +64,7 @@ $deadline = (Get-Date).AddSeconds(60)
 while ((Test-Path -LiteralPath $app) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
 if (Test-Path -LiteralPath $app) { Stop-Test "$app is still there after uninstalling" }
 if (Test-Path -LiteralPath $shortcut) { Stop-Test 'The Start menu shortcut is still there' }
-if (Test-Path $progId) { Stop-Test 'The mailto handler is still registered' }
+if (Test-Path $mailtoClassKey) { Stop-Test 'The mailto handler is still registered' }
 if (Test-Path 'HKCU:\Software\Ruston Mail') { Stop-Test 'The capabilities are still registered' }
 if ((Get-Item $apps).Property -contains 'Ruston Mail') { Stop-Test 'Ruston Mail is still a registered application' }
 if ((Get-ItemPropertyValue $apps -Name 'Other app') -ne 'Software\Other\Capabilities') {
