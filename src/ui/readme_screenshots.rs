@@ -11,7 +11,6 @@ use std::thread::JoinHandle;
 use eframe::egui;
 
 use crate::app::{App, Message};
-use crate::mail::{Folder, OwnPlaces};
 use crate::settings::Appearance;
 
 /// The folder the screenshots are saved in; the script sets it.
@@ -24,8 +23,8 @@ const SUBJECT: &str = "Your reading room booking";
 const SETTLE: f64 = 1.5;
 /// Seconds to wait for the demo's inbox before giving up.
 const PATIENCE: f64 = 20.0;
-/// How many times the window may be found without focus or without its sample
-/// folder and labels before giving up.
+/// How many times the window may be found without focus, or before the demo's
+/// folder and labels arrive, before giving up.
 const RETRIES: u32 = 5;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// The PNG chunks showing the picture needs: the critical ones, transparency
@@ -124,15 +123,14 @@ impl Session {
         if self.saving.is_some() || self.waited(now) < SETTLE {
             return Vec::new();
         }
-        // A window without focus shows gray buttons, and a late answer from the
-        // demo can take the sample folder and labels away: either waits again.
+        // A window without focus shows gray buttons, and the sidebar lists no
+        // folder or labels until the demo's arrive: either waits again.
         let focused = context.input(|input| input.viewport().focused) == Some(true);
-        let samples_shown = app.folders() == sample_places().folders.as_slice();
-        if !(focused && samples_shown) {
+        if !focused || app.folders().is_empty() {
             if self.retries == RETRIES {
                 return self.fail(
                     context,
-                    "the window lost focus or its sample folders; leave it in front until it closes",
+                    "the window lost focus or shows no folders; leave it in front until it closes",
                 );
             }
             self.retries += 1;
@@ -140,11 +138,7 @@ impl Session {
             if !focused {
                 context.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
-            return if samples_shown {
-                Vec::new()
-            } else {
-                vec![show_samples(app)]
-            };
+            return Vec::new();
         }
         match window_number(frame) {
             Ok(window) => {
@@ -200,8 +194,8 @@ pub(super) fn ignore_input(raw_input: &mut egui::RawInput) {
     raw_input.events.push(egui::Event::PointerGone);
 }
 
-/// What sets up the README's view once the demo's inbox lists the booking: a
-/// sample folder and labels, the booking open, and the dark appearance.
+/// What sets up the README's view once the demo's inbox lists the booking:
+/// the booking open, and the dark appearance.
 fn opening(app: &App) -> Option<Vec<Message>> {
     let booking = app
         .mailbox()?
@@ -210,30 +204,9 @@ fn opening(app: &App) -> Option<Vec<Message>> {
         .id
         .clone();
     Some(vec![
-        show_samples(app),
         Message::SelectConversation(booking),
         Message::SetAppearance(Appearance::Dark),
     ])
-}
-
-/// Hands the app [`sample_places`] as the open account's own.
-fn show_samples(app: &App) -> Message {
-    Message::FoldersLoaded(app.session_epoch(), Ok(sample_places()))
-}
-
-/// A folder and labels such as an account has. The demo has none of its own,
-/// and without them the sidebar has no Folders or Labels and the reader no
-/// Move to or Labels.
-fn sample_places() -> OwnPlaces {
-    OwnPlaces {
-        folders: vec![
-            Folder::custom("sample-receipts", "Receipts"),
-            Folder::label("sample-work", "Work"),
-            Folder::label("sample-family", "Family"),
-            Folder::label("sample-travel", "Travel"),
-        ],
-        ..OwnPlaces::default()
-    }
 }
 
 fn file_name(appearance: Appearance) -> &'static str {
@@ -313,6 +286,7 @@ fn without_metadata(png: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::Folder;
     use crate::settings::Settings;
 
     /// A chunk of `kind` holding `data`, with a checksum that is copied as it is.
@@ -370,7 +344,7 @@ mod tests {
     }
 
     #[test]
-    fn the_readme_view_opens_the_demos_booking_beside_sample_folders() {
+    fn the_readme_view_opens_the_demos_booking_in_the_dark_appearance() {
         let mut settings = Settings::default();
         settings.appearance = Appearance::Light;
         let (mut app, _) = App::boot(true, settings);
@@ -388,7 +362,6 @@ mod tests {
 
         let open = app.mailbox().unwrap().selected_summary();
         assert_eq!(open.and_then(|row| row.subject.as_deref()), Some(SUBJECT));
-        assert_eq!(app.folders(), sample_places().folders.as_slice());
         assert_eq!(app.settings().appearance, Appearance::Dark);
     }
 }

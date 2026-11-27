@@ -590,13 +590,6 @@ impl App {
         &self.folders
     }
 
-    /// Which sign-in is open: a message carrying it counts only while that
-    /// session lasts.
-    #[cfg(feature = "readme-screenshots")]
-    pub fn session_epoch(&self) -> SessionEpoch {
-        self.session_epoch
-    }
-
     /// How the sidebar shows `folder`: plain for Proton's own.
     pub fn place_look(&self, folder: &Folder) -> PlaceLook {
         folder
@@ -1216,8 +1209,7 @@ impl App {
                 MailAction::MoveTo(folder) => service.move_to(id, folder),
                 MailAction::SetUnread(unread) => service.set_unread(id, *unread),
                 MailAction::SetStarred(starred) => service.set_starred(id, *starred),
-                // The demo account owns no labels, so the reader offers none.
-                MailAction::SetLabel { .. } => false,
+                MailAction::SetLabel { label, on } => service.set_label(id, label, *on),
             })
             .collect();
         if applied.is_empty() {

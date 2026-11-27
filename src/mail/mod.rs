@@ -122,11 +122,11 @@ impl MailBackend {
         }
     }
 
-    /// Account folders and labels; demo mode has neither.
+    /// The folders and labels the account made; the demo has a few.
     pub async fn list_folders(&self) -> Result<OwnPlaces, MailboxError> {
         match self {
             Self::Proton(service) => service.list_folders().await,
-            Self::Demo(_) => Ok(OwnPlaces::default()),
+            Self::Demo(_) => Ok(demo::own_places()),
         }
     }
 

@@ -399,7 +399,7 @@ fn answers_go_where_core_sends_them_for_mail_received_and_drafts() {
     // A draft was never sent, so core answers it like mail received: to its
     // sender, the demo user, not to the people it is meant for.
     let drafts = detail_of(|fixture| {
-        fixture.folder == MailFolder::Drafts
+        fixture.folder == sys(MailFolder::Drafts)
             && fixture.subject == "Re: Draft proposal for the translation workflow"
     });
     let draft = drafts.messages.last().unwrap();
@@ -562,7 +562,7 @@ fn details_cover_reader_edge_cases() {
     assert_eq!(long.body, MessageBody::PlainText(LONG_BODY.to_owned()));
 
     let untitled =
-        detail_of(|fixture| fixture.folder == MailFolder::Inbox && fixture.subject.is_empty());
+        detail_of(|fixture| fixture.folder == sys(MailFolder::Inbox) && fixture.subject.is_empty());
     assert_eq!(untitled.subject, None);
 }
 
@@ -760,4 +760,102 @@ fn contains(mailbox: &DemoMailbox, folder: MailFolder, id: &str) -> bool {
         .conversations
         .iter()
         .any(|conversation| conversation.id == id)
+}
+
+/// A place the demo account made, by name.
+fn own(name: &str) -> Folder {
+    let places = own_places().folders;
+    let place = places.into_iter().find(|place| place.name() == name);
+    place.unwrap_or_else(|| panic!("the demo account made no {name}"))
+}
+
+/// Every conversation `place` lists.
+fn listed(mailbox: &DemoMailbox, place: &Folder) -> Vec<ConversationSummary> {
+    mailbox
+        .list_conversations(place, 0, 1_000, NOW)
+        .unwrap()
+        .conversations
+}
+
+fn lists(mailbox: &DemoMailbox, place: &Folder, id: &str) -> bool {
+    listed(mailbox, place).iter().any(|row| row.id == id)
+}
+
+#[test]
+fn the_demo_account_has_a_folder_and_labels_with_mail_in_them() {
+    let mailbox = DemoMailbox::new();
+    let places = own_places();
+    let names: Vec<&str> = places.folders.iter().map(Folder::name).collect();
+    assert_eq!(names, ["Receipts", "Work", "Family", "Travel"]);
+    assert_eq!(places.folders[0].kind(), Some(CustomKind::Folder));
+    // Each label has its color, as Proton's have.
+    assert_eq!(places.looks.len(), 3);
+    assert!(places.looks.values().all(|look| look.color.is_some()));
+
+    let counts = mailbox.counts();
+    let inbox = listed(&mailbox, &sys(MailFolder::Inbox));
+    for place in &places.folders {
+        let rows = listed(&mailbox, place);
+        assert!(!rows.is_empty(), "{}", place.name());
+        let unread = rows.iter().filter(|row| row.unread).count() as u32;
+        assert_eq!(counts.unread(place), Some(unread), "{}", place.name());
+        // Each row says it is filed there, and only a label's mail is also
+        // where it was: the folder's is in the folder alone.
+        let label = place.kind() == Some(CustomKind::Label);
+        for row in &rows {
+            assert!(
+                place
+                    .custom_id()
+                    .is_some_and(|id| row.labels.contains(&id.to_owned()))
+            );
+            let filed_in_receipts = row.labels.contains(&RECEIPTS.to_owned());
+            let in_inbox = inbox.iter().any(|other| other.id == row.id);
+            assert_eq!(in_inbox, label && !filed_in_receipts, "{:?}", row.subject);
+        }
+    }
+}
+
+#[test]
+fn a_conversation_moves_to_the_demo_folder_and_back_but_never_to_a_label() {
+    let mailbox = DemoMailbox::new();
+    let receipts = own("Receipts");
+
+    assert!(mailbox.move_to("demo-4", &receipts));
+    assert!(lists(&mailbox, &receipts, "demo-4"));
+    assert!(!contains(&mailbox, MailFolder::Inbox, "demo-4"));
+
+    assert!(mailbox.move_to("demo-4", &sys(MailFolder::Inbox)));
+    assert!(!lists(&mailbox, &receipts, "demo-4"));
+    assert!(contains(&mailbox, MailFolder::Inbox, "demo-4"));
+
+    // Neither a label nor a folder the account never made is a place to go.
+    assert!(!mailbox.move_to("demo-4", &own("Work")));
+    assert!(!mailbox.move_to("demo-4", &Folder::custom("elsewhere", "Elsewhere")));
+    assert!(contains(&mailbox, MailFolder::Inbox, "demo-4"));
+}
+
+#[test]
+fn a_label_is_given_and_taken_away_where_the_conversation_is() {
+    let mailbox = DemoMailbox::new();
+    let family = own("Family");
+    let carried = |mailbox: &DemoMailbox| {
+        let detail = mailbox.conversation_detail("demo-4", NOW).unwrap();
+        detail.labels
+    };
+    assert!(!lists(&mailbox, &family, "demo-4"));
+
+    assert!(mailbox.set_label("demo-4", &family, true));
+    assert!(mailbox.set_label("demo-4", &family, true));
+    assert!(lists(&mailbox, &family, "demo-4"));
+    assert!(contains(&mailbox, MailFolder::Inbox, "demo-4"));
+    assert_eq!(carried(&mailbox), [FAMILY]);
+
+    assert!(mailbox.set_label("demo-4", &family, false));
+    assert!(!lists(&mailbox, &family, "demo-4"));
+    assert!(carried(&mailbox).is_empty());
+
+    // The folder is not a label, and neither is one the account never made.
+    assert!(!mailbox.set_label("demo-4", &own("Receipts"), true));
+    assert!(!mailbox.set_label("demo-4", &Folder::label("other", "Other"), true));
+    assert!(carried(&mailbox).is_empty());
 }

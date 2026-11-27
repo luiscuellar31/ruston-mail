@@ -136,10 +136,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   with the `readme-screenshots` feature that no release turns on, takes the
   README's screenshots for
   [`packaging/readme-screenshots.sh`](../packaging/readme-screenshots.sh). In
-  the demo, `logic` moves it a frame at a time: it hands the app a sample folder
-  and labels through `Message::FoldersLoaded`, opens the booking newsletter,
-  and saves the window dark and then light with macOS's `screencapture`, off
-  the interface thread, keeping only each PNG's picture and color chunks.
+  the demo, `logic` moves it a frame at a time: it opens the booking
+  newsletter and saves the window dark and then light with macOS's
+  `screencapture`, off the interface thread, keeping only each PNG's picture
+  and color chunks.
   `raw_input_hook` keeps the mouse and keys away meanwhile.
 - On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
   traffic lights with eframe's `WindowChromeMetrics` on each logic pass.
@@ -395,6 +395,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   either [`ProtonMailService`](../src/mail/proton.rs), backed by `ruston-core`, or
   the local [`DemoMailbox`](../src/mail/demo.rs). Its
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses. The
+  demo account has a folder and three labels of its own, with mail in them, so
+  moving and labeling work there as with an account. The
   demo answers its fictional mail with core's `reply_recipients`, given the
   flags Proton would set (received, sent, or a draft never sent), so a reply
   goes where it would with an account; its tests find conversations by what

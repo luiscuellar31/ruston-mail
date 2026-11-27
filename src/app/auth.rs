@@ -403,7 +403,8 @@ impl App {
 
         let page_request = self.next_request();
         let counts_request = self.next_request();
-        // Demo mail has no account folders, so always start it in Inbox.
+        // The folder an account left open is not one of the demo's, so the
+        // demo starts in Inbox.
         let start = self.settings.start_folder();
         let folder = if self.is_demo() && start.system().is_none() {
             Folder::INBOX

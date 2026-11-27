@@ -8,8 +8,9 @@ use ruston_core::{AddressInfo, Quote};
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
-    ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail, ListFilter,
-    MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, IncomingMail,
+    ListFilter, MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
+    OwnPlaces, PlaceLook, SummaryKind,
 };
 
 mod fixtures;
@@ -43,8 +44,24 @@ const DEMO_ADDRESSES: [(&str, &str); 2] = [
 /// What joins a conversation's correspondents in [`Fixture::correspondents`].
 const CORRESPONDENT_SEPARATOR: &str = ", ";
 
+/// The ID of the folder the demo account made.
+const RECEIPTS: &str = "demo-receipts";
+/// The IDs of the labels the demo account made.
+const WORK: &str = "demo-work";
+const FAMILY: &str = "demo-family";
+const TRAVEL: &str = "demo-travel";
+/// The demo account's labels: ID, name and color.
+const OWN_LABELS: [(&str, &str, [u8; 3]); 3] = [
+    (WORK, "Work", [0x80, 0x80, 0xFF]),
+    (FAMILY, "Family", [0x1D, 0xA5, 0x83]),
+    (TRAVEL, "Travel", [0xF7, 0x84, 0x00]),
+];
+
 struct Fixture {
-    folder: MailFolder,
+    /// One of Proton's folders, or the one the demo account made.
+    folder: Folder,
+    /// The IDs of the demo account's labels it carries.
+    labels: Vec<String>,
     /// Whether the demo user sent the original conversation.
     outgoing: bool,
     /// Senders, or recipients in Sent and Drafts, joined by
@@ -238,7 +255,8 @@ impl DemoMailbox {
             }
         }
         fixtures.push(Fixture {
-            folder: MailFolder::Sent,
+            folder: MailFolder::Sent.into(),
+            labels: Vec::new(),
             outgoing: true,
             correspondents: everyone.join(CORRESPONDENT_SEPARATOR),
             subject: answered.as_ref().map_or_else(
@@ -283,14 +301,28 @@ impl DemoMailbox {
         self.update(id, |fixture| fixture.starred = starred)
     }
 
-    /// Moves a row between Proton's own folders. The fictional mailbox has no
-    /// folders of its own, so a move into one changes nothing.
+    /// Moves a row to one of Proton's folders or to the one the demo account
+    /// made. A label is not a place to move to, so that changes nothing.
     pub fn move_to(&self, id: &str, folder: &Folder) -> bool {
-        let Some(folder) = folder.system() else {
+        if folder.system().is_none() && !owns(folder, CustomKind::Folder) {
+            return false;
+        }
+
+        self.update(id, |fixture| fixture.folder = folder.clone())
+    }
+
+    /// Gives a row one of the demo account's labels, or takes it away.
+    pub fn set_label(&self, id: &str, label: &Folder, on: bool) -> bool {
+        let Some(label) = label.custom_id().filter(|_| owns(label, CustomKind::Label)) else {
             return false;
         };
 
-        self.update(id, |fixture| fixture.folder = folder)
+        self.update(id, |fixture| {
+            fixture.labels.retain(|carried| carried != label);
+            if on {
+                fixture.labels.push(label.to_owned());
+            }
+        })
     }
 
     fn update(&self, id: &str, update: impl FnOnce(&mut Fixture)) -> bool {
@@ -354,14 +386,50 @@ fn matches_query(fixture: &Fixture, query: &str) -> bool {
     .any(|value| value.to_lowercase().contains(query))
 }
 
-/// The fictional mailbox has only Proton's own folders, so a folder the
-/// account made never holds any of it.
-fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
-    let Some(folder) = folder.system() else {
-        return false;
+/// The folder and labels the demo account made, as the sidebar lists them.
+pub fn own_places() -> OwnPlaces {
+    let mut places = OwnPlaces {
+        folders: vec![receipts()],
+        ..OwnPlaces::default()
     };
+    for (id, name, color) in OWN_LABELS {
+        places.folders.push(Folder::label(id, name));
+        let look = PlaceLook {
+            color: Some(color),
+            ..PlaceLook::default()
+        };
+        places.looks.insert(id.to_owned(), look);
+    }
+    places
+}
 
-    fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
+/// The folder the demo account made.
+fn receipts() -> Folder {
+    Folder::custom(RECEIPTS, "Receipts")
+}
+
+/// Whether the demo account made `place`, as a folder or as a label.
+fn owns(place: &Folder, kind: CustomKind) -> bool {
+    place.kind() == Some(kind) && own_places().folders.contains(place)
+}
+
+/// Whether `folder` lists the row: the folder it is in, Starred for a starred
+/// one, or a label it carries.
+fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
+    if folder.kind() == Some(CustomKind::Label) {
+        return folder
+            .custom_id()
+            .is_some_and(|label| fixture.labels.iter().any(|carried| carried == label));
+    }
+
+    fixture.folder == *folder || (folder.system() == Some(MailFolder::Starred) && fixture.starred)
+}
+
+/// The IDs of what the demo account made that the row is filed under, as
+/// Proton lists them: its labels, and its folder when it is in that one.
+fn own_ids(fixture: &Fixture) -> Vec<String> {
+    let folder = fixture.folder.custom_id().map(str::to_owned);
+    fixture.labels.iter().cloned().chain(folder).collect()
 }
 
 /// Page `page` of the conversations of `folder` that `shows` lets through,
@@ -410,6 +478,7 @@ fn counts_from(fixtures: &[Fixture]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
         .map(Folder::System)
+        .chain(own_places().folders)
         .map(|folder| {
             let unread = fixtures
                 .iter()
@@ -437,8 +506,7 @@ fn detail_at(fixtures: &[Fixture], index: usize, now: i64) -> Option<Conversatio
         id: conversation_id(index),
         subject: non_empty(&fixture.subject),
         messages,
-        // The demo account owns no labels, so nothing carries one.
-        labels: Vec::new(),
+        labels: own_ids(fixture),
     })
 }
 
@@ -554,9 +622,9 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         unread: fixture.unread,
         starred: fixture.starred,
         message_count: u32::try_from(fixture.message_count()).unwrap_or(u32::MAX),
-        // The fictional mailbox carries no files, and has no labels.
+        // The fictional mailbox carries no files.
         has_attachments: false,
-        labels: Vec::new(),
+        labels: own_ids(fixture),
     }
 }
 
@@ -634,7 +702,7 @@ fn message(
     // demo user sent it, received it, or only wrote it, as a draft.
     let flags = if !from_demo_user {
         message_flag::RECEIVED
-    } else if fixture.folder == MailFolder::Drafts && newer == 0 {
+    } else if fixture.folder.system() == Some(MailFolder::Drafts) && newer == 0 {
         0
     } else {
         message_flag::SENT

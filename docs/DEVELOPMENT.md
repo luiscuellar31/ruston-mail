@@ -47,7 +47,9 @@ cargo run
 Remove-Item Env:RUSTON_DEMO
 ```
 
-Sent demo messages stay inside the process and disappear when it exits.
+The demo account has a folder and three labels of its own, so moving and
+labeling can be tried there. Sent demo messages, like every change, stay inside
+the process and disappear when it exits.
 Demo preferences are kept in `settings-demo.json`, apart from your own.
 **Exit demo** closes the fictional mailbox, but a process started in demo mode
 refuses to sign in, and to open email links once its mailbox is closed. Close it
@@ -432,11 +434,10 @@ packaging/readme-screenshots.sh
 It builds the app with the `readme-screenshots` feature, which no release turns
 on, in `target/readme-screenshots`, and starts the demo with a home directory of
 its own, so your settings stay as they are. The window takes the README's size,
-opens the conversation beside a sample folder and labels (the demo has none of
-its own), saves itself dark and then light with `screencapture`, keeping only
-each PNG's picture and color, and closes; the script then copies both over the
-old ones. Leave the window in front until it closes: one without focus shows
-gray buttons, and the script gives up after two minutes.
+opens the conversation, saves itself dark and then light with `screencapture`,
+keeping only each PNG's picture and color, and closes; the script then copies
+both over the old ones. Leave the window in front until it closes: one without
+focus shows gray buttons, and the script gives up after two minutes.
 
 ## Desktop installation (Linux)
 
