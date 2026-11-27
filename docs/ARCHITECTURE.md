@@ -421,7 +421,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   columns as skeletons, at their stored widths, from
   [`src/ui/mailbox.rs`](../src/ui/mailbox.rs)'s `show_opening`; without
   one, it is the plain waiting screen, so whoever has to sign in sees no
-  mailbox flash by first.
+  mailbox flash by first. The skeletons stand where the mailbox will: the
+  sidebar's first row as tall as its own, or, folded, a mark on each of the
+  strip's icons in the strip's own rows (`rail_slot`), the list's head (its title and
+  Refresh, the search field and Unread, the line under them) from the same
+  heights the list lays out with, and in one column the buttons between the
+  panes, laid out unseen as the mailbox's own, so nothing moves when the
+  mailbox replaces them.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
   saving defaults in its place. `App` writes settled settings off the

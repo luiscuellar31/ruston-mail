@@ -22,6 +22,9 @@ const OPENING_SIDEBAR_ID: &str = "opening-sidebar";
 /// sidebar's width is kept for when it unfolds.
 const RAIL_PANEL_ID: &str = "mailbox-rail";
 const OPENING_CONVERSATIONS_ID: &str = "opening-conversations";
+const OPENING_NAVIGATION_ID: &str = "opening-navigation";
+/// One column's ways between its panes, while nothing is being written.
+const COMPACT_VIEW_LABELS: [&str; 3] = ["Folders", "Mail", "Reading"];
 /// Drawing the saved panel ratios measures back ratios a little off them, so
 /// a smaller difference is not a resize: saving it would rewrite the settings
 /// on frames where nothing was dragged.
@@ -167,14 +170,20 @@ pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
         } else {
             panel_widths(app.panels(), window_width)
         };
+        let frame = if folded {
+            rail_frame(root, inset)
+        } else {
+            theme::top_panel_frame(theme::colors(root).sidebar, inset)
+        };
         egui::Panel::left(OPENING_SIDEBAR_ID)
             .default_size(widths.sidebar)
             .size_range(widths.sidebar..=widths.sidebar)
             .resizable(false)
-            .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
+            .frame(frame)
             .show(root, |ui| {
-                // A folded sidebar opens as an empty strip.
-                if !folded {
+                if folded {
+                    rail_skeleton(ui);
+                } else {
                     sidebar_skeleton(ui);
                 }
             });
@@ -183,25 +192,82 @@ pub(super) fn show_opening(root: &mut egui::Ui, app: &App) {
             .size_range(widths.conversations..=widths.conversations)
             .resizable(false)
             .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-            .show(root, conversation_skeleton);
-    }
-    egui::CentralPanel::default()
-        .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-        .show(root, |ui| {
-            if compact_layout(window_width) {
+            .show(root, |ui| {
+                list_head_skeleton(ui);
                 conversation_skeleton(ui);
-            }
-        });
+            });
+    }
+    let compact = compact_layout(window_width);
+    let frame = if compact {
+        // One column has its way between the panes above, as its mailbox does.
+        egui::Panel::top(OPENING_NAVIGATION_ID)
+            .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
+            .show(root, compact_navigation_skeleton);
+        theme::panel_frame(theme::colors(root).panel)
+    } else {
+        theme::top_panel_frame(theme::colors(root).panel, inset)
+    };
+    egui::CentralPanel::default().frame(frame).show(root, |ui| {
+        if compact {
+            list_head_skeleton(ui);
+            conversation_skeleton(ui);
+        }
+    });
+}
+
+/// One column's buttons between the panes while a saved session opens: each
+/// laid out unseen, as its own, with a skeleton where it goes.
+fn compact_navigation_skeleton(ui: &mut egui::Ui) {
+    let fill = theme::skeleton_fill(ui);
+    ui.horizontal_wrapped(|ui| {
+        for label in COMPACT_VIEW_LABELS {
+            let place = ui.add_visible(false, egui::Button::new(label)).rect;
+            theme::paint_skeleton(ui.painter(), place, fill);
+        }
+    });
+}
+
+/// The head of the list while a saved session opens, as tall as the list's
+/// own: skeletons where its title, Refresh, the search field and Unread go,
+/// and the line under them, so the rows under it stand where the list's will.
+fn list_head_skeleton(ui: &mut egui::Ui) {
+    let fill = theme::skeleton_fill(ui);
+    let scale = theme::text_scale(ui.ctx());
+    let width = ui.available_width();
+    let gap = ui.spacing().item_spacing.x;
+    let button = refresh_width(ui);
+    let (row, _) =
+        ui.allocate_exact_size(egui::vec2(width, list_title_row_height(ui)), Sense::hover());
+    let title = egui::Rect::from_min_size(
+        egui::pos2(row.left(), row.center().y - 7.0 * scale),
+        egui::vec2((width - button - gap).min(120.0 * scale), 14.0 * scale),
+    );
+    theme::paint_skeleton(ui.painter(), title, fill);
+    let refresh = egui::Rect::from_min_max(egui::pos2(row.right() - button, row.top()), row.max);
+    theme::paint_skeleton(ui.painter(), refresh, fill);
+    ui.add_space(6.0);
+    let (row, _) =
+        ui.allocate_exact_size(egui::vec2(width, search_field_height(ui)), Sense::hover());
+    let field = egui::Rect::from_min_max(
+        row.min,
+        egui::pos2(row.right() - button - gap, row.bottom()),
+    );
+    theme::paint_skeleton(ui.painter(), field, fill);
+    let unread = egui::Rect::from_min_max(egui::pos2(row.right() - button, row.top()), row.max);
+    theme::paint_skeleton(ui.painter(), unread, fill);
+    // The line the list keeps under the field, empty until something is typed.
+    ui.label(egui::RichText::new("").small());
+    ui.add_space(4.0);
 }
 
 /// The sidebar while a saved session opens: its name, and skeletons where
 /// its button and Proton's folders go.
 fn sidebar_skeleton(ui: &mut egui::Ui) {
     const NAME_WIDTHS: [f32; 4] = [0.42, 0.3, 0.5, 0.36];
-    ui.heading(
-        egui::RichText::new("Ruston Mail")
-            .size(theme::text_size(ui, theme::APP_NAME_SIZE))
-            .strong(),
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), title_row_height(ui)),
+        Layout::left_to_right(Align::Center),
+        |ui| ui.heading(app_name(ui)),
     );
     ui.add_space(12.0);
     let fill = theme::skeleton_fill(ui);
@@ -221,6 +287,29 @@ fn sidebar_skeleton(ui: &mut egui::Ui) {
             egui::vec2(width * NAME_WIDTHS[index % NAME_WIDTHS.len()], 10.0 * scale),
         );
         theme::paint_skeleton(ui.painter(), name, fill);
+    }
+}
+
+/// The folded sidebar while a saved session opens: skeletons where its
+/// icons go, in the rows it lays them out in, and New message's whole button.
+fn rail_skeleton(ui: &mut egui::Ui) {
+    let fill = theme::skeleton_fill(ui);
+    // A mark `size` wide in the middle of a button `side` wide.
+    let mark = |ui: &mut egui::Ui, height: f32, side: f32, size: f32| {
+        rail_slot(ui, height, side, |ui| {
+            let (button, _) = ui.allocate_exact_size(egui::vec2(side, side), Sense::hover());
+            let place = egui::Rect::from_center_size(button.center(), egui::Vec2::splat(size));
+            theme::paint_skeleton(ui.painter(), place, fill);
+        });
+    };
+    let side = theme::icon_button_size(ui).y;
+    mark(ui, title_row_height(ui), side, theme::ICON_SIZE);
+    ui.add_space(12.0);
+    let side = theme::text_size(ui, FOLDER_HEIGHT);
+    mark(ui, theme::text_size(ui, NEW_MESSAGE_HEIGHT), side, side);
+    ui.add_space(12.0);
+    for _ in MailFolder::ALL {
+        mark(ui, side, side, theme::ICON_SIZE);
     }
 }
 
@@ -246,12 +335,13 @@ fn show_compact(
         .frame(theme::top_panel_frame(theme::colors(root).sidebar, inset))
         .show(root, |ui| {
             ui.horizontal_wrapped(|ui| {
+                let [folders, mail, reading] = COMPACT_VIEW_LABELS;
                 for (view, label) in [
-                    (CompactView::Folders, "Folders"),
-                    (CompactView::Mail, "Mail"),
+                    (CompactView::Folders, folders),
+                    (CompactView::Mail, mail),
                     (
                         CompactView::Reader,
-                        if writing { "Message" } else { "Reading" },
+                        if writing { "Message" } else { reading },
                     ),
                 ] {
                     let enabled = view != CompactView::Reader || reader_available;
@@ -1127,26 +1217,17 @@ fn conversation_pane(
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             refresh_button(ui, app, mailbox, messages);
             ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(title)
-                            .heading()
-                            .size(theme::text_size(ui, theme::LIST_TITLE_SIZE))
-                            .strong(),
-                    )
-                    .truncate(),
-                );
+                ui.add(egui::Label::new(list_title(ui, title)).truncate());
             });
         });
     });
     ui.add_space(6.0);
 
     let mut query = mailbox.search_query().to_owned();
-    // One row as tall as the search field, a line of text inside its margin,
-    // known before the buttons beside it are laid out: they take its height
-    // and are centered on it, leaving the remaining height for mail.
-    let field_height =
-        ui.text_style_height(&egui::TextStyle::Body) + 2.0 * f32::from(SEARCH_MARGIN_Y);
+    // One row as tall as the search field, known before the buttons beside
+    // it are laid out: they take its height and are centered on it, leaving
+    // the remaining height for mail.
+    let field_height = search_field_height(ui);
     let search_size = egui::vec2(ui.available_width(), field_height);
     ui.allocate_ui_with_layout(search_size, Layout::right_to_left(Align::Center), |ui| {
         // Reserve the filter and the clear action before the field consumes
@@ -1263,6 +1344,33 @@ fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
     {
         messages.push(Message::RefreshMailbox);
     }
+}
+
+/// The list's title, as large as the sidebar's name.
+fn list_title(ui: &egui::Ui, title: &str) -> egui::RichText {
+    egui::RichText::new(title)
+        .heading()
+        .size(theme::text_size(ui, theme::LIST_TITLE_SIZE))
+        .strong()
+}
+
+/// How tall the list's first row is: its title, or Refresh beside it,
+/// whichever is taller, as a button of words is laid out.
+fn list_title_row_height(ui: &egui::Ui) -> f32 {
+    let galley_height = |text: egui::WidgetText, style: egui::TextStyle| {
+        text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
+            .size()
+            .y
+    };
+    let title = galley_height(list_title(ui, "Inbox").into(), egui::TextStyle::Heading);
+    let words = galley_height("Refresh".into(), egui::TextStyle::Button);
+    let button = (words + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
+    title.max(button)
+}
+
+/// How tall the search field is: a line of text inside its margin.
+fn search_field_height(ui: &egui::Ui) -> f32 {
+    ui.text_style_height(&egui::TextStyle::Body) + 2.0 * f32::from(SEARCH_MARGIN_Y)
 }
 
 /// The width Refresh keeps whatever it says, its longer title's.

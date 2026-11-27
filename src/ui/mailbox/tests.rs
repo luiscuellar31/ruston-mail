@@ -1110,6 +1110,186 @@ fn the_folded_sidebar_keeps_each_icon_on_its_row_and_in_its_middle() {
 }
 
 #[test]
+fn the_opening_skeleton_stands_where_the_mailbox_will() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let raw = |size: egui::Vec2| egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let node_top = |output: &egui::FullOutput, wanted: &dyn Fn(&str) -> bool| {
+        output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .filter(|(_, node)| node.label().is_some_and(wanted))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|bounds| bounds.y0 as f32)
+            .reduce(f32::min)
+    };
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        for size in [egui::vec2(1100.0, 700.0), egui::vec2(480.0, 700.0)] {
+            let at = format!("{size:?} at {scale}");
+            // Opening: where the skeleton's rows and the sidebar's bars are.
+            let mut opening = None;
+            let mut bars = Vec::new();
+            for _ in 0..3 {
+                let output = context.run_ui(raw(size), |root| show_opening(root, &app));
+                opening = node_top(&output, &|name| name == "Loading conversations");
+                bars = output
+                    .shapes
+                    .iter()
+                    .filter_map(|clipped| match &clipped.shape {
+                        egui::Shape::Rect(rect) if rect.rect.right() < 240.0 => Some(rect.rect),
+                        _ => None,
+                    })
+                    .collect();
+                output.drop_without_applying_deltas();
+            }
+            // Loaded: where the list's rows and the sidebar's places are.
+            let _ = app.update(Message::ConversationsLoaded(
+                1,
+                Ok(pagination_page(0, 50, 120)),
+            ));
+            let mut state = UiState::default();
+            let mut loaded = None;
+            let mut places = Vec::new();
+            for _ in 0..3 {
+                let output = context.run_ui(raw(size), |root| {
+                    show(root, &app, None, &mut state, &mut Vec::new())
+                });
+                loaded = node_top(&output, &|name| name.starts_with("Test sender, p0"));
+                places = accessible_frame_places(&output);
+                output.drop_without_applying_deltas();
+            }
+            let (opening, loaded) = (opening.expect(&at), loaded.expect(&at));
+            assert!(
+                (opening - loaded).abs() < 0.5,
+                "{at}: rows open at {opening}, the list's at {loaded}"
+            );
+            // Beside the list, the sidebar's bars where its places will be.
+            if size.x > 1000.0 {
+                let new_message = places
+                    .iter()
+                    .find(|(name, _)| name == "New message")
+                    .unwrap()
+                    .1;
+                assert!(
+                    bars.iter()
+                        .any(|bar| (bar.top() - new_message.top()).abs() < 0.5
+                            && (bar.height() - new_message.height()).abs() < 0.5),
+                    "{at}: no bar for {new_message:?} in {bars:?}"
+                );
+                let inbox = places
+                    .iter()
+                    .find(|(name, _)| name.starts_with("Inbox"))
+                    .unwrap()
+                    .1;
+                assert!(
+                    bars.iter()
+                        .any(|bar| (bar.center().y - inbox.center().y).abs() < 0.5),
+                    "{at}: no bar on {inbox:?} in {bars:?}"
+                );
+            }
+            app = App::boot(true, Settings::default()).0;
+        }
+    }
+}
+
+#[test]
+fn a_folded_sidebar_opens_with_skeletons_where_its_icons_will_be() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let size = egui::vec2(1100.0, 700.0);
+    let raw = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        let (mut app, _) = App::boot(true, Settings::default());
+        let _ = app.update(Message::FoldSidebar(true));
+        let strip = rail_width(scale);
+        let mut marks = Vec::new();
+        for _ in 0..3 {
+            let output = context.run_ui(raw(), |root| show_opening(root, &app));
+            marks = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    // Not the strip's own background, as tall as the window.
+                    egui::Shape::Rect(rect)
+                        if rect.rect.right() < strip && rect.rect.height() < strip =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            output.drop_without_applying_deltas();
+        }
+        let _ = app.update(Message::ConversationsLoaded(
+            1,
+            Ok(pagination_page(0, 5, 5)),
+        ));
+        let mut state = UiState::default();
+        let mut buttons = Vec::new();
+        for _ in 0..3 {
+            let output = context.run_ui(raw(), |root| {
+                show(root, &app, None, &mut state, &mut Vec::new())
+            });
+            buttons = accessible_frame_places(&output);
+            output.drop_without_applying_deltas();
+        }
+
+        // The way to unfold it, New message and Proton's folders; Settings,
+        // at the foot, is left out as the unfolded sidebar's foot is.
+        let icons: Vec<_> = buttons
+            .into_iter()
+            .filter(|(name, rect)| rect.right() <= strip && name != "Settings")
+            .collect();
+        assert_eq!(
+            icons.len(),
+            2 + MailFolder::ALL.len(),
+            "at {scale}: {icons:?}"
+        );
+        for (name, icon) in &icons {
+            assert!(
+                marks
+                    .iter()
+                    .any(|mark| (mark.center() - icon.center()).length() < 0.5),
+                "at {scale}: no skeleton on {name} {icon:?} in {marks:?}"
+            );
+        }
+        assert_eq!(marks.len(), icons.len(), "at {scale}: {marks:?}");
+    }
+}
+
+/// Every named button of a frame, with where it is.
+fn accessible_frame_places(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+    output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| &update.nodes)
+        .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            Some((node.label()?.to_owned(), rect))
+        })
+        .collect()
+}
+
+#[test]
 fn one_column_never_offers_to_fold_the_sidebar() {
     let context = egui::Context::default();
     theme::install(&context);

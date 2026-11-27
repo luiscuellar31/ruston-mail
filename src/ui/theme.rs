@@ -49,7 +49,7 @@ const ANIMATION_FRAME: Duration = Duration::from_millis(50);
 /// [`compact_button_height`].
 pub const COMPACT_BUTTON_HEIGHT: f32 = 24.0;
 const DIALOG_BUTTON_HEIGHT: f32 = 32.0;
-const ICON_SIZE: f32 = 16.0;
+pub const ICON_SIZE: f32 = 16.0;
 const ICON_ATOM_ID: &str = "ruston-vector-icon";
 const FOCUS_RING_WIDTH: f32 = 2.0;
 const CHECKBOX_ATOM_ID: &str = "ruston-check-box";
