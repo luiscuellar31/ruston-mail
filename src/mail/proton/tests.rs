@@ -1260,3 +1260,31 @@ fn the_address_chosen_to_send_from_reaches_core() {
     };
     assert_eq!(send_options(&unchosen).from, None);
 }
+
+#[test]
+fn a_filter_and_an_order_become_what_core_asks_proton_for() {
+    let asked = |filter, order| {
+        let options = list_options(filter, order);
+        (options.unread, options.attachments, options.oldest_first)
+    };
+    let newest_first = ListOrder::NewestFirst;
+
+    assert_eq!(asked(ListFilter::All, newest_first), (None, false, false));
+    assert_eq!(
+        asked(ListFilter::Unread, newest_first),
+        (Some(true), false, false)
+    );
+    assert_eq!(
+        asked(ListFilter::Read, newest_first),
+        (Some(false), false, false)
+    );
+    assert_eq!(
+        asked(ListFilter::WithFiles, newest_first),
+        (None, true, false)
+    );
+    // The order goes with any filter.
+    assert_eq!(
+        asked(ListFilter::Read, ListOrder::OldestFirst),
+        (Some(false), false, true)
+    );
+}

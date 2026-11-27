@@ -14,9 +14,9 @@ pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
 pub use auth::{AuthError, LoginRequest};
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
-    IncomingMail, ListFilter, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage,
-    MailboxCounts, MailboxError, MessageBody, OwnPlaces, PlaceLook, RichBlock, RichBody, RichSpan,
-    SummaryKind, UNREADABLE_NOTICE,
+    IncomingMail, ListFilter, ListOrder, MailAction, MailAddress, MailAttachment, MailFolder,
+    MailMessage, MailboxCounts, MailboxError, MessageBody, OwnPlaces, PlaceLook, RichBlock,
+    RichBody, RichSpan, SummaryKind, UNREADABLE_NOTICE,
 };
 pub use outgoing::{
     BodyFormat, Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError,
@@ -64,22 +64,24 @@ impl MailBackend {
         }
     }
 
-    /// One page of the conversations of `folder` that `filter` shows.
+    /// One page of the conversations of `folder` that `filter` shows, in
+    /// `order`.
     pub async fn list_conversations(
         &self,
         folder: &Folder,
         filter: ListFilter,
+        order: ListOrder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
         match self {
             Self::Proton(service) => {
                 service
-                    .list_conversations(folder, filter, page, page_size)
+                    .list_conversations(folder, filter, order, page, page_size)
                     .await
             }
             Self::Demo(service) => {
-                service.list_filtered(folder, filter, page, page_size, demo::now())
+                service.list_filtered(folder, filter, order, page, page_size, demo::now())
             }
         }
     }

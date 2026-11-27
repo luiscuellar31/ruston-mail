@@ -32,9 +32,9 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, ListFilter, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces,
-    PlaceLook, ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome,
-    SignInPrompt, SummaryKind, demo::DemoMailbox,
+    IncomingMail, ListFilter, ListOrder, MailAction, MailBackend, MailboxCounts, MailboxError,
+    OwnPlaces, PlaceLook, ProtectionCheck, ProtonMailService, ResumeOutcome, SendError,
+    SignInOutcome, SignInPrompt, SummaryKind, demo::DemoMailbox,
 };
 
 use attachments::AttachmentSave;
@@ -126,9 +126,11 @@ pub enum Message {
     /// already came to.
     DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
-    /// Lists only the open folder's unread conversations, or all of them
+    /// Lists only the open folder's conversations this shows, or all of them
     /// again.
     ShowOnly(ListFilter),
+    /// Lists the open folder's conversations in this order.
+    SortBy(ListOrder),
     SelectConversation(String),
     /// Adds a row to the rows chosen, or takes it out, as a Command click
     /// (Ctrl on Windows and Linux) does.
@@ -768,6 +770,7 @@ impl App {
             }
             Message::SelectFolder(folder) => return self.select_folder(folder),
             Message::ShowOnly(filter) => return self.show_only(filter),
+            Message::SortBy(order) => return self.sort_by(order),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft
                 // folded above it.
@@ -1445,7 +1448,7 @@ impl App {
         let page_size = mailbox.loaded_conversation_limit();
         let (page, counts) = service.snapshot(
             &folder,
-            mailbox.filter(),
+            (mailbox.filter(), mailbox.order()),
             |id| mailbox.lists(id),
             page_size,
             crate::mail::demo::now(),

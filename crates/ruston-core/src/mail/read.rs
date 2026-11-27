@@ -134,10 +134,24 @@ fn day_end(day: Date) -> i64 {
     day_start(day) + 86_399
 }
 
+/// Which of a folder's items a listing shows, and in which order: all of
+/// them, newest first, unless a field says otherwise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ListOptions {
+    /// Only unread items, or only read ones.
+    pub unread: Option<bool>,
+    /// Only items that carry an attachment.
+    pub attachments: bool,
+    /// The oldest first rather than the newest.
+    pub oldest_first: bool,
+}
+
 /// The query for one page of `folder`, of its messages or its conversations.
-fn folder_page(folder: &str, page: u32, page_size: u32, unread: bool) -> ListQuery {
+fn folder_page(folder: &str, page: u32, page_size: u32, options: ListOptions) -> ListQuery {
     ListQuery {
-        unread,
+        unread: options.unread,
+        attachments: options.attachments,
+        oldest_first: options.oldest_first,
         ..ListQuery::folder_page(resolve_folder(folder), page, page_size)
     }
 }
@@ -256,20 +270,24 @@ impl Client {
         page_size: u32,
         unread: bool,
     ) -> Result<(u32, Vec<MessageMetadata>)> {
-        let q = folder_page(folder, page, page_size, unread);
+        let options = ListOptions {
+            unread: unread.then_some(true),
+            ..ListOptions::default()
+        };
+        let q = folder_page(folder, page, page_size, options);
         api::messages::list_messages(self.http(), &q).await
     }
 
-    /// One page of a folder's conversations, newest first, with how many it
-    /// holds: unread ones only when `unread` is set.
+    /// One page of the conversations of a folder that `options` show, in
+    /// their order, with how many there are.
     pub async fn list_conversations(
         &self,
         folder: &str,
         page: u32,
         page_size: u32,
-        unread: bool,
+        options: ListOptions,
     ) -> Result<(u32, Vec<Conversation>)> {
-        let q = folder_page(folder, page, page_size, unread);
+        let q = folder_page(folder, page, page_size, options);
         api::conversations::list_conversations(self.http(), &q).await
     }
 
@@ -279,7 +297,7 @@ impl Client {
         Ok(ListQuery {
             label_id: Some(resolve_folder(folder)),
             page_size: Some(opts.limit.unwrap_or(DEFAULT_SEARCH_LIMIT)),
-            unread: opts.unread,
+            unread: opts.unread.then_some(true),
             keyword: opts.keyword.clone(),
             from: opts.from.clone(),
             to: opts.to.clone(),

@@ -26,7 +26,8 @@ rough edges.
 - **Accounts:** sign in to up to five Proton accounts and switch between them.
   Two-factor codes, a separate mailbox password, and Proton's human
   verification all work.
-- **Finding mail:** folders and labels with unread counts, a filter that
+- **Finding mail:** folders and labels with unread counts, filters for unread
+  or read mail and mail with attachments, newest or oldest first, a field that
   narrows the list as you type, and search across the whole mailbox.
 - **Reading:** plain-text and HTML mail, with threads, quoted replies, tables,
   and the pictures a message carries. Save attachments wherever you like.

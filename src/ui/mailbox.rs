@@ -10,7 +10,8 @@ use crate::app::{
     widths_beside_rail,
 };
 use crate::mail::{
-    ConversationSummary, CustomKind, Folder, ListFilter, MailFolder, MailboxError, PlaceLook,
+    ConversationSummary, CustomKind, Folder, ListFilter, ListOrder, MailFolder, MailboxError,
+    PlaceLook,
 };
 use crate::settings::{ComposePlacement, Panels, Settings};
 
@@ -1245,7 +1246,7 @@ fn conversation_pane(
     ui.allocate_ui_with_layout(search_size, Layout::right_to_left(Align::Center), |ui| {
         // Reserve the filter and the clear action before the field consumes
         // the remaining width.
-        unread_filter(ui, mailbox, field_height, messages);
+        list_filter(ui, mailbox, field_height, messages);
         if !query.is_empty()
             && ui
                 .add(egui::Button::new("Clear").min_size(egui::vec2(0.0, field_height)))
@@ -1324,12 +1325,14 @@ fn conversation_pane(
             detail(ui, "Press Enter to search all of your mail.");
             load_more(ui, mailbox, messages);
         }),
-        (_, true) if mailbox.filter() == ListFilter::Unread => empty_state(ui, |ui| {
-            let message = format!("No unread conversations in {}.", mailbox.folder().name());
-            state_message(ui, &message, muted);
-        }),
         (_, true) => empty_state(ui, |ui| {
-            let message = format!("No conversations in {}.", mailbox.folder().name());
+            let which = match mailbox.filter() {
+                ListFilter::All => "No conversations",
+                ListFilter::Unread => "No unread conversations",
+                ListFilter::Read => "No read conversations",
+                ListFilter::WithFiles => "No conversations with attachments",
+            };
+            let message = format!("{which} in {}.", mailbox.folder().name());
             state_message(ui, &message, muted);
         }),
         (status, false) => {
@@ -1404,29 +1407,54 @@ fn refresh_width(ui: &egui::Ui) -> f32 {
     widest.size().x + 2.0 * ui.spacing().button_padding.x
 }
 
-/// Shows only the folder's unread conversations, or all of them again;
-/// selected while it does. As tall as the search field beside it, and as
-/// wide as Refresh above it, so the two stand as a column, unless that
-/// would leave the field too narrow to read.
-fn unread_filter(ui: &mut egui::Ui, mailbox: &Mailbox, height: f32, messages: &mut Vec<Message>) {
-    let unread_only = mailbox.filter() == ListFilter::Unread;
+/// Which of a folder's conversations the Filter menu offers to show, by name.
+const FILTERS: [(ListFilter, &str); 4] = [
+    (ListFilter::All, "All"),
+    (ListFilter::Unread, "Unread"),
+    (ListFilter::Read, "Read"),
+    (ListFilter::WithFiles, "With attachments"),
+];
+/// The orders the Filter menu offers, by name.
+const ORDERS: [(ListOrder, &str); 2] = [
+    (ListOrder::NewestFirst, "Newest first"),
+    (ListOrder::OldestFirst, "Oldest first"),
+];
+/// Wide enough for the Filter menu's longest choice beside its mark.
+const FILTER_MENU_WIDTH: f32 = 170.0;
+
+/// Opens the choice of which of the folder's conversations the list shows,
+/// and in which order; selected while that is not all of them, newest first.
+/// As tall as the search field beside it, and as wide as Refresh above it,
+/// so the two stand as a column, unless that would leave the field too
+/// narrow to read.
+fn list_filter(ui: &mut egui::Ui, mailbox: &Mailbox, height: f32, messages: &mut Vec<Message>) {
+    let (filter, order) = (mailbox.filter(), mailbox.order());
+    let changed = filter != ListFilter::All || order != ListOrder::NewestFirst;
     let room = ui.available_width() - MIN_SEARCH_WIDTH - ui.spacing().item_spacing.x;
     let width = refresh_width(ui).min(room);
-    if ui
-        .add(
-            egui::Button::new("Unread")
-                .selected(unread_only)
-                .min_size(egui::vec2(width, height)),
-        )
-        .on_hover_text("Show only unread conversations")
-        .clicked()
-    {
-        messages.push(Message::ShowOnly(if unread_only {
-            ListFilter::All
-        } else {
-            ListFilter::Unread
-        }));
-    }
+    let button = egui::Button::new("Filter")
+        .selected(changed)
+        .min_size(egui::vec2(width, height));
+    let (response, _) = egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+        ui.set_min_width(FILTER_MENU_WIDTH);
+        let muted = theme::colors(ui).muted;
+        ui.label(egui::RichText::new("Show").color(muted));
+        for (choice, name) in FILTERS {
+            if ui.radio(filter == choice, name).clicked() {
+                messages.push(Message::ShowOnly(choice));
+                ui.close();
+            }
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Order").color(muted));
+        for (choice, name) in ORDERS {
+            if ui.radio(order == choice, name).clicked() {
+                messages.push(Message::SortBy(choice));
+                ui.close();
+            }
+        }
+    });
+    response.on_hover_text("Choose which conversations to show, and their order");
 }
 
 /// A list with nothing to show: what happened, centered, with anything that

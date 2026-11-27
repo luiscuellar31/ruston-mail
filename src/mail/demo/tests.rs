@@ -728,7 +728,7 @@ fn the_unread_filter_lists_only_conversations_with_unread_mail() {
     let inbox = sys(MailFolder::Inbox);
     let listed = |filter| {
         mailbox
-            .list_filtered(&inbox, filter, 0, 1_000, NOW)
+            .list_filtered(&inbox, filter, ListOrder::NewestFirst, 0, 1_000, NOW)
             .unwrap()
     };
     let all = listed(ListFilter::All);
@@ -746,6 +746,48 @@ fn the_unread_filter_lists_only_conversations_with_unread_mail() {
             .conversations
             .iter()
             .all(|row| row.id != first)
+    );
+}
+
+#[test]
+fn the_read_filter_lists_the_rest_and_the_files_one_nothing() {
+    let mailbox = DemoMailbox::new();
+    let inbox = sys(MailFolder::Inbox);
+    let listed = |filter| {
+        let page = mailbox.list_filtered(&inbox, filter, ListOrder::NewestFirst, 0, 1_000, NOW);
+        page.unwrap().conversations
+    };
+
+    let read = listed(ListFilter::Read);
+    assert!(!read.is_empty() && read.iter().all(|row| !row.unread));
+    // Read and unread together are the whole folder.
+    assert_eq!(
+        read.len() + listed(ListFilter::Unread).len(),
+        listed(ListFilter::All).len()
+    );
+    // The fictional mailbox carries no files.
+    assert!(listed(ListFilter::WithFiles).is_empty());
+}
+
+#[test]
+fn oldest_first_lists_the_same_mail_the_other_way_round_page_by_page() {
+    let mailbox = DemoMailbox::new();
+    let inbox = sys(MailFolder::Inbox);
+    let ids = |order, page, page_size| -> Vec<String> {
+        let page = mailbox.list_filtered(&inbox, ListFilter::All, order, page, page_size, NOW);
+        let rows = page.unwrap().conversations;
+        rows.into_iter().map(|row| row.id).collect()
+    };
+    let newest_first = ids(ListOrder::NewestFirst, 0, 1_000);
+    let oldest_first = ids(ListOrder::OldestFirst, 0, 1_000);
+    assert!(newest_first.len() > PAGE_SIZE as usize);
+
+    let reversed: Vec<String> = newest_first.iter().rev().cloned().collect();
+    assert_eq!(oldest_first, reversed);
+    // Its second page goes on where the first ended.
+    assert_eq!(
+        ids(ListOrder::OldestFirst, 1, PAGE_SIZE),
+        oldest_first[PAGE_SIZE as usize..][..PAGE_SIZE as usize]
     );
 }
 

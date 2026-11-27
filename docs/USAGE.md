@@ -133,12 +133,16 @@ search starts once it has loaded. What Proton finds is titled **Search
 results**, since it comes from every folder. Clear the field to return to the
 open folder.
 
-**Unread**, beside the search field, lists only the open folder's
-conversations with something unread, as Proton finds them across the whole
-folder; press it again to list them all, back at once as they were. A
-conversation you read while it is on stays where it is until the list is
-loaded again, by **Refresh** or an automatic check, so the rows do not move
-while you read. Another folder opens with all its conversations.
+**Filter**, beside the search field, chooses which of the open folder's
+conversations the list shows: **All**, **Unread**, **Read**, or **With
+attachments**, as Proton finds them across the whole folder. It also chooses
+their order, **Newest first** or **Oldest first**. The button stays marked
+while the list shows anything but all of them, newest first; choose those
+again and that list is back at once as it was. A conversation you read while
+only unread ones are listed stays where it is until the list is loaded again,
+by **Refresh** or an automatic check, so the rows do not move while you read;
+so does one you mark unread among the read ones. Another folder opens with
+all its conversations, newest first.
 
 When Proton cannot be reached, a search can look on this device instead: turn
 on **Search this device when Proton cannot be reached** under Settings ›

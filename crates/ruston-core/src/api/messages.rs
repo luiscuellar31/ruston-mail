@@ -20,8 +20,12 @@ pub struct ListQuery {
     pub page: Option<u32>,
     /// How many items a page holds.
     pub page_size: Option<u32>,
-    /// Whether to list unread items only.
-    pub unread: bool,
+    /// Whether to list only unread items, or only read ones.
+    pub unread: Option<bool>,
+    /// Whether to list only items that carry an attachment.
+    pub attachments: bool,
+    /// Whether to list the oldest items first rather than the newest.
+    pub oldest_first: bool,
     /// Words to search for.
     pub keyword: Option<String>,
     /// The sender to match.
@@ -50,15 +54,18 @@ impl ListQuery {
         }
     }
 
-    /// `req` with this query's parameters added, newest items first. Both
-    /// the messages and the conversations endpoint take the recipient filter
-    /// as `Recipients`, as Proton's web app sends it.
+    /// `req` with this query's parameters added, after the order by time.
+    /// Both the messages and the conversations endpoint take the recipient
+    /// filter as `Recipients`, as Proton's web app sends it.
     pub fn apply(&self, req: Request) -> Request {
+        // Proton takes a yes or no as 1 or 0.
+        let flag = |on: bool| if on { "1" } else { "0" }.to_owned();
         let filters = [
             ("LabelID", self.label_id.clone()),
             ("Page", self.page.map(|page| page.to_string())),
             ("PageSize", self.page_size.map(|size| size.to_string())),
-            ("Unread", self.unread.then(|| "1".to_owned())),
+            ("Unread", self.unread.map(flag)),
+            ("Attachments", self.attachments.then(|| flag(true))),
             ("Keyword", self.keyword.clone()),
             ("From", self.from.clone()),
             ("Recipients", self.to.clone()),
@@ -67,11 +74,13 @@ impl ListQuery {
             ("End", self.end.map(|time| time.to_string())),
             ("AddressID", self.address_id.clone()),
         ];
-        let newest_first = req.query("Sort", "Time").query("Desc", "1");
+        let by_time = req
+            .query("Sort", "Time")
+            .query("Desc", flag(!self.oldest_first));
         filters
             .into_iter()
             .filter_map(|(name, value)| Some((name, value?)))
-            .fold(newest_first, |req, (name, value)| req.query(name, value))
+            .fold(by_time, |req, (name, value)| req.query(name, value))
     }
 }
 
@@ -256,7 +265,9 @@ mod tests {
             label_id: Some("0".into()),
             page: Some(2),
             page_size: Some(50),
-            unread: true,
+            unread: Some(true),
+            attachments: true,
+            oldest_first: false,
             keyword: Some("invoice".into()),
             from: Some("a@example.com".into()),
             to: Some("b@example.com".into()),
@@ -274,6 +285,7 @@ mod tests {
                 "Page=2",
                 "PageSize=50",
                 "Unread=1",
+                "Attachments=1",
                 "Keyword=invoice",
                 "From=a@example.com",
                 "Recipients=b@example.com",
@@ -282,6 +294,20 @@ mod tests {
                 "End=1800000000",
                 "AddressID=address",
             ]
+        );
+    }
+
+    #[test]
+    fn a_query_asks_for_read_items_alone_and_for_the_oldest_first() {
+        let read_oldest_first = ListQuery {
+            unread: Some(false),
+            oldest_first: true,
+            ..ListQuery::default()
+        };
+
+        assert_eq!(
+            sent(&read_oldest_first),
+            ["Sort=Time", "Desc=0", "Unread=0"]
         );
     }
 }

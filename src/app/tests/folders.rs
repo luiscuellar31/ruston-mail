@@ -272,6 +272,7 @@ fn under_the_unread_filter_the_demo_keeps_what_was_read_and_adds_nothing_read() 
     let page = demo_service(&app).list_filtered(
         &Folder::INBOX,
         ListFilter::Unread,
+        ListOrder::NewestFirst,
         0,
         demo::PAGE_SIZE,
         NOW,
@@ -297,4 +298,38 @@ fn under_the_unread_filter_the_demo_keeps_what_was_read_and_adds_nothing_read() 
     let mut expected = listed.clone();
     expected[0].1 = false;
     assert_eq!(rows(&app), expected);
+}
+
+#[test]
+fn oldest_first_the_demo_lists_the_inbox_the_other_way_and_keeps_it_so_after_a_change() {
+    let mut app = loaded_demo_app();
+    let ids = |app: &App| -> Vec<String> {
+        let rows = app.mailbox().unwrap().conversations();
+        rows.iter().map(|row| row.id.clone()).collect()
+    };
+    let newest_first = ids(&app);
+
+    let _ = app.update(Message::SortBy(ListOrder::OldestFirst));
+    let request = pending_list_request(&app);
+    let page = demo_service(&app).list_filtered(
+        &Folder::INBOX,
+        ListFilter::All,
+        ListOrder::OldestFirst,
+        0,
+        demo::PAGE_SIZE,
+        NOW,
+    );
+    let _ = app.update(Message::ConversationsLoaded(request, page));
+    let oldest_first = ids(&app);
+    assert_eq!(app.mailbox().unwrap().order(), ListOrder::OldestFirst);
+    assert_ne!(oldest_first, newest_first);
+    assert!(newest_first.iter().all(|id| !oldest_first.contains(id)));
+
+    // A star leaves every row where it was: the demo lists them again in
+    // the same order.
+    let _ = app.update(Message::ApplyRowAction(
+        oldest_first[1].clone(),
+        MailAction::SetStarred(true),
+    ));
+    assert_eq!(ids(&app), oldest_first);
 }

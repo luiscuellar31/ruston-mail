@@ -10,16 +10,16 @@ use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
     AddressInfo, Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, Label,
-    LabelCount, MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions,
-    UnreadableMessage, Verdict,
+    LabelCount, ListOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts,
+    SendOptions, UnreadableMessage, Verdict,
 };
 
 use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
-    ListFilter, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError,
-    MessageBody, OwnPlaces, PlaceLook, SummaryKind,
+    ListFilter, ListOrder, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -149,14 +149,15 @@ impl ProtonMailService {
         &self,
         folder: &Folder,
         filter: ListFilter,
+        order: ListOrder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
-        let unread_only = filter == ListFilter::Unread;
+        let options = list_options(filter, order);
         let (total, conversations) =
             timed(
                 self.client
-                    .list_conversations(label_id(folder), page, page_size, unread_only),
+                    .list_conversations(label_id(folder), page, page_size, options),
             )
             .await?;
 
@@ -614,6 +615,19 @@ fn action_call(action: &MailAction) -> ActionCall<'_> {
 /// Folder context for row actions; global search rows use All Mail.
 fn context_label(context: Option<&Folder>) -> &str {
     context.map_or(label_ids::ALL_MAIL, label_id)
+}
+
+/// What core asks Proton for, to list what `filter` shows in `order`.
+fn list_options(filter: ListFilter, order: ListOrder) -> ListOptions {
+    ListOptions {
+        unread: match filter {
+            ListFilter::Unread => Some(true),
+            ListFilter::Read => Some(false),
+            ListFilter::All | ListFilter::WithFiles => None,
+        },
+        attachments: filter == ListFilter::WithFiles,
+        oldest_first: order == ListOrder::OldestFirst,
+    }
 }
 
 /// Maps folders to Proton wire identifiers.

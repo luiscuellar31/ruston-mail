@@ -259,12 +259,19 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   of the loaded pages moves its later pages up by one: **Load more** asks for
   the page that holds the first row not loaded, and the rows it repeats are
   dropped as already listed. A row that comes back, as with Undo, counts again.
-  The Unread filter (`ListFilter`) asks Proton for a folder's unread
-  conversations only; the listing of all of them waits in the cache meanwhile,
-  so turning the filter off shows it at once, and a filtered listing is never
-  cached. A row read under the filter stays until the list loads again, but
-  counts as gone from Proton's pages the same way. Another folder opens
-  unfiltered. The demo, which lists from a snapshot after each change, keeps
+  The Filter menu asks Proton for only some of a folder's conversations
+  (`ListFilter`: unread, read, or with attachments) or for another order
+  (`ListOrder`: oldest first), which core sends as `Unread`, `Attachments` and
+  `Desc`; Proton filters, sorts and pages, and nothing is sorted here beyond
+  keeping the loaded pages in that order. The listing of all of them, newest
+  first, waits in the cache meanwhile, so going back to it shows it at once,
+  and no other listing is ever cached. Whatever keeps rows in order (merging a
+  page, refreshing, listing a row again by its date) compares
+  `ListOrder::rank` of their dates, higher for the row that goes first, so
+  one code path serves both orders. A row read under the unread filter, or
+  made unread under the read one, stays until the list loads again, but counts
+  as gone from Proton's pages the same way. Another folder opens unfiltered,
+  newest first. The demo, which lists from a snapshot after each change, keeps
   the rows already listed the same way.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so

@@ -921,7 +921,7 @@ fn the_button_that_folds_the_sidebar_is_drawn_whole() {
 }
 
 #[test]
-fn the_unread_filter_lines_up_with_the_search_field_and_refresh() {
+fn the_filter_button_lines_up_with_the_search_field_and_refresh() {
     let context = egui::Context::default();
     theme::install(&context);
     context.enable_accesskit();
@@ -962,29 +962,29 @@ fn the_unread_filter_lines_up_with_the_search_field_and_refresh() {
                     })
                     .unwrap_or_else(|| panic!("no {name} at {size:?}"))
             };
-            let (field, unread, refresh) =
-                (bounds("Search mail"), bounds("Unread"), bounds("Refresh"));
+            let (field, filter, refresh) =
+                (bounds("Search mail"), bounds("Filter"), bounds("Refresh"));
             output.drop_without_applying_deltas();
             let at = format!("{size:?} at {scale}");
             let near = |a: f32, b: f32| (a - b).abs() < 0.5;
             // Edge to edge with the field, beside it.
             assert!(
-                near(unread.top(), field.top()),
-                "{at}: {unread:?} {field:?}"
+                near(filter.top(), field.top()),
+                "{at}: {filter:?} {field:?}"
             );
             assert!(
-                near(unread.bottom(), field.bottom()),
-                "{at}: {unread:?} {field:?}"
+                near(filter.bottom(), field.bottom()),
+                "{at}: {filter:?} {field:?}"
             );
             // Under Refresh, as wide, where the field keeps its room.
             assert!(
-                near(unread.right(), refresh.right()),
-                "{at}: {unread:?} {refresh:?}"
+                near(filter.right(), refresh.right()),
+                "{at}: {filter:?} {refresh:?}"
             );
             assert!(field.width() >= MIN_SEARCH_WIDTH, "{at}: {field:?}");
             assert!(
-                near(unread.left(), refresh.left()),
-                "{at}: {unread:?} {refresh:?}"
+                near(filter.left(), refresh.left()),
+                "{at}: {filter:?} {refresh:?}"
             );
         }
     }
@@ -1544,35 +1544,67 @@ fn an_empty_list_centers_its_message_and_what_can_be_done() {
 }
 
 #[test]
-fn the_unread_button_shows_only_unread_mail_and_says_when_there_is_none() {
+fn the_filter_menu_chooses_what_the_list_shows_and_its_order() {
     let context = egui::Context::default();
     theme::install(&context);
     let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
     mailbox.finish_page(first.id, Ok(ConversationPage::default()));
 
     let (texts, _) = pane_frame(&context, &mailbox, None);
-    let unread = rect_of(&texts, "Unread");
+    let filter = rect_of(&texts, "Filter");
     // Beside the search field, it leaves the title its room beside Refresh.
     let search = rect_of(&texts, "Search mail…");
-    assert!((unread.center().y - search.center().y).abs() <= 2.0);
-    assert!(search.right() < unread.left());
-    assert!(rect_of(&texts, "Refresh").bottom() < unread.top());
-    let (_, asked) = pane_frame(&context, &mailbox, Some(unread.center()));
+    assert!((filter.center().y - search.center().y).abs() <= 2.0);
+    assert!(search.right() < filter.left());
+    assert!(rect_of(&texts, "Refresh").bottom() < filter.top());
+
+    // Opens the menu and clicks `choice` in it: what that asks for.
+    let choose = |choice: &str| {
+        let _ = pane_frame(&context, &mailbox, Some(filter.center()));
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        for offered in [
+            "All",
+            "Unread",
+            "Read",
+            "With attachments",
+            "Newest first",
+            "Oldest first",
+        ] {
+            rect_of(&texts, offered);
+        }
+        let (_, asked) = pane_frame(&context, &mailbox, Some(rect_of(&texts, choice).center()));
+        // Chosen, the menu is gone.
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        assert!(texts.iter().all(|(text, _)| text != "Oldest first"));
+        asked
+    };
     assert!(matches!(
-        asked.as_slice(),
-        [Message::ShowOnly(ListFilter::Unread)]
+        choose("Read").as_slice(),
+        [Message::ShowOnly(ListFilter::Read)]
+    ));
+    assert!(matches!(
+        choose("With attachments").as_slice(),
+        [Message::ShowOnly(ListFilter::WithFiles)]
+    ));
+    assert!(matches!(
+        choose("Oldest first").as_slice(),
+        [Message::SortBy(ListOrder::OldestFirst)]
     ));
 
-    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
-    mailbox.finish_page(request.id, Ok(ConversationPage::default()));
-    let (texts, _) = pane_frame(&context, &mailbox, None);
-    rect_of(&texts, "No unread conversations in Inbox.");
-    // Pressed again, it lists them all.
-    let (_, asked) = pane_frame(&context, &mailbox, Some(rect_of(&texts, "Unread").center()));
-    assert!(matches!(
-        asked.as_slice(),
-        [Message::ShowOnly(ListFilter::All)]
-    ));
+    // An empty list says which mail the folder has none of.
+    for (shown, nothing) in [
+        (ListFilter::Unread, "No unread conversations in Inbox."),
+        (ListFilter::Read, "No read conversations in Inbox."),
+        (
+            ListFilter::WithFiles,
+            "No conversations with attachments in Inbox.",
+        ),
+    ] {
+        let request = mailbox.show_only(shown, 3).unwrap();
+        mailbox.finish_page(request.id, Ok(ConversationPage::default()));
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        rect_of(&texts, nothing);
+    }
 }
 
 #[test]

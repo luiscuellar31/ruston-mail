@@ -334,6 +334,30 @@ pub enum ListFilter {
     All,
     /// Only those with a message still unread.
     Unread,
+    /// Only those with every message read.
+    Read,
+    /// Only those that carry a file.
+    WithFiles,
+}
+
+/// The order a listing puts a folder's conversations in, by date.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListOrder {
+    #[default]
+    NewestFirst,
+    OldestFirst,
+}
+
+impl ListOrder {
+    /// `time` as a number that is higher the earlier this order lists it, so
+    /// whatever keeps rows in order compares these alone, either way round.
+    pub fn rank(self, time: i64) -> i64 {
+        match self {
+            Self::NewestFirst => time,
+            // Reversed without the overflow negating the lowest date has.
+            Self::OldestFirst => !time,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]

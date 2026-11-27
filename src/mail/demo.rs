@@ -9,8 +9,8 @@ use ruston_core::{AddressInfo, Quote};
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
     ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, IncomingMail,
-    ListFilter, MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
-    OwnPlaces, PlaceLook, SummaryKind,
+    ListFilter, ListOrder, MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError,
+    MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 
 mod fixtures;
@@ -111,17 +111,26 @@ impl DemoMailbox {
 
     /// The newest of the Inbox, as a check for new mail reads it.
     pub fn recent_inbox(&self, limit: u32, now: i64) -> Vec<IncomingMail> {
-        list_from(&self.lock(), &Folder::INBOX, |_, _| true, 0, limit, now)
-            .conversations
-            .into_iter()
-            .map(|row| IncomingMail {
-                id: row.id,
-                time: row.time.unwrap_or_default(),
-                unread: row.unread,
-                sender: row.correspondents.unwrap_or_default(),
-                subject: row.subject.unwrap_or_default(),
-            })
-            .collect()
+        let newest_first = ListOrder::NewestFirst;
+        list_from(
+            &self.lock(),
+            &Folder::INBOX,
+            |_, _| true,
+            newest_first,
+            0,
+            limit,
+            now,
+        )
+        .conversations
+        .into_iter()
+        .map(|row| IncomingMail {
+            id: row.id,
+            time: row.time.unwrap_or_default(),
+            unread: row.unread,
+            sender: row.correspondents.unwrap_or_default(),
+            subject: row.subject.unwrap_or_default(),
+        })
+        .collect()
     }
 
     /// Every conversation of `folder`, a page at a time, as tests list them.
@@ -133,21 +142,26 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
-        self.list_filtered(folder, ListFilter::All, page, page_size, now)
+        let (all, newest_first) = (ListFilter::All, ListOrder::NewestFirst);
+        self.list_filtered(folder, all, newest_first, page, page_size, now)
     }
 
-    /// One page of the conversations of `folder` that `filter` shows.
+    /// One page of the conversations of `folder` that `filter` shows, in
+    /// `order`.
     pub fn list_filtered(
         &self,
         folder: &Folder,
         filter: ListFilter,
+        order: ListOrder,
         page: u32,
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
         let fixtures = self.lock();
-        let shows = |_: usize, fixture: &Fixture| filter == ListFilter::All || fixture.unread;
-        Ok(list_from(&fixtures, folder, shows, page, page_size, now))
+        let shows = |_: usize, fixture: &Fixture| filtered_in(fixture, filter);
+        Ok(list_from(
+            &fixtures, folder, shows, order, page, page_size, now,
+        ))
     }
 
     /// The fictional account's addresses, in the order Proton lists them.
@@ -199,22 +213,23 @@ impl DemoMailbox {
     }
 
     /// The first `page_size` conversations of `folder` that `filter` shows,
-    /// with the counts, after a change. A conversation `listed` already stays
-    /// listed, as a Proton account's would until the list is loaded again.
+    /// in `order`, with the counts, after a change. A conversation `listed`
+    /// already stays listed, as a Proton account's would until the list is
+    /// loaded again.
     pub fn snapshot(
         &self,
         folder: &Folder,
-        filter: ListFilter,
+        (filter, order): (ListFilter, ListOrder),
         listed: impl Fn(&str) -> bool,
         page_size: u32,
         now: i64,
     ) -> (ConversationPage, MailboxCounts) {
         let fixtures = self.lock();
         let shows = |index: usize, fixture: &Fixture| {
-            filter == ListFilter::All || fixture.unread || listed(&conversation_id(index))
+            filtered_in(fixture, filter) || listed(&conversation_id(index))
         };
         (
-            list_from(&fixtures, folder, shows, 0, page_size, now),
+            list_from(&fixtures, folder, shows, order, 0, page_size, now),
             counts_from(&fixtures),
         )
     }
@@ -367,7 +382,7 @@ fn search_from(
         .enumerate()
         .filter(|(_, fixture)| matches_query(fixture, &query))
         .collect();
-    page_of(matching, page, page_size, now)
+    page_of(matching, ListOrder::NewestFirst, page, page_size, now)
 }
 
 /// The same places the mailbox search looks: who wrote it, what it is about,
@@ -432,12 +447,24 @@ fn own_ids(fixture: &Fixture) -> Vec<String> {
     fixture.labels.iter().cloned().chain(folder).collect()
 }
 
+/// Whether `filter` shows the row. The fictional mailbox carries no files,
+/// so nothing passes the filter that asks for them.
+fn filtered_in(fixture: &Fixture, filter: ListFilter) -> bool {
+    match filter {
+        ListFilter::All => true,
+        ListFilter::Unread => fixture.unread,
+        ListFilter::Read => !fixture.unread,
+        ListFilter::WithFiles => false,
+    }
+}
+
 /// Page `page` of the conversations of `folder` that `shows` lets through,
-/// given each one's place in the mailbox.
+/// given each one's place in the mailbox, in `order`.
 fn list_from(
     fixtures: &[Fixture],
     folder: &Folder,
     shows: impl Fn(usize, &Fixture) -> bool,
+    order: ListOrder,
     page: u32,
     page_size: u32,
     now: i64,
@@ -447,18 +474,19 @@ fn list_from(
         .enumerate()
         .filter(|(index, fixture)| in_folder(fixture, folder) && shows(*index, fixture))
         .collect();
-    page_of(matching, page, page_size, now)
+    page_of(matching, order, page, page_size, now)
 }
 
 /// Page `page` of the `matching` conversations, by their places in the
-/// mailbox, newest first.
+/// mailbox, in `order`.
 fn page_of(
     mut matching: Vec<(usize, &Fixture)>,
+    order: ListOrder,
     page: u32,
     page_size: u32,
     now: i64,
 ) -> ConversationPage {
-    matching.sort_by_key(|(_, fixture)| fixture.age);
+    matching.sort_by_key(|(_, fixture)| std::cmp::Reverse(order.rank(now - fixture.age)));
     let total = matching.len() as u32;
     let conversations = matching
         .into_iter()
