@@ -162,7 +162,6 @@ async fn run_loop(
             event = events.next() => match event {
                 Some(event) => {
                     let event = event?;
-                    #[cfg(unix)]
                     if suspends(&event) {
                         suspend(terminal)?;
                         changed = true;
@@ -333,6 +332,12 @@ fn suspends(event: &crossterm::event::Event) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL))
 }
 
+/// Windows has no job control, so Ctrl+Z stays a key.
+#[cfg(not(unix))]
+fn suspends(_event: &crossterm::event::Event) -> bool {
+    false
+}
+
 /// Puts the terminal back as the shell had it and stops the process, as
 /// Ctrl+Z does to any program. Once the shell resumes it, it takes the
 /// terminal again through a new `Terminal`, which draws everything anew:
@@ -351,6 +356,12 @@ fn suspend(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     mark_pastes(true);
     capture_mouse(true);
     *terminal = ratatui::Terminal::new(ratatui::backend::CrosstermBackend::new(io::stdout()))?;
+    Ok(())
+}
+
+/// Nothing suspends where `suspends` never says so.
+#[cfg(not(unix))]
+fn suspend(_terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
     Ok(())
 }
 

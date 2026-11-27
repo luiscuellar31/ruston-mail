@@ -549,15 +549,7 @@ fn create_private_dir(
 ) -> std::io::Result<PathBuf> {
     for _ in 0..PROFILE_NAME_ATTEMPTS {
         let dir = parent.join(next_name()?);
-        let builder = std::fs::DirBuilder::new();
-        #[cfg(unix)]
-        let mut builder = builder;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-            builder.mode(0o700);
-        }
-        match builder.create(&dir) {
+        match private_dir_builder().create(&dir) {
             Ok(()) => return Ok(dir),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -567,6 +559,22 @@ fn create_private_dir(
         std::io::ErrorKind::AlreadyExists,
         "no free name for a Chrome profile",
     ))
+}
+
+/// Makes folders only their owner can open: mode `0700`.
+#[cfg(unix)]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    use std::os::unix::fs::DirBuilderExt;
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    builder
+}
+
+/// Makes folders that take their access from the one they are in, the
+/// user's own temporary folder.
+#[cfg(not(unix))]
+fn private_dir_builder() -> std::fs::DirBuilder {
+    std::fs::DirBuilder::new()
 }
 
 /// Open `url` in an isolated Chrome window with a new throwaway profile.
