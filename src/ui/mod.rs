@@ -1026,7 +1026,9 @@ impl DesktopApp {
 
     fn update_unread_badge(&mut self) {
         let badge = unread_badge_count(&self.app);
-        if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
+        if badge != self.unread_badge
+            && set_unread_badge(self.main_window.as_deref(), badge) == BadgeUpdate::Settled
+        {
             self.unread_badge = badge;
         }
     }
@@ -1599,11 +1601,22 @@ pub(crate) fn unread_badge_count(app: &App) -> Option<u32> {
     inbox_unread(app).filter(|&count| count > 0)
 }
 
+/// What became of a change to the unread badge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BadgeUpdate {
+    /// Shown or taken away, or given up on where trying again would not
+    /// help: the badge is not asked for again until the count changes.
+    Settled,
+    /// The window cannot show it yet, so the next pass tries again. Only
+    /// Windows has such a window: one with no taskbar button yet.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    RetryLater,
+}
+
 /// Shows the unread count on the Dock icon, on Windows the taskbar button,
-/// and on Linux the dock or panel icon. Returns false while the window cannot
-/// show it yet, so the next pass tries again.
+/// and on Linux the dock or panel icon.
 #[cfg(target_os = "macos")]
-fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
     use objc2_app_kit::NSApplication;
     use objc2_foundation::{MainThreadMarker, NSString};
 
@@ -1613,23 +1626,25 @@ fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>)
         let label = count.map(|c| NSString::from_str(&c.to_string()));
         dock_tile.setBadgeLabel(label.as_deref());
     }
-    true
+    BadgeUpdate::Settled
 }
 
 #[cfg(target_os = "windows")]
-fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
-    window.is_none_or(|window| taskbar::show_unread(window, count))
+fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
+    window.map_or(BadgeUpdate::Settled, |window| {
+        taskbar::show_unread(window, count)
+    })
 }
 
 #[cfg(target_os = "linux")]
-fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
     launcher::show_unread(count);
-    true
+    BadgeUpdate::Settled
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
-    true
+fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> BadgeUpdate {
+    BadgeUpdate::Settled
 }
 
 #[cfg(test)]
