@@ -34,7 +34,7 @@ public static class RustonSmokeWindows
     [DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);
 
     /// Visible top-level windows of a process, as "class|title" with the handle.
-    public static Dictionary<IntPtr, string> Of(uint processId)
+    public static Dictionary<IntPtr, string> VisibleWindowsOf(uint processId)
     {
         var found = new Dictionary<IntPtr, string>();
         EnumWindows((window, _) =>
@@ -64,17 +64,48 @@ public static class RustonSmokeWindows
 }
 '@
 
-function Find-RustonWindows([System.Diagnostics.Process]$Process) {
-    $windows = [RustonSmokeWindows]::Of([uint32]$Process.Id)
-    foreach ($entry in $windows.GetEnumerator()) {
-        $class, $title = $entry.Value -split '\|', 2
-        if ($class -eq '#32770' -and $title -eq 'Ruston Mail') {
-            $text = [RustonSmokeWindows]::MessageBoxText($entry.Key)
+# The window classes to tell apart: a message box is a dialog of the
+# system's own class, and winit gives every window it makes this one.
+$MessageBoxClass = '#32770'
+$WinitWindowClass = 'Window Class'
+# The main window's title starts with the app's name; an error box has it
+# alone. Named apart from the titles read below, as PowerShell's variable
+# names ignore case.
+$AppName = 'Ruston Mail'
+# WM_SYSCOMMAND with SC_CLOSE, as the title bar's close button sends.
+$WM_SYSCOMMAND = 0x0112
+$SC_CLOSE = 0xF060
+# How often the window is looked for, how long it draws before the close,
+# and how long the close may take.
+$PollMilliseconds = 250
+$DrawSeconds = 5
+$CloseMilliseconds = 15000
+
+# Each visible window of $Process: its handle, class and title.
+function Get-VisibleWindows([System.Diagnostics.Process]$Process) {
+    foreach ($entry in [RustonSmokeWindows]::VisibleWindowsOf([uint32]$Process.Id).GetEnumerator()) {
+        $class, $windowTitle = $entry.Value -split '\|', 2
+        [pscustomobject]@{ Handle = $entry.Key; Class = $class; Title = $windowTitle }
+    }
+}
+
+# Fails the test, ending the process, when Ruston Mail shows an error box: a
+# failure to start shows one rather than ending the process.
+function Assert-NoErrorBox([System.Diagnostics.Process]$Process) {
+    foreach ($window in Get-VisibleWindows $Process) {
+        if ($window.Class -eq $MessageBoxClass -and $window.Title -eq $AppName) {
+            $text = [RustonSmokeWindows]::MessageBoxText($window.Handle)
             Stop-Process -Id $Process.Id -Force
             throw "[smoke] Ruston Mail showed an error: $text"
         }
-        if ($class -eq 'Window Class' -and $title -like 'Ruston Mail*') {
-            return $entry.Key
+    }
+}
+
+# The handle of Ruston Mail's main window, or zero while it has none.
+function Find-RustonWindow([System.Diagnostics.Process]$Process) {
+    foreach ($window in Get-VisibleWindows $Process) {
+        if ($window.Class -eq $WinitWindowClass -and $window.Title -like "$AppName*") {
+            return $window.Handle
         }
     }
     return [IntPtr]::Zero
@@ -95,22 +126,22 @@ try {
             Stop-Process -Id $process.Id -Force
             throw "[smoke] $Executable opened no window within $Seconds s"
         }
-        Start-Sleep -Milliseconds 250
-        $window = Find-RustonWindows $process
+        Start-Sleep -Milliseconds $PollMilliseconds
+        Assert-NoErrorBox $process
+        $window = Find-RustonWindow $process
     }
 
     # Let it draw for a while: a failing renderer would show its error box now.
-    Start-Sleep -Seconds 5
-    [void](Find-RustonWindows $process)
+    Start-Sleep -Seconds $DrawSeconds
+    Assert-NoErrorBox $process
     if ($process.HasExited) {
         throw "[smoke] $Executable exited with status $($process.ExitCode) after opening its window"
     }
 
-    # WM_SYSCOMMAND with SC_CLOSE, as the title bar's close button sends.
-    [void][RustonSmokeWindows]::PostMessageW($window, 0x0112, [IntPtr]0xF060, [IntPtr]::Zero)
-    if (-not $process.WaitForExit(15000)) {
+    [void][RustonSmokeWindows]::PostMessageW($window, $WM_SYSCOMMAND, [IntPtr]$SC_CLOSE, [IntPtr]::Zero)
+    if (-not $process.WaitForExit($CloseMilliseconds)) {
         Stop-Process -Id $process.Id -Force
-        throw "[smoke] $Executable did not close within 15 s"
+        throw "[smoke] $Executable did not close within $($CloseMilliseconds / 1000) s"
     }
     Write-Host "[smoke] $Executable opened its window, drew it and closed"
 } finally {
