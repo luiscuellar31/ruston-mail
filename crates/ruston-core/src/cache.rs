@@ -45,6 +45,43 @@ fn secure_cache_dir(dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Where SQLite opens the existing database at `path` with `flags`, and the
+/// flags it opens it with: on Unix, from a private folder, with every link
+/// resolved, and NOFOLLOW, which refuses a symlink anywhere in the path.
+#[cfg(unix)]
+fn read_only_target(path: &Path, flags: OpenFlags) -> Result<(PathBuf, OpenFlags)> {
+    private_parent(path)?;
+    let resolved = std::fs::canonicalize(path).map_err(cache_error)?;
+    Ok((resolved, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW))
+}
+
+/// Where SQLite opens the existing database at `path` with `flags`: there.
+#[cfg(not(unix))]
+fn read_only_target(path: &Path, flags: OpenFlags) -> Result<(PathBuf, OpenFlags)> {
+    Ok((path.to_path_buf(), flags))
+}
+
+/// Where SQLite opens or makes the database at `path`, and the flags it
+/// opens it with: on Unix, a file only its owner can open, given with every
+/// link resolved, since NOFOLLOW refuses a symlink anywhere in the path.
+#[cfg(unix)]
+fn writable_target(path: &Path) -> Result<(PathBuf, OpenFlags)> {
+    let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
+    if path == Path::new(":memory:") {
+        return Ok((path.to_path_buf(), flags));
+    }
+    secure_cache_file(path)?;
+    let resolved = std::fs::canonicalize(path).map_err(cache_error)?;
+    Ok((resolved, flags))
+}
+
+/// Where SQLite opens or makes the database at `path`: there, with SQLite's
+/// default flags.
+#[cfg(not(unix))]
+fn writable_target(path: &Path) -> Result<(PathBuf, OpenFlags)> {
+    Ok((path.to_path_buf(), OpenFlags::default()))
+}
+
 #[cfg(unix)]
 fn secure_cache_file(path: &Path) -> Result<()> {
     use std::fs::{OpenOptions, Permissions};
@@ -490,18 +527,12 @@ impl Cache {
         if !metadata.is_file() {
             return Err(Error::Cache("cache database must be a regular file".into()));
         }
-        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_URI
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
-        #[cfg(unix)]
-        let (sqlite_path, flags) = {
-            private_parent(path)?;
-            // As `open` does: NOFOLLOW refuses a symlink anywhere in the path.
-            let resolved = std::fs::canonicalize(path).map_err(cache_error)?;
-            (resolved, flags | OpenFlags::SQLITE_OPEN_NOFOLLOW)
-        };
-        #[cfg(not(unix))]
-        let sqlite_path = path.to_path_buf();
+        let (sqlite_path, flags) = read_only_target(
+            path,
+            OpenFlags::SQLITE_OPEN_READ_ONLY
+                | OpenFlags::SQLITE_OPEN_URI
+                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        )?;
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
         conn.busy_timeout(Duration::from_secs(30))
             .map_err(cache_error)?;
@@ -565,21 +596,7 @@ impl Cache {
     /// On Unix, the parent must be a private directory; existing database files
     /// are restricted to mode `0600` before SQLite opens them.
     pub fn open(path: &Path) -> Result<Cache> {
-        #[cfg(unix)]
-        let sqlite_path = if path == Path::new(":memory:") {
-            path.to_path_buf()
-        } else {
-            secure_cache_file(path)?;
-            // SQLite's NOFOLLOW refuses a symlink anywhere in the path, so it
-            // is given the path with every link resolved.
-            std::fs::canonicalize(path).map_err(cache_error)?
-        };
-        #[cfg(not(unix))]
-        let sqlite_path = path.to_path_buf();
-        #[cfg(unix)]
-        let flags = OpenFlags::default() | OpenFlags::SQLITE_OPEN_NOFOLLOW;
-        #[cfg(not(unix))]
-        let flags = OpenFlags::default();
+        let (sqlite_path, flags) = writable_target(path)?;
         let conn = Connection::open_with_flags(&sqlite_path, flags).map_err(cache_error)?;
         // Another CLI process may hold the write lock during sync or migration.
         conn.busy_timeout(Duration::from_secs(30))

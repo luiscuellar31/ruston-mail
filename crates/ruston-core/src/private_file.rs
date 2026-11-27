@@ -11,21 +11,28 @@ use std::path::Path;
 /// file in a shared folder would let every user who can read there read it
 /// too. Fails if `path` exists.
 pub fn create_private(path: &Path) -> io::Result<File> {
-    #[cfg(windows)]
-    {
-        create_private_on_windows(path)
-    }
-    #[cfg(not(windows))]
-    {
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        options.open(path)
-    }
+    create_owner_only(path)
+}
+
+/// Creates the file with mode `0600`.
+#[cfg(unix)]
+fn create_owner_only(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+/// Creates the file with the system's own permissions, where there is no
+/// owner-only mode to ask for.
+#[cfg(not(any(unix, windows)))]
+fn create_owner_only(path: &Path) -> io::Result<File> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
 }
 
 /// Full access for the owner, the system and administrators, in a protected
@@ -36,7 +43,7 @@ const PRIVATE_FILE_ACCESS: &str = "D:P(A;;FA;;;OW)(A;;FA;;;SY)(A;;FA;;;BA)";
 /// Creates the file with its access list already in place, so no other user
 /// can open it, and keep it open, before it is restricted.
 #[cfg(windows)]
-fn create_private_on_windows(path: &Path) -> io::Result<File> {
+fn create_owner_only(path: &Path) -> io::Result<File> {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree};
     use windows_sys::Win32::Security::Authorization::{
