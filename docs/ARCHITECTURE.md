@@ -137,9 +137,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   README's screenshots for
   [`packaging/readme-screenshots.sh`](../packaging/readme-screenshots.sh). In
   the demo, `logic` moves it a frame at a time: it opens the booking
-  newsletter and saves the window dark and then light with macOS's
-  `screencapture`, off the interface thread, keeping only each PNG's picture
-  and color chunks.
+  newsletter, then Settings and a message being written, and saves each dark
+  and then light with macOS's `screencapture`, off the interface thread,
+  keeping only each PNG's picture and color chunks.
   `raw_input_hook` keeps the mouse and keys away meanwhile.
 - On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
   traffic lights with eframe's `WindowChromeMetrics` on each logic pass.

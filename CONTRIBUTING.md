@@ -17,8 +17,8 @@ Thanks for helping with Ruston Mail. The
 3. Review `docs/ARCHITECTURE.md` for **every change**. Update it in the same
    change whenever ownership, an important flow, persistence, or a path in its
    navigation table changes. Update README or the user and privacy guides when
-   their claims change, and take the README's screenshots again when the main
-   window looks different (see the
+   their claims change, and take the README's screenshots again when what
+   they show looks different (see the
    [development guide](docs/DEVELOPMENT.md#readme-screenshots)). A change with
    no architectural impact needs no artificial architecture edit.
 4. Run the relevant checks. In the pull request, describe the affected

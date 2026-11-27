@@ -422,10 +422,11 @@ rm assets/macos/ruston-mail.icns   # the next package.sh run rebuilds it
 
 ## README screenshots
 
-The README shows the main window from `assets/screenshots/`: the demo's inbox
-with a conversation open, dark and light, as macOS draws the window, with its
-rounded corners, colored buttons and shadow. When the window looks different,
-take them again on a Mac with a Retina display:
+The README shows the app from `assets/screenshots/`: the demo's inbox with a
+conversation open, Settings, and a message being written, each dark and light,
+as macOS draws the window, with its rounded corners, colored buttons and
+shadow. When one of them looks different, take them again on a Mac with a
+Retina display:
 
 ```sh
 packaging/readme-screenshots.sh
@@ -434,10 +435,16 @@ packaging/readme-screenshots.sh
 It builds the app with the `readme-screenshots` feature, which no release turns
 on, in `target/readme-screenshots`, and starts the demo with a home directory of
 its own, so your settings stay as they are. The window takes the README's size,
-opens the conversation, saves itself dark and then light with `screencapture`,
-keeping only each PNG's picture and color, and closes; the script then copies
-both over the old ones. Leave the window in front until it closes: one without
-focus shows gray buttons, and the script gives up after two minutes.
+opens the conversation, and saves itself dark and then light with
+`screencapture`, keeping only each PNG's picture and color. It does the same
+for Settings and for a message being written, going back to the inbox before
+each, and closes; the script then copies the six files over the old ones.
+Leave the window in front until it closes: one without focus shows gray
+buttons, and the script gives up after two minutes.
+
+`terminal.png`, the terminal interface, is taken by hand: run
+`ruston-cli --demo tui` in a terminal of 112 columns and 32 rows, open a
+conversation, and capture the window with Shift-Command-4 and then Space.
 
 ## Desktop installation (Linux)
 
