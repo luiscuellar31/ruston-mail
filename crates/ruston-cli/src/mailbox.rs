@@ -180,7 +180,8 @@ impl Mailbox {
     }
 
     /// Every address of the account: a reply leaves them out of whom it
-    /// goes to, and goes from the one the original reached.
+    /// goes to, and goes from the one the original reached when mail can go
+    /// out from it.
     pub(crate) fn own_addresses(&self) -> Vec<AddressInfo> {
         match self {
             Self::Proton(client) => client.addresses(),

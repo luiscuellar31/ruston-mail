@@ -460,9 +460,15 @@ impl ProtonMailService {
     pub(super) fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
         let addresses = client.addresses();
+        // Mail that went out from an address that can no longer send is
+        // still the account's own.
         let own_addresses = addresses
             .iter()
             .map(|address| threading::normalize_address(&address.email))
+            .collect();
+        let addresses = addresses
+            .into_iter()
+            .filter(|address| address.can_send)
             .collect();
 
         Self {

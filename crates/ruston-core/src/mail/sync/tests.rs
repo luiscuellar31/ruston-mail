@@ -100,6 +100,7 @@ async fn indexing_reads_bodies_without_looking_up_sender_keys() {
     let address = AddressKeys {
         address_id: "address".into(),
         email: "me@proton.me".into(),
+        can_send: true,
         keys: vec![StoredKey {
             armored,
             passphrase: SecretString::from("pass"),

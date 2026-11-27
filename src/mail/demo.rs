@@ -140,6 +140,7 @@ impl DemoMailbox {
             .map(|(id, email)| AddressInfo {
                 id: (*id).to_owned(),
                 email: (*email).to_owned(),
+                can_send: true,
             })
             .collect()
     }

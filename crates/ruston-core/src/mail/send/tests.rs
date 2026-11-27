@@ -377,6 +377,7 @@ async fn prepared_attachment_packets_round_trip_and_keep_the_upload_slot() {
         AddressKeys {
             address_id: "test-address".into(),
             email: "sender@example.test".into(),
+            can_send: true,
             keys: vec![crypto::keys::StoredKey {
                 armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
                 passphrase: secrecy::SecretString::from("test-passphrase"),
@@ -478,6 +479,7 @@ fn test_address(email: &str, address_id: &str) -> (AddressKeys, String) {
         AddressKeys {
             address_id: address_id.into(),
             email: email.into(),
+            can_send: true,
             keys: vec![crypto::keys::StoredKey {
                 armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
                 passphrase: secrecy::SecretString::from("test-passphrase"),
@@ -1290,6 +1292,93 @@ async fn answers_leave_from_the_address_the_original_reached() {
         })
         .collect();
     assert_eq!(senders, ["work@acme.com", "work@acme.com", "me@proton.me"]);
+}
+
+#[tokio::test]
+async fn mail_never_goes_out_from_an_address_that_cannot_send() {
+    let server = MockServer::start().await;
+    // First in Proton's order, but disabled since the original reached it.
+    let (mut old, _) = test_address("old@proton.me", "old-address");
+    old.can_send = false;
+    let (me, _) = test_address("me@proton.me", "address-1");
+    let parent_id = format!("{}==", "p".repeat(60));
+    Mock::given(method("GET"))
+        .and(path(format!("/mail/v4/messages/{parent_id}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Code": 1000,
+            "Message": {
+                "ID": parent_id, "AddressID": "old-address", "Subject": "Invoice",
+                "Sender": {"Name": "Boss", "Address": "boss@corp.example"},
+                "ToList": [{"Name": "Old", "Address": "old@proton.me"}],
+                "CCList": [{"Name": "Team", "Address": "team@corp.example"}]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"Code": 1000, "Message": {"ID": "draft-1"}})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/core/v4/keys/all"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"Code": 1000, "RecipientType": 2})),
+        )
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mail/v4/messages/draft-1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"Code": 1000})))
+        .mount(&server)
+        .await;
+
+    // The primary address is the first that can send; with none that can,
+    // the first still names the account.
+    let only_old = test_support::client(&server, vec![old.clone()]);
+    assert_eq!(only_old.primary_email(), Some("old@proton.me"));
+    let client = test_support::client(&server, vec![old, me]);
+    assert_eq!(client.primary_email(), Some("me@proton.me"));
+    let answer = SendOptions {
+        body: "Thanks".into(),
+        ..SendOptions::default()
+    };
+    client.reply(&parent_id, true, &answer).await.unwrap();
+    // Named, it is refused before anything is written.
+    let named = SendOptions {
+        from: Some("old@proton.me".into()),
+        ..answer
+    };
+    let refused = client.reply(&parent_id, false, &named).await;
+    assert!(
+        matches!(refused, Err(Error::NotFound { .. })),
+        "{refused:?}"
+    );
+
+    let drafts: Vec<Value> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .filter(|request| request.url.path() == "/mail/v4/messages")
+        .map(|request| serde_json::from_slice::<Value>(&request.body).unwrap()["Message"].clone())
+        .collect();
+    assert_eq!(drafts.len(), 1);
+    // From the first address that can send, and still not to the old one,
+    // which stays the account's own.
+    assert_eq!(drafts[0]["Sender"]["Address"], "me@proton.me");
+    let addresses = |list: &Value| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|person| person["Address"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(addresses(&drafts[0]["ToList"]), ["boss@corp.example"]);
+    assert_eq!(addresses(&drafts[0]["CCList"]), ["team@corp.example"]);
 }
 
 #[tokio::test]

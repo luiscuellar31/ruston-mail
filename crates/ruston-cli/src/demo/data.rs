@@ -402,10 +402,12 @@ pub(crate) fn demo_addresses() -> Vec<AddressInfo> {
         AddressInfo {
             id: "addr-demo-01".to_string(),
             email: DEMO_EMAIL.to_string(),
+            can_send: true,
         },
         AddressInfo {
             id: "addr-demo-02".to_string(),
             email: DEMO_ALIAS.to_string(),
+            can_send: true,
         },
     ]
 }

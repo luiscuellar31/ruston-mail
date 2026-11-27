@@ -386,8 +386,9 @@ attachments already stored on Proton do not count toward this local file limit.
 ## Writing
 
 Select **Write** for a new message. When your account has more than one
-address, **From**, above **To**, chooses the one the message goes out from; a
-new message starts with the first in Proton's order, as Proton's web client
+address mail can go out from, **From**, above **To**, chooses the one the
+message goes out from; an address disabled in Proton is not offered. A new
+message starts with the first in Proton's order, as Proton's web client
 does. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped. Domains are written in ASCII: unaccented letters,
@@ -473,7 +474,9 @@ fields, where you can add or remove anyone before sending, and the composer
 warns when the message's Reply-To sends the reply somewhere other than its
 sender. The subject
 is written for you. Replies and forwards go out from the address the original
-message reached, which **From** shows and can change. The original's text is quoted under yours when it can be
+message reached, or from the first when mail can no longer go out from that
+one, which **From** shows and can change.
+The original's text is quoted under yours when it can be
 opened, unless you untick **Quote the original under your text** in the
 composer; a forward also carries the original's files, images in its body
 included. The composer lists the attachments a forward sends, each with
@@ -796,8 +799,9 @@ forwards it with its files, as in Proton; `:reply`, `:replyall` and
 which you can change, and says when the message asked for replies to go to
 someone other than its sender. Proton writes an answer's subject, and the
 original goes under your text unless Ctrl+Q leaves it out. A message goes
-from your primary address, or an answer from the one the original reached;
-From shows which. Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
+from your primary address, or an answer from the one the original reached
+while mail can still go out from it; From shows which.
+Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
 cannot tell from it, lists the files the message carries: type the path of
 one, Tab completes it as a shell does, `~` being your home folder, and Enter
 attaches it, once it is a file that can be read, of at most 32 MiB, with all

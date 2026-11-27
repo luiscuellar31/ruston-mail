@@ -438,12 +438,13 @@ impl Client {
     }
 
     /// The keys a message that reached `address_id` opens with: that
-    /// address's, or the primary address's when the account holds none for
-    /// it. Each caller says what it could not open without them.
+    /// address's, or the first address's when the account holds none for
+    /// it, whether or not mail can go out from it. Each caller says what it
+    /// could not open without them.
     pub(super) fn keys_for_message(&self, address_id: &str) -> Option<&crypto::keys::AddressKeys> {
         self.keys()
             .address(address_id)
-            .or_else(|| self.keys().primary_address())
+            .or_else(|| self.keys().addresses.first())
     }
 
     /// The keys of every distinct sender, asked for at once, a few at a time,

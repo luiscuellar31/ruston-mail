@@ -258,7 +258,7 @@ impl Reading {
 /// What an answer to a conversation of `messages`, oldest first, answers:
 /// its last message that is not a draft, addressed as core would address a
 /// reply, leaving out the account's `own` addresses, and from the one of
-/// them it reached.
+/// them it reached when mail can go out from it, as core sends it.
 fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<Answerable> {
     let draft = |meta: &MessageMetadata| {
         meta.label_ids
@@ -303,7 +303,7 @@ fn answerable(messages: &[ConversationMessage], own: &[AddressInfo]) -> Option<A
     let recipients = reply_recipients(meta, reply_tos, &emails);
     let from = own
         .iter()
-        .find(|address| address.id == meta.address_id)
+        .find(|address| address.id == meta.address_id && address.can_send)
         .map(|address| screen_line(&address.email));
     let sender = meta.sender.address.trim();
     let redirected_from =

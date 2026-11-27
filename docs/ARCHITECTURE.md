@@ -807,9 +807,10 @@ attachments, recipients, replies and packages each have a module under
 result returns to the app as a message. A reply opens with To, and Cc for
 Reply all, filled in as core would address it; whatever the fields then hold
 is sent, as for a new message or a forward. A draft keeps the account's
-addresses, in Proton's order, and the one it goes out from: an answer starts
-with the address the original reached, found by the message's `address_id` as
-the terminal interface finds it, and a new message leaves the choice to core,
+addresses mail can go out from, in Proton's order, and the one it goes out
+from: an answer starts with the address the original reached, found by the
+message's `address_id` as the terminal interface finds it, and a new message,
+or an answer to an address that can no longer send, leaves the choice to core,
 which sends from the first. One draft is open at a time: asking
 for a new message, a reply or a forward while one is open leaves it as it is,
 marks it so the composer says why, and, in its own window, returns
@@ -1173,7 +1174,8 @@ instead of an unknown outcome.
   skip, for a local test server.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
-  multiple account addresses and no `--from`. Noninteractive and JSON sends
+  multiple addresses mail can go out from and no `--from`.
+  Noninteractive and JSON sends
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
   scripted sends keep the explicit flag behavior. Permanent deletes ask first,
@@ -1398,6 +1400,11 @@ instead of an unknown outcome.
   passphrase derivation; the armored key and passphrase stay as a fallback.
   User keys only open address keys, so `KeyStore` keeps none of them: unlocking
   returns the key password for the saved session and lets the rest go.
+  `KeyStore` also keeps the keys of an address Proton has disabled, or does
+  not let send, to open the mail that reached it, but no mail goes out from
+  one: it is never the default sender nor an answer's, and naming it is
+  refused, so the desktop's **From** and the CLI's sender choice leave it out
+  too.
   An address's keys are kept primary first, then those Proton has not marked
   compromised or obsolete, whatever order the API lists them in; messages are
   signed and drafts encrypted with the first. OpenPGP dates and checks

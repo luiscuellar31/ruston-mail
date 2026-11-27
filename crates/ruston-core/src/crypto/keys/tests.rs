@@ -35,6 +35,8 @@ fn unlocked_address_keys_work_without_their_passphrase() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![api_key("address-key", "me@proton.me")],
     };
     let mut store =
@@ -106,6 +108,8 @@ fn unlock_address(keys: Vec<ApiKey>) -> KeyStore {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys,
     };
     unlock_with_skp(
@@ -160,6 +164,7 @@ fn the_store_finds_an_address_by_id_or_by_email_in_any_ascii_case() {
     let held = |id: &str, email: &str| AddressKeys {
         address_id: id.into(),
         email: email.into(),
+        can_send: true,
         keys: Vec::new(),
     };
     let store = KeyStore {
@@ -204,6 +209,8 @@ fn addresses_unlock_by_their_order_and_ties_keep_the_api_order() {
             id: id.into(),
             email,
             order,
+            status: 1,
+            send: 1,
             keys: vec![key],
         }
     });
@@ -217,6 +224,58 @@ fn addresses_unlock_by_their_order_and_ties_keep_the_api_order() {
         .map(|keys| keys.address_id)
         .collect();
     assert_eq!(unlocked, ["first", "tied", "second"]);
+}
+
+#[test]
+fn mail_goes_out_only_from_addresses_proton_has_enabled_and_lets_send() {
+    let (user_key, _) = listed_key("user-key", "user@proton.me", "skp", 1, None);
+    let user = User {
+        id: "user".into(),
+        keys: vec![user_key],
+    };
+    // Proton's `Status` and `Send` for each, in its order; one says neither.
+    let listed = [
+        ("disabled", serde_json::json!({ "Status": 0, "Send": 1 })),
+        ("deleting", serde_json::json!({ "Status": 2, "Send": 1 })),
+        ("receives", serde_json::json!({ "Status": 1, "Send": 0 })),
+        ("sends", serde_json::json!({ "Status": 1, "Send": 1 })),
+        ("unsaid", serde_json::json!({})),
+    ];
+    let addresses: Vec<Address> = listed
+        .into_iter()
+        .zip(1..)
+        .map(|((id, mut fields), order)| {
+            let email = format!("{id}@proton.me");
+            fields["ID"] = id.into();
+            fields["Email"] = email.clone().into();
+            fields["Order"] = order.into();
+            let mut address: Address = serde_json::from_value(fields).unwrap();
+            address.keys = vec![listed_key(id, &email, "skp", 1, None).0];
+            address
+        })
+        .collect();
+
+    let provider = crate::crypto::provider();
+    let store = unlock_with_skp(&provider, &user, &addresses, &SecretString::from("skp")).unwrap();
+
+    let sending: Vec<&str> = store
+        .addresses
+        .iter()
+        .filter(|keys| keys.can_send)
+        .map(|keys| keys.address_id.as_str())
+        .collect();
+    assert_eq!(sending, ["sends", "unsaid"]);
+    // New mail goes from the first that can send, and no other can be named.
+    let found = |keys: Option<&AddressKeys>| keys.map(|keys| keys.address_id.clone());
+    assert_eq!(found(store.primary_address()).as_deref(), Some("sends"));
+    assert_eq!(found(store.address_for_email("disabled@proton.me")), None);
+    assert_eq!(found(store.address_for_email("receives@proton.me")), None);
+    // Every address's keys stay, to open the mail that reached it.
+    assert_eq!(
+        found(store.address("disabled")).as_deref(),
+        Some("disabled")
+    );
+    assert_eq!(store.addresses.len(), 5);
 }
 
 #[test]
@@ -339,6 +398,8 @@ fn signing_in_opens_user_keys_by_their_salt_and_address_keys_by_their_token() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![
             signed.clone(),
             forged,
@@ -448,6 +509,8 @@ fn account_locked_with(passphrase: &str) -> (User, [Address; 1]) {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![legacy],
     }];
     (user, addresses)
@@ -473,6 +536,8 @@ fn a_user_key_without_a_salt_of_its_own_borrows_the_primary_keys() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![by_secondary.clone()],
     }];
     let provider = crate::crypto::provider();
@@ -564,6 +629,8 @@ fn the_key_password_is_the_first_user_keys_that_opens() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![legacy.clone(), by_third.clone()],
     };
     let salts = [
@@ -609,6 +676,8 @@ fn unlocking_fails_when_no_user_key_or_no_address_key_opens() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![forged],
     }];
     let provider = crate::crypto::provider();
@@ -656,6 +725,8 @@ fn a_key_that_does_not_unlock_is_logged_with_why() {
         id: "address".into(),
         email: "me@proton.me".into(),
         order: 1,
+        status: 1,
+        send: 1,
         keys: vec![legacy, mismatched],
     };
     let salts = [

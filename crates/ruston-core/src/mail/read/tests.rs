@@ -113,6 +113,7 @@ fn conversation_client(
     let address = crypto::keys::AddressKeys {
         address_id: "address".into(),
         email: "me@proton.me".into(),
+        can_send: true,
         keys: vec![StoredKey {
             armored,
             passphrase: SecretString::from("pass"),

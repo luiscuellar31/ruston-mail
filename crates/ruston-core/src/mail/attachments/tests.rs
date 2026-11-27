@@ -50,6 +50,7 @@ async fn attachment_client_with_key_flags(server: &MockServer, flags: u32) -> (C
     let address = AddressKeys {
         address_id: "address".into(),
         email: "sender@proton.me".into(),
+        can_send: true,
         keys: vec![StoredKey {
             armored,
             passphrase: SecretString::from("pass"),
