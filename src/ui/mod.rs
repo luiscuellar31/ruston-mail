@@ -68,34 +68,42 @@ struct TimedNotice {
 }
 
 pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
-    let viewport = identity::viewport()
-        .with_inner_size([settings.window.width, settings.window.height])
-        .with_min_inner_size(MIN_WINDOW_SIZE);
+    window_frame(
+        identity::viewport()
+            .with_inner_size([settings.window.width, settings.window.height])
+            .with_min_inner_size(MIN_WINDOW_SIZE),
+    )
+}
 
-    #[cfg(target_os = "macos")]
-    let viewport = viewport
+/// The main window's frame: on macOS, the app draws under a title bar it
+/// hides, keeping only the window's buttons.
+#[cfg(target_os = "macos")]
+fn window_frame(viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    viewport
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false)
-        .with_title_shown(false);
+        .with_title_shown(false)
+}
 
+/// Other systems keep their own title bar.
+#[cfg(not(target_os = "macos"))]
+fn window_frame(viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
     viewport
 }
 
 pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
-    #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
     // The app takes the activation once its window draws. A renderer that
     // fails before then leaves it for the next one.
     let activation = std::cell::Cell::new(Some(activation));
     let result = open(demo, &activation, graphics::preferred_renderer());
-    #[cfg(target_os = "windows")]
-    if let Err(eframe::Error::Wgpu(error)) = &result
+    if let Some((renderer, why)) = graphics::next_renderer(&result)
         && let Some(instance) = activation.take()
     {
-        eprintln!("Ruston Mail: DirectX 12 cannot draw the window ({error}); using OpenGL");
+        eprintln!("Ruston Mail: {why}");
         activation.set(Some(instance));
-        return open(demo, &activation, eframe::Renderer::Glow);
+        return open(demo, &activation, renderer);
     }
     result
 }
@@ -106,13 +114,7 @@ fn open(
     renderer: eframe::Renderer,
 ) -> eframe::Result {
     let settings = Settings::load(demo);
-    let options = eframe::NativeOptions {
-        viewport: main_viewport(&settings),
-        renderer,
-        #[cfg(target_os = "windows")]
-        wgpu_options: graphics::wgpu_options(),
-        ..Default::default()
-    };
+    let options = graphics::native_options(main_viewport(&settings), renderer);
 
     eframe::run_native(
         "Ruston Mail",
@@ -218,12 +220,19 @@ impl DesktopApp {
         if let Some(window) = &app.main_window {
             window_place::restore(window, app.app.settings().window);
         }
-        #[cfg(target_os = "macos")]
-        {
-            app.native_menu = macos::Menu::install(&creation.egui_ctx);
-        }
+        app.install_native_menu(&creation.egui_ctx);
         app
     }
+
+    /// Puts the app's commands in macOS's menu bar.
+    #[cfg(target_os = "macos")]
+    fn install_native_menu(&mut self, context: &egui::Context) {
+        self.native_menu = macos::Menu::install(context);
+    }
+
+    /// Other systems have no menu bar of the app's own.
+    #[cfg(not(target_os = "macos"))]
+    fn install_native_menu(&mut self, _context: &egui::Context) {}
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
@@ -988,6 +997,33 @@ impl DesktopApp {
     #[cfg(not(target_os = "macos"))]
     fn keep_secure_input(&mut self, _context: &egui::Context) {}
 
+    /// Follows macOS's side of the window on each pass: secure keyboard
+    /// entry, the title bar's buttons, and the menu bar's commands and
+    /// states.
+    #[cfg(target_os = "macos")]
+    fn follow_native_chrome(&mut self, context: &egui::Context, frame: &eframe::Frame) {
+        self.secure_input.follow_focus(context);
+        macos::update_window_chrome(context, frame);
+        let actions = self
+            .native_menu
+            .as_ref()
+            .map(macos::Menu::drain)
+            .unwrap_or_default();
+        for action in actions {
+            self.native_action(action, context);
+        }
+        if let Some(menu) = &self.native_menu {
+            menu.adopt_windows();
+            menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
+            menu.set_sidebar_folded(self.app.settings().sidebar_folded);
+        }
+    }
+
+    /// Other systems draw the window's chrome themselves, with no menu bar of
+    /// the app's own.
+    #[cfg(not(target_os = "macos"))]
+    fn follow_native_chrome(&mut self, _context: &egui::Context, _frame: &eframe::Frame) {}
+
     fn update_unread_badge(&mut self) {
         let badge = unread_badge_count(&self.app);
         if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
@@ -1056,11 +1092,7 @@ impl DesktopApp {
             return;
         }
         Self::bring_forward(context, target);
-        #[cfg(target_os = "linux")]
-        context.send_viewport_cmd_to(
-            target,
-            egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
-        );
+        ask_for_attention(context, target);
         self.focus_after_activation = false;
     }
 
@@ -1184,7 +1216,7 @@ impl DesktopApp {
 }
 
 impl eframe::App for DesktopApp {
-    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         self.runtime.attach(context);
         apply_appearance(context, self.app.settings());
         theme::reduce_motion(context, system_reduces_motion());
@@ -1196,24 +1228,7 @@ impl eframe::App for DesktopApp {
             fonts::Typeface::chosen(self.app.settings().system_font),
         );
         self.drain_runtime(context);
-        #[cfg(target_os = "macos")]
-        {
-            self.secure_input.follow_focus(context);
-            macos::update_window_chrome(context, _frame);
-            let actions = self
-                .native_menu
-                .as_ref()
-                .map(macos::Menu::drain)
-                .unwrap_or_default();
-            for action in actions {
-                self.native_action(action, context);
-            }
-            if let Some(menu) = &self.native_menu {
-                menu.adopt_windows();
-                menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
-                menu.set_sidebar_folded(self.app.settings().sidebar_folded);
-            }
-        }
+        self.follow_native_chrome(context, frame);
         self.check_window_close(context);
         self.receive_activation(context);
         self.focus_activated_composer(context);
@@ -1230,7 +1245,7 @@ impl eframe::App for DesktopApp {
         self.update_unread_badge();
         #[cfg(feature = "readme-screenshots")]
         if let Some(session) = self.readme_screenshots.as_mut() {
-            for message in session.frame(context, _frame, &self.app) {
+            for message in session.frame(context, frame, &self.app) {
                 self.dispatch(message, context);
             }
         }
@@ -1433,6 +1448,21 @@ fn apply_appearance(context: &egui::Context, settings: &Settings) {
         theme::apply(context, settings.appearance);
     }
 }
+
+/// Asks Linux to mark `target` for attention when an activation may not
+/// have brought it forward: Wayland lets a window take the focus only when
+/// its compositor agrees.
+#[cfg(target_os = "linux")]
+fn ask_for_attention(context: &egui::Context, target: egui::ViewportId) {
+    context.send_viewport_cmd_to(
+        target,
+        egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
+    );
+}
+
+/// Bringing the window forward is enough here.
+#[cfg(not(target_os = "linux"))]
+fn ask_for_attention(_context: &egui::Context, _target: egui::ViewportId) {}
 
 /// Whether a window has the keyboard. A minimized one never has: it draws
 /// no pass, and egui goes on saying what the last pass said.
