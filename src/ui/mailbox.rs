@@ -25,7 +25,7 @@ const RAIL_PANEL_ID: &str = "mailbox-rail";
 const OPENING_CONVERSATIONS_ID: &str = "opening-conversations";
 const OPENING_NAVIGATION_ID: &str = "opening-navigation";
 /// One column's ways between its panes, while nothing is being written.
-const COMPACT_VIEW_LABELS: [&str; 3] = ["Folders", "Mail", "Reading"];
+const COMPACT_VIEW_LABELS: [&str; 3] = ["Folders", "Mail", "Reader"];
 /// Drawing the saved panel ratios measures back ratios a little off them, so
 /// a smaller difference is not a resize: saving it would rewrite the settings
 /// on frames where nothing was dragged.

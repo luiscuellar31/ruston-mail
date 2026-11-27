@@ -513,7 +513,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   it is: below 812 available egui points, or, folded, the strip's width and
   612. Dragging a divider stops at the same minimums.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) then shows a single pane with Folders,
-  Mail, and Reading/Message navigation; Mail repeats over the list why the last
+  Mail, and Reader/Message navigation; Mail repeats over the list why the last
   action failed, which columns show under the reader's buttons. The local
   selection lives in `UiState`;
   `DesktopApp` follows accepted folder selections, opened conversations, search

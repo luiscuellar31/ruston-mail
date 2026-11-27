@@ -136,7 +136,7 @@ cargo test --locked --workspace --all-features
 For mailbox layout changes, also check a 480×420 window, the smallest the app
 allows, and an 820×480 one at interface scales
 of 100%, 150%, 175%, and 200% in both themes. At high scales, use Folders/Mail/
-Reading to navigate the compact view, scroll to the sidebar's final label,
+Reader to navigate the compact view, scroll to the sidebar's final label,
 verify Settings/sign-out stay accessible, open a conversation, and write a
 draft with Cc/Bcc and attachments. Grow and shrink the window while preserving
 the open message, draft, and list position. Verify that unsaved Settings changes still require

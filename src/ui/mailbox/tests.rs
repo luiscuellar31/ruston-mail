@@ -550,7 +550,7 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                     if frame < 2 {
                         continue; // Let egui settle the measured bottom panel height.
                     }
-                    for label in ["Folders", "Mail", "Reading"] {
+                    for label in ["Folders", "Mail", "Reader"] {
                         assert!(
                             window.contains_rect(
                                 visible_text_rect(&shapes, label).unwrap_or_else(|| panic!(
@@ -882,12 +882,12 @@ fn settings_list_their_sections_where_the_folders_were() {
                 .filter(|(name, _, _)| name == title)
                 .map(|(_, _, chosen)| *chosen)
                 .collect::<Vec<_>>();
-            // One column's own "Reading" goes to the reader.
-            assert!(!chosen.is_empty(), "no {title} at {at}: {names:?}");
+            // One button each: one column's way to the reader has a name
+            // of its own.
             assert_eq!(
-                chosen.iter().any(|chosen| *chosen),
-                section == SettingsSection::Reading,
-                "{title} at {at}"
+                chosen,
+                [section == SettingsSection::Reading],
+                "{title} at {at}: {names:?}"
             );
         }
         let keyboard = buttons

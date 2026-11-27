@@ -12,7 +12,7 @@ points, room for its buttons on one line, so the three panes need a window of
 about 812 points, or about 663 with the sidebar folded into its strip; dragging
 a divider never narrows the reader past that either. The window can be as narrow as
 480 points, so it fits half a laptop screen in this mode. Use **Folders**, **Mail**, and
-**Reading** at the top to move between them; **Reading** becomes **Message**
+**Reader** at the top to move between them; **Reader** becomes **Message**
 while writing in the reading pane. Opening a conversation switches to its
 content, and the search shortcut returns to **Mail**. Widening the window or
 reducing the interface scale brings back the three panes and their saved widths.
@@ -273,7 +273,7 @@ Trash. A move of several can be undone together, from the same notice. `Esc`
 clears the selection, and a plain click or arrow opens one conversation again.
 Conversations chosen together reach Proton in one request, up to 50 at a time;
 if Proton refuses it, all of them come back and the folder reloads.
-In one column, the selection is under **Reading**.
+In one column, the selection is under **Reader**.
 
 Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
