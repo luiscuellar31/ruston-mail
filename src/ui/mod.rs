@@ -877,14 +877,14 @@ impl DesktopApp {
     }
 
     fn app_has_focus(&self, context: &egui::Context) -> bool {
-        context.input_for(egui::ViewportId::ROOT, |input| input.focused)
+        context.input_for(egui::ViewportId::ROOT, has_keyboard)
             || self.composer_window_focused(context)
     }
 
     fn composer_window_focused(&self, context: &egui::Context) -> bool {
         self.app.settings().compose_placement == ComposePlacement::Window
             && self.app.compose().is_some()
-            && context.input_for(compose::viewport_id(), |input| input.focused)
+            && context.input_for(compose::viewport_id(), has_keyboard)
     }
 
     /// Seconds since this window opened, by the system's clock. egui's own
@@ -1432,6 +1432,12 @@ fn apply_appearance(context: &egui::Context, settings: &Settings) {
     } else {
         theme::apply(context, settings.appearance);
     }
+}
+
+/// Whether a window has the keyboard. A minimized one never has: it draws
+/// no pass, and egui goes on saying what the last pass said.
+fn has_keyboard(input: &egui::InputState) -> bool {
+    input.focused && input.viewport().minimized != Some(true)
 }
 
 /// Whether Windows' "Animation effects" are off, under Accessibility ›

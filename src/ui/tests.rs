@@ -148,6 +148,32 @@ fn mail_is_checked_by_a_clock_that_runs_while_the_window_is_hidden() {
 }
 
 #[test]
+fn a_minimized_window_counts_as_away_when_mail_is_checked() {
+    // A minimized window draws no pass, so egui goes on saying it has the
+    // keyboard: mail was checked every minute, as in front, not every three.
+    let context = egui::Context::default();
+    let desktop = DesktopApp::with_context(&context, true, Settings::default());
+    let has_focus = |minimized| {
+        let mut input = egui::RawInput {
+            focused: true,
+            ..Default::default()
+        };
+        input.viewports.insert(
+            egui::ViewportId::ROOT,
+            egui::ViewportInfo {
+                minimized: Some(minimized),
+                ..Default::default()
+            },
+        );
+        context.run_ui(input, |_| {}).drop_without_applying_deltas();
+        desktop.app_has_focus(&context)
+    };
+
+    assert!(has_focus(false));
+    assert!(!has_focus(true));
+}
+
+#[test]
 fn settled_settings_are_written_off_the_interface() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
