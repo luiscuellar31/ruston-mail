@@ -81,47 +81,21 @@ fn conversation_client(
     server: &wiremock::MockServer,
 ) -> (Client, crypto::keys::AddressKeys, String) {
     use crate::crypto::StoredKey;
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
     use secrecy::SecretString;
 
-    let provider = crypto::provider();
-    let key = provider
-        .new_key_generator()
-        .with_user_id("Me", "me@proton.me")
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let armored = String::from_utf8(
-        provider
-            .private_key_export(&key, "pass", DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
-    let public = provider.private_key_to_public_key(&key).unwrap();
-    let public = String::from_utf8(
-        provider
-            .public_key_export(&public, DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
+    let key = crypto::test_support::test_key("me@proton.me", "pass");
     let address = crypto::keys::AddressKeys {
         address_id: "address".into(),
         email: "me@proton.me".into(),
         can_send: true,
         keys: vec![StoredKey {
-            armored,
+            armored: key.private,
             passphrase: SecretString::from("pass"),
             unlocked: None,
         }],
     };
     let client = test_support::client(server, vec![address.clone()]);
-    (client, address, public)
+    (client, address, key.public)
 }
 
 /// Serves conversation `c1` with one message per `(sender, time)`, each

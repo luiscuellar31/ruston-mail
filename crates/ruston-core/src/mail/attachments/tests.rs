@@ -5,10 +5,7 @@ use crate::mail::test_support;
 use crate::model::enums::key_flag;
 use crate::model::message::Message;
 use base64::{Engine, engine::general_purpose::STANDARD};
-use proton_crypto::crypto::{
-    ArmorerSync, DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync,
-    PGPProviderSync,
-};
+use proton_crypto::crypto::{ArmorerSync, PGPProviderSync};
 use secrecy::SecretString;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -24,35 +21,13 @@ async fn attachment_client(server: &MockServer) -> (Client, Attachment) {
 /// `flags`, and a signed attachment from that sender.
 async fn attachment_client_with_key_flags(server: &MockServer, flags: u32) -> (Client, Attachment) {
     let provider = crypto::provider();
-    let key = provider
-        .new_key_generator()
-        .with_user_id("Test", "sender@proton.me")
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let armored = String::from_utf8(
-        provider
-            .private_key_export(&key, "pass", DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
-    let public = provider.private_key_to_public_key(&key).unwrap();
-    let public = String::from_utf8(
-        provider
-            .public_key_export(&public, DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
+    let key = crypto::test_support::test_key("sender@proton.me", "pass");
     let address = AddressKeys {
         address_id: "address".into(),
         email: "sender@proton.me".into(),
         can_send: true,
         keys: vec![StoredKey {
-            armored,
+            armored: key.private,
             passphrase: SecretString::from("pass"),
             unlocked: None,
         }],
@@ -74,7 +49,7 @@ async fn attachment_client_with_key_flags(server: &MockServer, flags: u32) -> (C
         .and(path("/core/v4/keys/all"))
         .and(query_param("Email", "sender@proton.me"))
         .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "Code": 1000, "Address": { "Keys": [{ "PublicKey": public, "Flags": flags }] }
+            "Code": 1000, "Address": { "Keys": [{ "PublicKey": key.public, "Flags": flags }] }
         })))
         .mount(server)
         .await;
@@ -320,22 +295,7 @@ async fn a_pgp_mime_attachment_is_refused_only_with_an_invalid_body_signature() 
     // Signed with a key that is not the sender's: invalid, so refused.
     let server = MockServer::start().await;
     let (client, _) = attachment_client(&server).await;
-    let provider = crypto::provider();
-    let unrelated = provider
-        .new_key_generator()
-        .with_user_id("Other", "other@proton.me")
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let unrelated = provider.private_key_to_public_key(&unrelated).unwrap();
-    let unrelated = String::from_utf8(
-        provider
-            .public_key_export(&unrelated, DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
+    let unrelated = crypto::test_support::test_key("other@proton.me", "pass").public;
     answer_key_lookup(
         &server,
         ResponseTemplate::new(200).set_body_json(serde_json::json!({

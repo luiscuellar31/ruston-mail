@@ -1,30 +1,18 @@
 use super::*;
+use crate::crypto::test_support::test_key;
 
 #[test]
 fn unlocked_address_keys_work_without_their_passphrase() {
-    use proton_crypto::crypto::{KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync};
-
     let provider = crate::crypto::provider();
-    let api_key = |id: &str, email: &str| {
-        let generated = provider
-            .new_key_generator()
-            .with_user_id("Test", email)
-            .with_algorithm(KeyGeneratorAlgorithm::ECC)
-            .generate()
-            .unwrap();
-        let armored = provider
-            .private_key_export(&generated, "skp", DataEncoding::Armor)
-            .unwrap();
-        ApiKey {
-            id: id.into(),
-            private_key: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
-            token: None,
-            signature: None,
-            activation: None,
-            primary: 1,
-            active: 1,
-            flags: None,
-        }
+    let api_key = |id: &str, email: &str| ApiKey {
+        id: id.into(),
+        private_key: test_key(email, "skp").private,
+        token: None,
+        signature: None,
+        activation: None,
+        primary: 1,
+        active: 1,
+        flags: None,
     };
     let user = User {
         id: "user".into(),
@@ -65,26 +53,11 @@ fn listed_key(
     primary: u8,
     flags: Option<u32>,
 ) -> (ApiKey, String) {
-    use proton_crypto::crypto::{KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync};
-
-    let provider = crate::crypto::provider();
-    let generated = provider
-        .new_key_generator()
-        .with_user_id("Test", email)
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let armored = provider
-        .private_key_export(&generated, passphrase, DataEncoding::Armor)
-        .unwrap();
-    let public = provider.private_key_to_public_key(&generated).unwrap();
-    let public = provider
-        .public_key_export(&public, DataEncoding::Armor)
-        .unwrap();
+    let key = test_key(email, passphrase);
     (
         ApiKey {
             id: id.into(),
-            private_key: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+            private_key: key.private,
             token: None,
             signature: None,
             activation: None,
@@ -92,7 +65,7 @@ fn listed_key(
             active: 1,
             flags,
         },
-        String::from_utf8(public.as_ref().to_vec()).unwrap(),
+        key.public,
     )
 }
 

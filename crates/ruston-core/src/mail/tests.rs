@@ -163,25 +163,11 @@ impl SecretStore for SlowStore {
 
 #[tokio::test]
 async fn a_saved_session_resumes_with_its_keys_unlocked() {
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
-
     // Keys locked with the session's key passphrase, as Proton keeps them.
-    let provider = crypto::provider();
     let key = |id: &str, email: &str| {
-        let generated = provider
-            .new_key_generator()
-            .with_user_id("Test", email)
-            .with_algorithm(KeyGeneratorAlgorithm::ECC)
-            .generate()
-            .unwrap();
-        let armored = provider
-            .private_key_export(&generated, "logout-skp", DataEncoding::Armor)
-            .unwrap();
         serde_json::json!({
             "ID": id,
-            "PrivateKey": String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+            "PrivateKey": crypto::test_support::test_key(email, "logout-skp").private,
             "Primary": 1,
         })
     };

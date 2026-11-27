@@ -360,33 +360,10 @@ async fn blocking_attachment_jobs_keep_their_slot_after_cancellation() {
 
 #[tokio::test]
 async fn prepared_attachment_packets_round_trip_and_keep_the_upload_slot() {
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
-    let addr = tokio::task::spawn_blocking(|| {
-        let provider = crypto::provider();
-        let key = provider
-            .new_key_generator()
-            .with_user_id("Test", "sender@example.test")
-            .with_algorithm(KeyGeneratorAlgorithm::ECC)
-            .generate()
+    let addr =
+        tokio::task::spawn_blocking(|| test_address("sender@example.test", "test-address").0)
+            .await
             .unwrap();
-        let armored = provider
-            .private_key_export(&key, "test-passphrase", DataEncoding::Armor)
-            .unwrap();
-        AddressKeys {
-            address_id: "test-address".into(),
-            email: "sender@example.test".into(),
-            can_send: true,
-            keys: vec![crypto::keys::StoredKey {
-                armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
-                passphrase: secrecy::SecretString::from("test-passphrase"),
-                unlocked: None,
-            }],
-        }
-    })
-    .await
-    .unwrap();
     let path = attachment_path();
     let plain = b"attachment payload\x00\xfe";
     std::fs::write(&path, plain).unwrap();
@@ -458,35 +435,19 @@ async fn prepared_attachment_packets_round_trip_and_keep_the_upload_slot() {
 
 /// A fresh address key, returned with its armored public key.
 fn test_address(email: &str, address_id: &str) -> (AddressKeys, String) {
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
-    let provider = crypto::provider();
-    let key = provider
-        .new_key_generator()
-        .with_user_id("Test", email)
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let armored = provider
-        .private_key_export(&key, "test-passphrase", DataEncoding::Armor)
-        .unwrap();
-    let public = provider.private_key_to_public_key(&key).unwrap();
-    let public = provider
-        .public_key_export(&public, DataEncoding::Armor)
-        .unwrap();
+    let key = crypto::test_support::test_key(email, "test-passphrase");
     (
         AddressKeys {
             address_id: address_id.into(),
             email: email.into(),
             can_send: true,
             keys: vec![crypto::keys::StoredKey {
-                armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+                armored: key.private,
                 passphrase: secrecy::SecretString::from("test-passphrase"),
                 unlocked: None,
             }],
         },
-        String::from_utf8(public.as_ref().to_vec()).unwrap(),
+        key.public,
     )
 }
 
