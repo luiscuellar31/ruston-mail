@@ -16,6 +16,7 @@ fn every_shortcut_key_stays_inside_its_section() {
         |ui| {
             page(
                 ui,
+                SettingsSection::Keyboard,
                 &mut Settings::default(),
                 &mut Vec::new(),
                 super::super::notifications::Status::Off,
@@ -26,7 +27,6 @@ fn every_shortcut_key_stays_inside_its_section() {
     );
     let lefts: Vec<(String, f32)> = SHORTCUTS
         .iter()
-        .chain([&("About", "")])
         .map(|(label, _)| {
             let rect = output
                 .shapes
@@ -52,8 +52,8 @@ fn every_shortcut_key_stays_inside_its_section() {
     }
 }
 
-#[test]
-fn about_is_the_last_settings_section() {
+/// What the page of `section` draws, 720 points wide.
+fn drawn(section: SettingsSection) -> Vec<egui::epaint::ClippedShape> {
     let context = egui::Context::default();
     theme::install(&context);
     let output = context.run_ui(
@@ -67,6 +67,7 @@ fn about_is_the_last_settings_section() {
         |ui| {
             page(
                 ui,
+                section,
                 &mut Settings::default(),
                 &mut Vec::new(),
                 super::super::notifications::Status::Off,
@@ -75,96 +76,71 @@ fn about_is_the_last_settings_section() {
             )
         },
     );
-    let find = |label| {
-        output
-            .shapes
-            .iter()
-            .find_map(|shape| shape_text_rect(&shape.shape, label))
-            .unwrap()
-    };
-    assert!(find("About").top() > find("Keyboard").bottom());
-    assert!(find(concat!("Ruston Mail ", env!("CARGO_PKG_VERSION"))).top() > find("About").top());
-    assert!(find("Source code").top() > find("About").top());
-    assert!(find("Third-party notices").top() > find("About").top());
+    let shapes = output.shapes.clone();
     output.drop_without_applying_deltas();
+    shapes
 }
 
 #[test]
-fn advanced_choices_share_a_card_after_the_everyday_ones() {
-    let context = egui::Context::default();
-    theme::install(&context);
-    let output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(720.0, 4000.0),
-            )),
-            ..Default::default()
-        },
-        |ui| {
-            page(
-                ui,
-                &mut Settings::default(),
-                &mut Vec::new(),
-                super::super::notifications::Status::Off,
-                None,
-                None,
-            )
-        },
-    );
-    let find = |label| {
-        output
-            .shapes
-            .iter()
-            .find_map(|shape| shape_text_rect(&shape.shape, label))
-            .unwrap_or_else(|| panic!("missing {label}"))
-    };
-    let advanced = find("Advanced");
-    assert!(advanced.top() > find("Interface").top());
-    for choice in [
+fn each_section_shows_alone_under_its_own_title() {
+    for section in SettingsSection::ALL {
+        let shapes = drawn(section);
+        for other in SettingsSection::ALL {
+            assert_eq!(
+                visible_text_rect(&shapes, title(other)).is_some(),
+                other == section,
+                "{other:?} on the page of {section:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn about_is_the_last_settings_section() {
+    assert_eq!(SettingsSection::ALL.last(), Some(&SettingsSection::About));
+    let shapes = drawn(SettingsSection::About);
+    let about = text_rect(&shapes, "About");
+    for label in [
+        concat!("Ruston Mail ", env!("CARGO_PKG_VERSION")),
+        "Source code",
+        "Third-party notices",
+    ] {
+        assert!(text_rect(&shapes, label).top() > about.top(), "{label}");
+    }
+}
+
+#[test]
+fn advanced_choices_have_a_section_after_the_everyday_ones() {
+    use SettingsSection::{About, Advanced, Keyboard};
+    const CHOICES: [&str; 3] = [
         "Check recipient encryption while writing",
         "Accept international domain names",
         "Search this device when Proton cannot be reached",
-    ] {
-        let choice = find(choice);
-        assert!(choice.top() > advanced.top());
-        assert!(choice.bottom() < find("Keyboard").top());
+    ];
+    assert_eq!(SettingsSection::ALL[4..], [Advanced, Keyboard, About]);
+    for section in SettingsSection::ALL {
+        let shapes = drawn(section);
+        for choice in CHOICES {
+            assert_eq!(
+                visible_text_rect(&shapes, choice).is_some(),
+                section == Advanced,
+                "{choice} on the page of {section:?}"
+            );
+        }
     }
-    output.drop_without_applying_deltas();
 }
 
 #[test]
-fn how_long_notices_stay_is_chosen_under_interface() {
-    let context = egui::Context::default();
-    theme::install(&context);
-    let output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(720.0, 4000.0),
-            )),
-            ..Default::default()
-        },
-        |ui| {
-            page(
-                ui,
-                &mut Settings::default(),
-                &mut Vec::new(),
-                super::super::notifications::Status::Off,
-                None,
-                None,
-            )
-        },
-    );
-    let shapes = output.shapes.clone();
-    output.drop_without_applying_deltas();
-
-    let interface = text_rect(&shapes, "Interface");
-    let advanced = text_rect(&shapes, "Advanced");
-    for drawn in ["Notice duration", "5 seconds"] {
-        let drawn = text_rect(&shapes, drawn);
-        assert!(interface.bottom() < drawn.top() && drawn.bottom() < advanced.top());
+fn how_long_notices_stay_is_chosen_under_general() {
+    let shapes = drawn(SettingsSection::General);
+    let general = text_rect(&shapes, "General");
+    for label in ["Notice duration", "5 seconds"] {
+        assert!(
+            text_rect(&shapes, label).top() > general.bottom(),
+            "{label}"
+        );
     }
+    assert!(visible_text_rect(&drawn(SettingsSection::Advanced), "Notice duration").is_none());
     assert_eq!(
         (MIN_NOTICE_SECONDS..=MAX_NOTICE_SECONDS)
             .map(seconds_label)
@@ -550,7 +526,7 @@ fn zoom_steps_move_between_the_offered_levels() {
 }
 
 #[test]
-fn the_interface_choices_show_their_whole_text_at_every_text_size() {
+fn the_appearance_and_general_choices_show_their_whole_text_at_every_text_size() {
     for scale in TEXT_SCALES {
         let context = egui::Context::default();
         theme::install(&context);
@@ -568,14 +544,17 @@ fn the_interface_choices_show_their_whole_text_at_every_text_size() {
                 ..Default::default()
             },
             |ui| {
-                page(
-                    ui,
-                    &mut settings,
-                    &mut Vec::new(),
-                    super::super::notifications::Status::Off,
-                    None,
-                    None,
-                )
+                for section in [SettingsSection::Appearance, SettingsSection::General] {
+                    page(
+                        ui,
+                        section,
+                        &mut settings,
+                        &mut Vec::new(),
+                        super::super::notifications::Status::Off,
+                        None,
+                        None,
+                    );
+                }
             },
         );
         let shapes = output.shapes.clone();

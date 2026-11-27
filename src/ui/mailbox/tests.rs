@@ -727,13 +727,15 @@ fn accessible_frame(
         vec![egui::Event::PointerMoved(pos), press(true), press(false)]
     });
     let mut messages = Vec::new();
+    // As the window has it: a draft while Settings is open.
+    let mut draft = app.showing_settings().then(|| app.settings().clone());
     let output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |root| show(root, app, None, state, &mut messages),
+        |root| show(root, app, draft.as_mut(), state, &mut messages),
     );
     let buttons = output
         .platform_output
@@ -844,6 +846,79 @@ fn the_folded_sidebar_names_each_icon_and_goes_where_the_sidebar_does() {
             .iter()
             .all(|(name, _, _)| name != "Folders" && name != "Labels")
     );
+}
+
+#[test]
+fn settings_list_their_sections_where_the_folders_were() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
+    let mut state = UiState::default();
+
+    // Beside the page, unfolded and folded, then above it in one column.
+    for (folded, size) in [
+        (false, egui::vec2(1100.0, 700.0)),
+        (true, egui::vec2(1100.0, 700.0)),
+        (false, egui::vec2(480.0, 700.0)),
+    ] {
+        let _ = app.update(Message::FoldSidebar(folded));
+        let mut frame = |click| accessible_frame(&context, &app, &mut state, size, click);
+        for _ in 0..2 {
+            let _ = frame(None);
+        }
+        let (_, buttons) = frame(None);
+        let at = format!("{size:?}, folded: {folded}");
+        let names: Vec<&str> = buttons.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert!(
+            !names.iter().any(|name| name.starts_with("Inbox")) && !names.contains(&"New message"),
+            "the folders show beside Settings at {at}: {names:?}"
+        );
+        for section in SettingsSection::ALL {
+            let title = settings::title(section);
+            let chosen = buttons
+                .iter()
+                .filter(|(name, _, _)| name == title)
+                .map(|(_, _, chosen)| *chosen)
+                .collect::<Vec<_>>();
+            // One column's own "Reading" goes to the reader.
+            assert!(!chosen.is_empty(), "no {title} at {at}: {names:?}");
+            assert_eq!(
+                chosen.iter().any(|chosen| *chosen),
+                section == SettingsSection::Reading,
+                "{title} at {at}"
+            );
+        }
+        let keyboard = buttons
+            .iter()
+            .find(|(name, _, _)| name == "Keyboard")
+            .unwrap()
+            .1;
+        let (asked, _) = frame(Some(keyboard.center()));
+        assert!(
+            asked.iter().any(|message| matches!(
+                message,
+                Message::ShowSettingsSection(SettingsSection::Keyboard)
+            )),
+            "{at}"
+        );
+        // The way back to the mailbox, where New message was, beside the
+        // one at the foot of the page.
+        let backs: Vec<egui::Rect> = buttons
+            .iter()
+            .filter(|(name, _, _)| name == "Back to mail")
+            .map(|(_, rect, _)| *rect)
+            .collect();
+        assert_eq!(backs.len(), if size.x > 1000.0 { 2 } else { 1 }, "{at}");
+        let (asked, _) = frame(Some(backs[0].center()));
+        assert!(
+            asked
+                .iter()
+                .any(|message| matches!(message, Message::ShowSettings(false))),
+            "{at}"
+        );
+    }
 }
 
 #[test]

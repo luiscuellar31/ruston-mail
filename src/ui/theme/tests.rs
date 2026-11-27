@@ -18,6 +18,13 @@ fn bundled_ui_icons_render_and_can_be_tinted() {
         Icon::Mail,
         Icon::Lock,
         Icon::Unlock,
+        Icon::Back,
+        Icon::Reading,
+        Icon::Palette,
+        Icon::Toggles,
+        Icon::Sliders,
+        Icon::Keyboard,
+        Icon::About,
     ] {
         let egui::ImageSource::Bytes { bytes, .. } = icon.source() else {
             panic!("{icon:?} must be bundled");
@@ -25,9 +32,14 @@ fn bundled_ui_icons_render_and_can_be_tinted() {
         let image = egui_extras::image::load_svg_bytes(bytes.as_ref(), &Default::default())
             .expect("bundled icon must render");
         assert_eq!(image.size, [16, 16], "{icon:?}");
+        // White at whatever coverage: the colors are premultiplied, and the
+        // one-pixel stroke of an arrow covers no pixel whole at this size.
         assert!(
             image.pixels.iter().any(|pixel| {
-                pixel.a() > 0 && pixel.r() == 255 && pixel.g() == 255 && pixel.b() == 255
+                pixel.a() > 0
+                    && pixel.r() == pixel.a()
+                    && pixel.g() == pixel.a()
+                    && pixel.b() == pixel.a()
             }),
             "{icon:?} must have white pixels for tinting"
         );

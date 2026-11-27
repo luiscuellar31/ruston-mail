@@ -480,7 +480,7 @@ not establish how a particular desktop shell displays them.
 ## Typography and local font coverage
 
 The existing bundled face remains the default. To compare, enable **Use system
-interface font** under Settings → Interface and Apply; disabling it restores
+interface font** under Settings → Appearance and Apply; disabling it restores
 the bundled typography. Sizes and monospace primary stay unchanged. System
 language fallbacks are active in both modes, depending on installed fonts.
 

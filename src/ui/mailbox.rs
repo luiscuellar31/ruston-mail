@@ -6,7 +6,7 @@ use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme
 use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, Mailbox, Message,
-    Notice, compact_layout, panel_ratios, panel_widths, widths_beside_rail,
+    Notice, SettingsSection, compact_layout, panel_ratios, panel_widths, widths_beside_rail,
 };
 use crate::mail::{
     ConversationSummary, CustomKind, Folder, ListFilter, MailFolder, MailboxError, PlaceLook,
@@ -94,7 +94,9 @@ pub(super) fn show(
         Some(draft) => {
             let page = egui::CentralPanel::default()
                 .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-                .show(root, |ui| settings_pane(ui, app, draft, state, messages))
+                .show(root, |ui| {
+                    settings_pane(ui, app, draft, state, false, messages)
+                })
                 .inner;
             (None, page)
         }
@@ -279,7 +281,7 @@ fn show_compact(
         .frame(theme::panel_frame(fill))
         .show(root, |ui| {
             if let Some(draft) = settings_draft {
-                return Some(settings_pane(ui, app, draft, state, messages));
+                return Some(settings_pane(ui, app, draft, state, true, messages));
             }
             match state.compact_view {
                 CompactView::Folders => {
@@ -309,23 +311,24 @@ fn compact_mail(
     conversation_pane(ui, app, mailbox, state, messages);
 }
 
-/// Settings' page, in place of the list and the reader. Returns where it
-/// scrolls, above its buttons.
+/// Settings' page, in place of the list and the reader, with its sections
+/// in a row above it when no sidebar lists them. Returns where it scrolls,
+/// above its buttons.
 fn settings_pane(
     ui: &mut egui::Ui,
     app: &App,
     draft: &mut Settings,
     state: &UiState,
+    sections_row: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Rect {
     settings::show(
         ui,
-        app.settings(),
+        app,
         draft,
         messages,
         state.notification_status,
-        app.third_party_notices(),
-        app.update_status(),
+        sections_row,
     )
 }
 
@@ -448,13 +451,18 @@ fn sidebar_content(
     }
     ui.add_space(12.0);
 
+    // While Settings is open, the sidebar lists its sections instead, as
+    // Proton's web client does.
+    if app.showing_settings() {
+        settings_places(ui, app, messages);
+        return;
+    }
     if new_message_button(ui).clicked() {
         messages.push(Message::OpenCompose);
     }
     ui.add_space(12.0);
 
-    // Settings covers the mail panes, so it alone shows as chosen.
-    let current = (!app.showing_settings()).then(|| mailbox.folder());
+    let current = Some(mailbox.folder());
     for folder in MailFolder::ALL.into_iter().map(Folder::System) {
         folder_button(ui, mailbox, current, folder, PlaceLook::default(), messages);
     }
@@ -688,14 +696,33 @@ fn folder_button(
     look: PlaceLook,
     messages: &mut Vec<Message>,
 ) {
-    let selected = current == Some(&folder);
     let icon = folder_icon(&folder);
     let unread = mailbox
         .counts()
         .and_then(|counts| counts.unread(&folder))
         .filter(|count| *count > 0);
-    let name = place_text(ui, folder.name(), selected).atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
-    let mut button = egui::Button::new((theme::icon_atom(), name))
+    // A label's icon has the label's color.
+    let icon_color = (icon == theme::Icon::Label).then(|| label_color(look));
+    let chosen = current == Some(&folder);
+    if place_button(ui, icon, icon_color, folder.name(), unread, chosen).clicked() {
+        messages.push(Message::SelectFolder(folder));
+    }
+}
+
+/// One place of the sidebar: its icon, in `icon_color` or else its text's,
+/// its name, and how many unread it holds at the right. The chosen one has
+/// the soft violet and its name in bold. A screen reader hears the name,
+/// and the unread.
+fn place_button(
+    ui: &mut egui::Ui,
+    icon: theme::Icon,
+    icon_color: Option<Color32>,
+    name: &str,
+    unread: Option<u32>,
+    selected: bool,
+) -> egui::Response {
+    let text = place_text(ui, name, selected).atom_id(egui::Id::new(FOLDER_NAME_ATOM_ID));
+    let mut button = egui::Button::new((theme::icon_atom(), text))
         .gap(ui.spacing().icon_spacing + 3.0)
         .wrap_mode(egui::TextWrapMode::Truncate)
         .min_size(egui::vec2(
@@ -709,13 +736,13 @@ fn folder_button(
         button = button.right_text(place_text(ui, count.to_string(), selected));
     }
     let layout = place_layout(ui, chosen_place(ui, button, selected));
-    let icon_color = if icon == theme::Icon::Label {
-        label_color(look)
-    } else if selected {
-        theme::colors(ui).selected_folder_text
-    } else {
-        ui.style().interact(&layout.response).fg_stroke.color
-    };
+    let icon_color = icon_color.unwrap_or_else(|| {
+        if selected {
+            theme::colors(ui).selected_folder_text
+        } else {
+            ui.style().interact(&layout.response).fg_stroke.color
+        }
+    });
     theme::paint_atom_icon(ui, &layout, icon, icon_color);
     if selected && let Some(rect) = layout.rect(egui::Id::new(FOLDER_NAME_ATOM_ID)) {
         // The bundled font has one weight. A second pass one physical pixel
@@ -726,24 +753,21 @@ fn folder_button(
             &painter,
             rect.left_center() + egui::vec2(offset, 0.0),
             Align2::LEFT_CENTER,
-            folder.name(),
+            name,
             egui::TextStyle::Button.resolve(ui.style()),
             theme::colors(ui).selected_folder_text,
             rect.width() - offset,
         );
     }
     let response = layout.response;
-    let spoken_name = folder.name().to_owned();
     response.widget_info(|| {
         let label = unread.map_or_else(
-            || spoken_name.clone(),
-            |count| format!("{spoken_name}, {count} unread"),
+            || name.to_owned(),
+            |count| format!("{name}, {count} unread"),
         );
         egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label)
     });
-    if response.clicked() {
-        messages.push(Message::SelectFolder(folder));
-    }
+    response
 }
 
 /// Lays out a place of the sidebar. egui's grey hover is brighter than the
@@ -762,6 +786,59 @@ fn place_layout(ui: &mut egui::Ui, button: egui::Button<'_>) -> egui::AtomLayout
     .inner
 }
 
+/// Settings' sections, in place of the folders while Settings is open, under
+/// the way back to the mailbox where New message is.
+fn settings_places(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    if back_to_mail_button(ui).clicked() {
+        messages.push(Message::ShowSettings(false));
+    }
+    ui.add_space(12.0);
+    let open = app.settings_section();
+    for section in SettingsSection::ALL {
+        let (icon, title) = (settings::icon(section), settings::title(section));
+        if place_button(ui, icon, None, title, None, section == open).clicked() {
+            messages.push(Message::ShowSettingsSection(section));
+        }
+    }
+}
+
+/// The way back to the mailbox, as wide and tall as New message: an arrow
+/// and "Mail", as Proton's web client has it, and "Back to mail" to a screen
+/// reader, as the button at the foot of Settings says.
+fn back_to_mail_button(ui: &mut egui::Ui) -> egui::Response {
+    let width = ui.available_width();
+    let layout = egui::Button::new((
+        egui::Atom::grow(),
+        theme::icon_atom(),
+        egui::RichText::new("Mail").size(theme::text_size(ui, theme::BODY_SIZE)),
+        egui::Atom::grow(),
+    ))
+    .min_size(egui::vec2(width, theme::text_size(ui, NEW_MESSAGE_HEIGHT)))
+    .atom_ui(ui);
+    let color = ui.style().interact(&layout.response).fg_stroke.color;
+    theme::paint_atom_icon(ui, &layout, theme::Icon::Back, color);
+    let response = layout.response;
+    response
+        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Back to mail"));
+    response
+}
+
+/// Settings' sections in the folded sidebar, under the way back to the
+/// mailbox, each named on hover and to screen readers.
+fn settings_rail(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
+    if rail_place(ui, theme::Icon::Back, "Back to mail", false, false).clicked() {
+        messages.push(Message::ShowSettings(false));
+    }
+    ui.add_space(12.0);
+    let open = app.settings_section();
+    for section in SettingsSection::ALL {
+        let (icon, title) = (settings::icon(section), settings::title(section));
+        if rail_place(ui, icon, title, section == open, false).clicked() {
+            messages.push(Message::ShowSettingsSection(section));
+        }
+    }
+}
+
 /// How wide the folded sidebar is: its icons, as tall as a place of the
 /// sidebar, with room either side.
 fn rail_width(scale: f32) -> f32 {
@@ -778,8 +855,10 @@ fn rail_frame(ui: &egui::Ui, inset: f32) -> egui::Frame {
 
 /// The sidebar folded into a strip of icons, top to bottom: the way to
 /// unfold it, writing a new message, Proton's folders, the account's
-/// folders and labels behind a menu each, and Settings at the foot. Each
-/// says its name on hover and to screen readers.
+/// folders and labels behind a menu each, and Settings at the foot; while
+/// Settings is open, the way back to the mailbox and its sections in place
+/// of writing and the folders. Each says its name on hover and to screen
+/// readers.
 fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     egui::Panel::bottom("rail-settings")
         .frame(egui::Frame::NONE.inner_margin(egui::Margin {
@@ -808,12 +887,15 @@ fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
                 messages.push(Message::FoldSidebar(false));
             }
             ui.add_space(12.0);
+            if app.showing_settings() {
+                settings_rail(ui, app, messages);
+                return;
+            }
             if rail_new_message(ui).clicked() {
                 messages.push(Message::OpenCompose);
             }
             ui.add_space(12.0);
-            // Settings covers the mail panes, so it alone shows as chosen.
-            let current = (!app.showing_settings()).then(|| mailbox.folder());
+            let current = Some(mailbox.folder());
             for folder in MailFolder::ALL.into_iter().map(Folder::System) {
                 let unread = mailbox
                     .counts()

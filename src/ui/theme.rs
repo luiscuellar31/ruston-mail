@@ -188,6 +188,15 @@ pub enum Icon {
     Settings,
     /// Folding the sidebar, or unfolding it.
     Sidebar,
+    /// Leaving Settings for the mailbox.
+    Back,
+    // Settings' sections, the ones Writing's Compose does not stand for.
+    Reading,
+    Palette,
+    Toggles,
+    Sliders,
+    Keyboard,
+    About,
 }
 
 impl Icon {
@@ -216,6 +225,15 @@ impl Icon {
             Self::Sidebar => {
                 egui::include_image!("../../assets/icons/bootstrap/layout-sidebar.svg")
             }
+            Self::Back => egui::include_image!("../../assets/icons/bootstrap/arrow-left.svg"),
+            Self::Reading => {
+                egui::include_image!("../../assets/icons/bootstrap/envelope-open.svg")
+            }
+            Self::Palette => egui::include_image!("../../assets/icons/bootstrap/palette.svg"),
+            Self::Toggles => egui::include_image!("../../assets/icons/bootstrap/toggles.svg"),
+            Self::Sliders => egui::include_image!("../../assets/icons/bootstrap/sliders.svg"),
+            Self::Keyboard => egui::include_image!("../../assets/icons/bootstrap/keyboard.svg"),
+            Self::About => egui::include_image!("../../assets/icons/bootstrap/info-circle.svg"),
         }
     }
 }

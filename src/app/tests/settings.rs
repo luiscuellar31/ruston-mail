@@ -354,6 +354,20 @@ fn third_party_notices_open_in_the_background_only_when_shipped() {
 }
 
 #[test]
+fn settings_open_again_to_the_section_left_open() {
+    let mut app = authenticated_app();
+    assert_eq!(app.settings_section(), SettingsSection::Reading);
+
+    let _ = app.update(Message::ShowSettings(true));
+    let _ = app.update(Message::ShowSettingsSection(SettingsSection::Keyboard));
+    assert_eq!(app.settings_section(), SettingsSection::Keyboard);
+    // Leaving and coming back, as the menu's Settings or its key do.
+    let _ = app.update(Message::ShowSettings(false));
+    let _ = app.update(Message::ShowSettings(true));
+    assert_eq!(app.settings_section(), SettingsSection::Keyboard);
+}
+
+#[test]
 fn the_sidebar_stays_folded_until_unfolded() {
     let mut app = authenticated_app();
     let revision = app.settings_revision();

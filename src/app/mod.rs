@@ -68,6 +68,32 @@ type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
 const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
 
+/// The parts Settings is split into, each shown on its own, in the order
+/// its navigation lists them. One draft covers them all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SettingsSection {
+    #[default]
+    Reading,
+    Writing,
+    Appearance,
+    General,
+    Advanced,
+    Keyboard,
+    About,
+}
+
+impl SettingsSection {
+    pub const ALL: [Self; 7] = [
+        Self::Reading,
+        Self::Writing,
+        Self::Appearance,
+        Self::General,
+        Self::Advanced,
+        Self::Keyboard,
+        Self::About,
+    ];
+}
+
 #[derive(Clone)]
 pub enum Message {
     Submit,
@@ -201,6 +227,8 @@ pub enum Message {
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
     ShowSettings(bool),
+    /// Shows one part of Settings in place of the one shown.
+    ShowSettingsSection(SettingsSection),
     /// Opens the project's own repository from the About card.
     OpenSourceCode,
     /// Opens the notices of the third-party software the package shipped,
@@ -387,6 +415,9 @@ pub struct App {
     settings_on_disk: Arc<Mutex<u64>>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
+    /// The part of Settings shown, which it opens to again while the app
+    /// runs.
+    settings_section: SettingsSection,
     /// The notices of third-party software that came with the app, which
     /// the About card opens. A build run from Cargo has none.
     third_party_notices: Option<PathBuf>,
@@ -469,6 +500,7 @@ impl App {
             settings_writing: false,
             settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
+            settings_section: SettingsSection::default(),
             third_party_notices: None,
             compose: None,
             parked_draft: None,
@@ -576,6 +608,10 @@ impl App {
 
     pub fn showing_settings(&self) -> bool {
         self.showing_settings
+    }
+
+    pub fn settings_section(&self) -> SettingsSection {
+        self.settings_section
     }
 
     /// The notices of third-party software that came with the app, if any.
@@ -931,6 +967,7 @@ impl App {
             }
             Message::RevealAttachment(path) => return reveal_in_file_manager(path),
             Message::ShowSettings(showing) => self.showing_settings = showing,
+            Message::ShowSettingsSection(section) => self.settings_section = section,
             Message::SetMarkReadOnOpen(on) => {
                 self.remember(|settings| settings.mark_read_on_open = on);
             }

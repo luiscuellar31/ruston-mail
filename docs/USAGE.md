@@ -57,7 +57,7 @@ accounts: choose another to switch
 to it, or **Add account** to sign in to one more. The others keep their
 sessions saved, as a restart does, and check no mail and send no notifications
 until you open them. Each opens in the folder you last read in it, unless
-**Starting up** in Settings names one for all. Switching opens the other account's saved session; if it
+**Folder at start**, under Settings → General, names one for all. Switching opens the other account's saved session; if it
 has ended, you sign in to that account again, with its address filled in. The
 sign-in screen lists your other accounts, so you can open one instead, when
 adding an account or when one's session has ended, even as Ruston starts;
@@ -493,14 +493,21 @@ messages yet.
 
 ## Settings
 
-Select **Settings** in the sidebar to show preferences beside it, in place of
-the conversation list and reader. **Apply** saves changes without leaving.
-Press `Esc`, select a folder, or choose **Back to mail** to return. If you have
-unapplied changes, Ruston Mail asks whether to apply them, discard them, or keep
-editing. The same confirmation appears before writing a new message or signing
-out from Settings.
+Select **Settings** in the sidebar to show preferences in place of the
+conversation list and reader. Settings comes in sections: **Reading**,
+**Writing**, **Appearance**, **General**, **Advanced**, **Keyboard** and
+**About**, one shown at a time. While Settings is open the
+sidebar lists them where the folders were, each with its icon, under **Mail**,
+which returns to the mailbox, as in Proton's web client; folded, the strip of
+icons lists them instead, and a window narrow enough for one column shows them
+as a row above the page. Changes in one section stay while you look at
+another, and **Apply** saves them all without leaving. Settings opens again
+to the section you left. Press `Esc`, or choose **Mail** or **Back to mail**,
+to return. If you have unapplied changes, Ruston Mail asks whether to
+apply them, discard them, or keep editing. The same confirmation appears before
+writing a new message or signing out from Settings.
 
-The **About** section at the bottom shows the app version, credits, and license.
+The **About** section, the last, shows the app version, credits, and license.
 Choose **Source code** to open the project's repository in your browser, or
 **Third-party notices** to read the licenses of the software Ruston Mail
 includes, which open in your system's app for text files. Only a packaged app
@@ -512,7 +519,7 @@ About, with a **Download** button that opens its release page in your browser.
 Nothing is downloaded or installed for you. About also says when you have the
 latest version, or when GitHub could not be asked. The
 [privacy guide](PRIVACY.md#network-connections) lists what the check sends.
-**Advanced**, above the keyboard shortcuts, holds choices most people can leave
+**Advanced**, before the keyboard shortcuts, holds choices most people can leave
 alone.
 
 Settings control:
@@ -549,10 +556,10 @@ Settings control:
   › Personalization › Taskbar › Taskbar behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
-pane sizes** under Settings → Interface to restore the defaults; this action
+pane sizes** under Settings → Appearance to restore the defaults; this action
 takes effect immediately and does not apply other pending preference changes.
-Choose Dark or Light, or on macOS and Windows System, under Settings →
-Interface and press Apply. The selection is saved for the next run. System
+Choose the **Theme**, Dark or Light, or on macOS and Windows System, under
+Settings → Appearance and press Apply. The selection is saved for the next run. System
 follows the light or dark mode of macOS or Windows as it changes and keeps the
 last scheme you chose, which an older version of Ruston opens with. Linux has
 no System choice yet, since its windowing library reports no system mode. The
@@ -560,7 +567,7 @@ sign-in screen also has a theme button in its header, which switches to the
 other scheme from the one on screen, and a control beside each password field
 to show or hide what you type.
 
-**Use system interface font** under Settings → Interface is optional and takes
+**Use system interface font** under Settings → Appearance is optional and takes
 effect after Apply, without changing text sizes. The default keeps Ruston's
 existing look. macOS tries San Francisco, Windows Segoe UI, and Linux the
 configured Fontconfig sans-serif family; unavailable fonts fall back to Ruston's.

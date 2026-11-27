@@ -341,7 +341,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   with the notice's button, both centered on a line as high as the button;
   longer words wrap and put the button below them.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it by `Settings::notice_seconds`,
-  5 unless Settings → Interface changes it and kept between 3 and 10, starts
+  5 unless Settings → General changes it and kept between 3 and 10, starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
   `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its
@@ -545,17 +545,24 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   placement, whose default is the reading pane.
 - With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) replaces the
   conversation list and reader with
-  [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
-  keeps the sidebar visible in the three-pane layout and gives Settings the
-  full content width in compact presentation. Compact navigation leaves
+  [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. Settings
+  shows one section at a time, the `SettingsSection` `App` keeps for the
+  session and `Message::ShowSettingsSection` changes; one draft covers them
+  all, so a section left keeps its edits for Apply. In the three-pane layout
+  the sidebar lists the sections in place of New message and the folders,
+  under a way back to the mailbox, as Proton's web client does, its rows drawn
+  as the folders' are (`place_button`); folded, the strip lists their icons,
+  and compact presentation, which gives Settings the full content width, lists
+  them as a row above the page. Each section's page scrolls on its own.
+  Compact navigation leaves
   Settings through the same unsaved-change confirmation as normal navigation.
   The UI holds preference edits until Apply and confirms whether to apply or discard
   them before leaving for a folder, composer, or sign-out. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.
   Choices most people can leave alone, recipient encryption lookups and
-  international domain names, share an Advanced card before Keyboard.
-  Settings ends with an About card containing the existing logo, package version,
+  international domain names, share an Advanced section before Keyboard.
+  Settings ends with an About section containing the existing logo, package version,
   technology and author credits, license, a Source code button and a
   Third-party notices button. Source code dispatches `OpenSourceCode` through
   `App`, which opens the package repository using the existing background
