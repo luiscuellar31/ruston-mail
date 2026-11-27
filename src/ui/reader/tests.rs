@@ -4,7 +4,7 @@ use jiff::civil::date;
 
 use super::*;
 use crate::mail::ConversationDetail;
-use crate::ui::test_support::{text_rect, visible_text_rect};
+use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 use ruston_core::html::rich::ListMarker;
 
 /// A message with no pictures fetched, nor parts to fetch them from.
@@ -117,17 +117,6 @@ fn the_move_menu_lists_the_inbox_and_the_accounts_folders() {
     for own in [MailFolder::Sent, MailFolder::Drafts] {
         assert_eq!(names(None, &Folder::System(own)), ["Invoices"]);
     }
-}
-
-/// A click of `button` at `pos`: the pointer moves there, presses and lets go.
-fn click_events(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
-    let press = |pressed| egui::Event::PointerButton {
-        pos,
-        button,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    vec![egui::Event::PointerMoved(pos), press(true), press(false)]
 }
 
 /// One frame's input with a click at `position`.

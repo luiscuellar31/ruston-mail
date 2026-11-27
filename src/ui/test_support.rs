@@ -1,4 +1,5 @@
-//! Helpers the interface's tests share to find what a frame drew.
+//! Helpers the interface's tests share: what a frame drew, and where to
+//! click.
 
 use eframe::egui::{self, epaint::ClippedShape, epaint::Shape};
 
@@ -28,4 +29,16 @@ pub(super) fn visible_text_rect(shapes: &[ClippedShape], label: &str) -> Option<
     shapes.iter().find_map(|clipped| {
         shape_text_rect(&clipped.shape, label).filter(|rect| clipped.clip_rect.contains_rect(*rect))
     })
+}
+
+/// A click of `button` at `pos`: the pointer moves there, presses and lets
+/// go, in one pass.
+pub(super) fn click_events(pos: egui::Pos2, button: egui::PointerButton) -> Vec<egui::Event> {
+    let press = |pressed| egui::Event::PointerButton {
+        pos,
+        button,
+        pressed,
+        modifiers: egui::Modifiers::default(),
+    };
+    vec![egui::Event::PointerMoved(pos), press(true), press(false)]
 }

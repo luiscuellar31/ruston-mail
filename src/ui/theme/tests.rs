@@ -180,21 +180,7 @@ fn clicking_a_check_box_toggles_it() {
         })
         .drop_without_applying_deltas();
     let click = egui::RawInput {
-        events: vec![
-            egui::Event::PointerMoved(rect.center()),
-            egui::Event::PointerButton {
-                pos: rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
+        events: crate::ui::test_support::click_events(rect.center(), egui::PointerButton::Primary),
         ..Default::default()
     };
     let mut changed = false;

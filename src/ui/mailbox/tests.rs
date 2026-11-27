@@ -5,7 +5,7 @@ use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
-use crate::ui::test_support::{text_rect, visible_text_rect};
+use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 
 fn mailbox_frame(
     context: &egui::Context,
@@ -107,21 +107,7 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
                 size,
                 None,
                 egui::RawInput {
-                    events: vec![
-                        egui::Event::PointerMoved(position),
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ],
+                    events: click_events(position, egui::PointerButton::Primary),
                     ..Default::default()
                 },
             );
@@ -208,21 +194,7 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
         .run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
-                events: vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: Default::default(),
-                    },
-                ],
+                events: click_events(position, egui::PointerButton::Primary),
                 ..Default::default()
             },
             |root| show(root, &app, None, &mut state, &mut messages),
@@ -271,15 +243,7 @@ fn the_address_opens_the_accounts_to_switch_to_or_add() {
             },
         )
     };
-    let click = |pos| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
+    let click = |pos| click_events(pos, egui::PointerButton::Primary);
 
     // The sidebar settles over a few frames, as the others' tests wait for.
     let _ = frame(Vec::new());
@@ -385,21 +349,7 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
         .run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                events: vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: Default::default(),
-                    },
-                ],
+                events: click_events(position, egui::PointerButton::Primary),
                 ..Default::default()
             },
             |root| {
@@ -718,13 +668,7 @@ fn accessible_frame(
     click: Option<egui::Pos2>,
 ) -> (Vec<Message>, Vec<(String, egui::Rect, bool)>) {
     let events = click.map_or_else(Vec::new, |pos| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
+        click_events(pos, egui::PointerButton::Primary)
     });
     let mut messages = Vec::new();
     // As the window has it: a draft while Settings is open.
@@ -1541,13 +1485,7 @@ fn pane_frame(
     click: Option<egui::Pos2>,
 ) -> (Vec<(String, egui::Rect)>, Vec<Message>) {
     let events = click.map_or_else(Vec::new, |pos| {
-        let button = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+        click_events(pos, egui::PointerButton::Primary)
     });
     let mut messages = Vec::new();
     let (app, _) = App::boot(true, Settings::default());
@@ -2238,15 +2176,7 @@ fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
             },
         )
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
+    let click = click_events;
 
     let (_, shapes) = frame(Vec::new());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
@@ -2389,14 +2319,8 @@ fn undo_answers_while_the_list_refreshes() {
         .expect("the offer's Undo")
         .center();
 
-    let press = |pressed| egui::Event::PointerButton {
-        pos: undo,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
     let click = egui::RawInput {
-        events: vec![egui::Event::PointerMoved(undo), press(true), press(false)],
+        events: click_events(undo, egui::PointerButton::Primary),
         ..Default::default()
     };
     let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
@@ -2736,17 +2660,7 @@ fn a_saved_file_is_confirmed_with_a_way_to_show_it() {
     let (shapes, _) = frame(Vec::new());
     text_rect(&shapes, "Saved report.pdf.");
     let reveal = text_rect(&shapes, REVEAL_LABEL).center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: reveal,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    let (_, asked) = frame(vec![
-        egui::Event::PointerMoved(reveal),
-        press(true),
-        press(false),
-    ]);
+    let (_, asked) = frame(click_events(reveal, egui::PointerButton::Primary));
 
     assert!(matches!(
         asked.as_slice(),
@@ -2778,17 +2692,7 @@ fn a_newer_release_is_announced_with_a_way_to_its_page() {
     let (shapes, _) = frame(Vec::new());
     text_rect(&shapes, "Ruston Mail 999.0.0 is available.");
     let download = text_rect(&shapes, "Download").center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: download,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    let (_, asked) = frame(vec![
-        egui::Event::PointerMoved(download),
-        press(true),
-        press(false),
-    ]);
+    let (_, asked) = frame(click_events(download, egui::PointerButton::Primary));
 
     assert!(matches!(asked.as_slice(), [Message::OpenReleasePage]));
 }

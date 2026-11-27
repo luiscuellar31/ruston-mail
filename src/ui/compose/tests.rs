@@ -485,15 +485,9 @@ fn an_answer_offers_to_leave_the_original_out() {
         let choice =
             crate::ui::test_support::text_rect(&shapes, "Quote the original under your text")
                 .center();
-        let press = |pressed| egui::Event::PointerButton {
-            pos: choice,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
         let (_, asked) = frame(
             &app,
-            vec![egui::Event::PointerMoved(choice), press(true), press(false)],
+            crate::ui::test_support::click_events(choice, egui::PointerButton::Primary),
         );
         assert!(
             matches!(asked.as_slice(), [Message::ToggleComposeQuote]),
@@ -791,15 +785,9 @@ fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
     crate::ui::test_support::text_rect(&shapes, "📎 receipt.png (2.0 KB)");
     // The first Remove is the invoice's.
     let remove = crate::ui::test_support::text_rect(&shapes, "Remove").center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: remove,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
     let (_, asked) = frame(
         &app,
-        vec![egui::Event::PointerMoved(remove), press(true), press(false)],
+        crate::ui::test_support::click_events(remove, egui::PointerButton::Primary),
     );
     // Leaving To for the button also says the field was left.
     let left_out: Vec<&String> = asked
