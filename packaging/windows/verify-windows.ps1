@@ -29,6 +29,39 @@ using System.Text;
 
 public static class RustonPortableExecutable
 {
+    // Where the PE format keeps what is read here, from Microsoft's
+    // specification. The DOS header says where the PE header starts.
+    const int PeHeaderPointerOffset = 0x3C;
+    // The PE header starts with "PE\0\0", then the file header's fields.
+    const uint PeSignature = 0x00004550;
+    const int MachineOffset = 4;
+    const int SectionCountOffset = 6;
+    const int OptionalHeaderSizeOffset = 20;
+    // The optional header follows the signature and the 20-byte file header.
+    const int OptionalHeaderOffset = 24;
+    // The optional header of a 64-bit image, the only kind built.
+    const ushort Pe32PlusMagic = 0x20B;
+    const int SubsystemOffset = 68;
+    // Its data directories, eight bytes each; the second lists the imports.
+    const int DataDirectoriesOffset = 112;
+    const int DataDirectorySize = 8;
+    const int ImportDirectoryIndex = 1;
+    // One 20-byte descriptor per imported DLL; a zero name ends the list.
+    const int ImportDescriptorSize = 20;
+    const int ImportNameOffset = 12;
+    // The section headers, 40 bytes each, after the optional header.
+    const int SectionHeaderSize = 40;
+    const int SectionVirtualSizeOffset = 8;
+    const int SectionAddressOffset = 12;
+    const int SectionRawDataOffset = 20;
+    // Resource 1 of type RT_MANIFEST is what Windows reads at launch.
+    const int ApplicationManifestId = 1;
+    const int RtManifest = 24;
+    // Open an image only to read it: never run it, and read one built for
+    // another architecture too.
+    const uint LoadLibraryAsDatafile = 0x2;
+    const uint LoadLibraryAsImageResource = 0x20;
+
     public sealed class Image
     {
         public ushort Machine;
@@ -39,25 +72,25 @@ public static class RustonPortableExecutable
     public static Image Read(string path)
     {
         byte[] bytes = File.ReadAllBytes(path);
-        int header = BitConverter.ToInt32(bytes, 0x3C);
-        if (BitConverter.ToUInt32(bytes, header) != 0x00004550)
+        int header = BitConverter.ToInt32(bytes, PeHeaderPointerOffset);
+        if (BitConverter.ToUInt32(bytes, header) != PeSignature)
             throw new InvalidDataException(path + " is not a PE image");
         var image = new Image();
-        image.Machine = BitConverter.ToUInt16(bytes, header + 4);
-        int sectionCount = BitConverter.ToUInt16(bytes, header + 6);
-        int optionalSize = BitConverter.ToUInt16(bytes, header + 20);
-        int optional = header + 24;
-        if (BitConverter.ToUInt16(bytes, optional) != 0x20B)
+        image.Machine = BitConverter.ToUInt16(bytes, header + MachineOffset);
+        int sectionCount = BitConverter.ToUInt16(bytes, header + SectionCountOffset);
+        int optionalSize = BitConverter.ToUInt16(bytes, header + OptionalHeaderSizeOffset);
+        int optional = header + OptionalHeaderOffset;
+        if (BitConverter.ToUInt16(bytes, optional) != Pe32PlusMagic)
             throw new InvalidDataException(path + " is not a 64-bit image");
-        image.Subsystem = BitConverter.ToUInt16(bytes, optional + 68);
+        image.Subsystem = BitConverter.ToUInt16(bytes, optional + SubsystemOffset);
         int sections = optional + optionalSize;
 
-        // Data directory 1 lists the imported DLLs, one 20-byte descriptor each.
-        uint importRva = BitConverter.ToUInt32(bytes, optional + 112 + 8);
+        int imports = optional + DataDirectoriesOffset + ImportDirectoryIndex * DataDirectorySize;
+        uint importRva = BitConverter.ToUInt32(bytes, imports);
         if (importRva == 0) return image;
-        for (int descriptor = Offset(bytes, sections, sectionCount, importRva); ; descriptor += 20)
+        for (int descriptor = Offset(bytes, sections, sectionCount, importRva); ; descriptor += ImportDescriptorSize)
         {
-            uint nameRva = BitConverter.ToUInt32(bytes, descriptor + 12);
+            uint nameRva = BitConverter.ToUInt32(bytes, descriptor + ImportNameOffset);
             if (nameRva == 0) break;
             int name = Offset(bytes, sections, sectionCount, nameRva);
             int end = Array.IndexOf(bytes, (byte)0, name);
@@ -70,10 +103,10 @@ public static class RustonPortableExecutable
     {
         for (int i = 0; i < count; i++)
         {
-            int section = sections + i * 40;
-            uint size = BitConverter.ToUInt32(bytes, section + 8);
-            uint address = BitConverter.ToUInt32(bytes, section + 12);
-            uint raw = BitConverter.ToUInt32(bytes, section + 20);
+            int section = sections + i * SectionHeaderSize;
+            uint size = BitConverter.ToUInt32(bytes, section + SectionVirtualSizeOffset);
+            uint address = BitConverter.ToUInt32(bytes, section + SectionAddressOffset);
+            uint raw = BitConverter.ToUInt32(bytes, section + SectionRawDataOffset);
             if (rva >= address && rva < address + size)
                 return (int)(rva - address + raw);
         }
@@ -93,17 +126,14 @@ public static class RustonPortableExecutable
     [DllImport("kernel32.dll")]
     static extern IntPtr LockResource(IntPtr data);
 
-    // Resource 1 of type RT_MANIFEST (24) is what Windows reads at launch.
     public static string Manifest(string path)
     {
-        // LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_IMAGE_RESOURCE: never run
-        // the image, and read images built for another architecture too.
-        IntPtr module = LoadLibraryExW(path, IntPtr.Zero, 0x2 | 0x20);
+        IntPtr module = LoadLibraryExW(path, IntPtr.Zero, LoadLibraryAsDatafile | LoadLibraryAsImageResource);
         if (module == IntPtr.Zero)
             throw new IOException("could not open " + path, Marshal.GetLastWin32Error());
         try
         {
-            IntPtr resource = FindResourceW(module, (IntPtr)1, (IntPtr)24);
+            IntPtr resource = FindResourceW(module, (IntPtr)ApplicationManifestId, (IntPtr)RtManifest);
             if (resource == IntPtr.Zero) return null;
             int size = (int)SizeofResource(module, resource);
             byte[] data = new byte[size];
@@ -132,56 +162,82 @@ $executables = @(
 )
 # The C runtime is linked statically; these DLLs are not on a clean Windows.
 $runtimeLibraries = '^(vcruntime|msvcp|concrt|vccorlib|ucrtbase|api-ms-win-crt-)'
+# The supportedOS a manifest gives for Windows 10 and 11.
+$windows10Id = '{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}'
+# The value each manifest setting an executable lists must have.
+$manifestValues = @{ dpiAwareness = 'PerMonitorV2'; longPathAware = 'true'; activeCodePage = 'UTF-8' }
+
+# What it is built for: the architecture asked for.
+function Assert-Machine($Executable, $Image) {
+    if ($Image.Machine -ne $machines[$Architecture]) {
+        Stop-Verification ('{0} is built for machine 0x{1:X4}, expected {2}' -f $Executable.Name, $Image.Machine, $Architecture)
+    }
+}
+
+# The kind of program it is: a window app or a console program.
+function Assert-Subsystem($Executable, $Image) {
+    if ($Image.Subsystem -ne $Executable.Subsystem) {
+        Stop-Verification "$($Executable.Name) is not a $($Executable.Kind) (subsystem $($Image.Subsystem))"
+    }
+}
+
+# The DLLs it loads: Windows' own, never the C runtime's.
+function Assert-Imports($Executable, $Image) {
+    foreach ($library in $Image.Imports) {
+        if ($library -match $runtimeLibraries) {
+            Stop-Verification "$($Executable.Name) needs the C runtime DLL $library"
+        }
+        $apiSet = $library -match '^(api|ext)-ms-'
+        if (-not $apiSet -and -not (Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$library"))) {
+            Stop-Verification "$($Executable.Name) loads $library, which Windows does not include"
+        }
+    }
+}
+
+# The manifest Windows reads: run as the user, Windows 10 and 11, and the
+# executable's settings.
+function Assert-Manifest($Executable, [string]$Path) {
+    $text = [RustonPortableExecutable]::Manifest($Path)
+    if (-not $text) { Stop-Verification "$($Executable.Name) has no embedded manifest" }
+    $manifest = [xml]$text
+    $level = $manifest.GetElementsByTagName('requestedExecutionLevel') | Select-Object -First 1
+    if (-not $level -or $level.level -ne 'asInvoker') {
+        Stop-Verification "$($Executable.Name) does not run as the invoking user"
+    }
+    $supported = $manifest.GetElementsByTagName('supportedOS') | Where-Object { $_.Id -eq $windows10Id }
+    if (-not $supported) { Stop-Verification "$($Executable.Name) does not declare Windows 10 and 11" }
+    foreach ($setting in $Executable.Settings) {
+        $element = $manifest.GetElementsByTagName($setting) | Select-Object -First 1
+        if (-not $element -or $element.InnerText -ne $manifestValues[$setting]) {
+            Stop-Verification "$($Executable.Name) manifest lacks $setting $($manifestValues[$setting])"
+        }
+    }
+}
+
+# The version information: its package's name, version and description.
+function Assert-VersionInfo($Executable, [string]$Path) {
+    $info = (Get-Item -LiteralPath $Path).VersionInfo
+    $description = Get-CargoField (Join-Path $repository $Executable.Cargo) 'description'
+    if ($info.ProductName -ne 'Ruston Mail' -or
+        $info.ProductVersion -ne $version -or
+        $info.FileDescription -ne $Executable.Description -or
+        $info.Comments -ne $description -or
+        $info.OriginalFilename -ne $Executable.Name) {
+        Stop-Verification "$($Executable.Name) version information does not match its package ($version)"
+    }
+}
 
 foreach ($executable in $executables) {
     $path = Join-Path $Directory $executable.Name
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { Stop-Verification "Missing $path" }
     Write-Step $executable.Name
-    $image = [RustonPortableExecutable]::Read((Resolve-Path -LiteralPath $path).ProviderPath)
-
-    if ($image.Machine -ne $machines[$Architecture]) {
-        Stop-Verification ('{0} is built for machine 0x{1:X4}, expected {2}' -f $executable.Name, $image.Machine, $Architecture)
-    }
-    if ($image.Subsystem -ne $executable.Subsystem) {
-        Stop-Verification "$($executable.Name) is not a $($executable.Kind) (subsystem $($image.Subsystem))"
-    }
-
-    foreach ($library in $image.Imports) {
-        if ($library -match $runtimeLibraries) {
-            Stop-Verification "$($executable.Name) needs the C runtime DLL $library"
-        }
-        $apiSet = $library -match '^(api|ext)-ms-'
-        if (-not $apiSet -and -not (Test-Path -LiteralPath (Join-Path $env:SystemRoot "System32\$library"))) {
-            Stop-Verification "$($executable.Name) loads $library, which Windows does not include"
-        }
-    }
-
-    $text = [RustonPortableExecutable]::Manifest((Resolve-Path -LiteralPath $path).ProviderPath)
-    if (-not $text) { Stop-Verification "$($executable.Name) has no embedded manifest" }
-    $manifest = [xml]$text
-    $level = $manifest.GetElementsByTagName('requestedExecutionLevel') | Select-Object -First 1
-    if (-not $level -or $level.level -ne 'asInvoker') {
-        Stop-Verification "$($executable.Name) does not run as the invoking user"
-    }
-    $supported = $manifest.GetElementsByTagName('supportedOS') | Where-Object { $_.Id -eq '{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}' }
-    if (-not $supported) { Stop-Verification "$($executable.Name) does not declare Windows 10 and 11" }
-    $expected = @{ dpiAwareness = 'PerMonitorV2'; longPathAware = 'true'; activeCodePage = 'UTF-8' }
-    foreach ($setting in $executable.Settings) {
-        $element = $manifest.GetElementsByTagName($setting) | Select-Object -First 1
-        if (-not $element -or $element.InnerText -ne $expected[$setting]) {
-            Stop-Verification "$($executable.Name) manifest lacks $setting $($expected[$setting])"
-        }
-    }
-
-    $info = (Get-Item -LiteralPath $path).VersionInfo
-    $description = Get-CargoField (Join-Path $repository $executable.Cargo) 'description'
-    if ($info.ProductName -ne 'Ruston Mail' -or
-        $info.ProductVersion -ne $version -or
-        $info.FileDescription -ne $executable.Description -or
-        $info.Comments -ne $description -or
-        $info.OriginalFilename -ne $executable.Name) {
-        Stop-Verification "$($executable.Name) version information does not match its package ($version)"
-    }
+    $fullPath = (Resolve-Path -LiteralPath $path).ProviderPath
+    $image = [RustonPortableExecutable]::Read($fullPath)
+    Assert-Machine $executable $image
+    Assert-Subsystem $executable $image
+    Assert-Imports $executable $image
+    Assert-Manifest $executable $fullPath
+    Assert-VersionInfo $executable $path
 }
 
 # An x64 system cannot run ARM64 programs; an ARM64 one runs both.

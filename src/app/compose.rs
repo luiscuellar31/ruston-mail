@@ -5,12 +5,13 @@ use ruston_core::Quote;
 use ruston_core::mail::send::PROTECTION_LOOKUP_LIMIT;
 
 use crate::mail::{
-    BodyFormat, Domains, InternationalDomain, MailAttachment, MailMessage, MailboxError,
-    MessageBody, Outgoing, OutgoingKind, Protection, ProtectionCheck, Recipients, SendError,
-    recipients,
+    BodyFormat, Domains, InternationalDomain, MailAttachment, MailBackend, MailMessage,
+    MailboxError, MessageBody, Outgoing, OutgoingKind, Protection, ProtectionCheck, Recipients,
+    SendError, recipients,
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
+use crate::settings::ComposePlacement;
 
 pub type ComposeId = u64;
 
@@ -205,6 +206,12 @@ pub struct Compose {
     id: ComposeId,
     kind: OutgoingKind,
     answering: Option<Answering>,
+    /// The account's address it goes out from: the one chosen, or for an
+    /// answer the one the original reached. `None` leaves it to core, which
+    /// sends from the first of `senders`.
+    from: Option<String>,
+    /// The account's addresses it can go out from, in Proton's order.
+    senders: Vec<String>,
     to: String,
     cc: String,
     bcc: String,
@@ -364,6 +371,31 @@ impl Compose {
 
     pub fn showing_copies(&self) -> bool {
         self.copies_shown
+    }
+
+    /// The address the message goes out from, when the account has one.
+    pub fn sender(&self) -> Option<&str> {
+        self.from
+            .as_deref()
+            .or(self.senders.first().map(String::as_str))
+    }
+
+    /// The addresses the message can go out from, when there is a choice:
+    /// with a single address there is nothing to choose.
+    pub fn sender_choices(&self) -> &[String] {
+        if self.senders.len() > 1 {
+            &self.senders
+        } else {
+            &[]
+        }
+    }
+
+    /// Sends the message from `address`, one of the account's.
+    fn choose_sender(&mut self, address: String) {
+        if self.senders.contains(&address) {
+            self.from = Some(address);
+            self.edited();
+        }
     }
 
     pub fn confirming_discard(&self) -> bool {
@@ -569,6 +601,7 @@ impl Compose {
         self.check()?;
         Ok(Outgoing {
             kind: self.kind.clone(),
+            from: self.from.clone(),
             to: self.typed.to.accepted.clone(),
             cc: self.typed.cc.accepted.clone(),
             bcc: self.typed.bcc.accepted.clone(),
@@ -625,6 +658,21 @@ pub(super) struct ParkedDraft {
 impl App {
     pub fn compose(&self) -> Option<&Compose> {
         self.compose.as_ref()
+    }
+
+    /// Whether a draft fills the reading pane; a folded one leaves the reader
+    /// in view.
+    pub(super) fn draft_covers_reader(&self) -> bool {
+        self.compose
+            .as_ref()
+            .is_some_and(|compose| !compose.folded())
+            && self.settings.compose_placement == ComposePlacement::ReadingPane
+    }
+
+    /// A draft in its own window takes that window's Escape and Send keys;
+    /// the keys `handle_key` takes come from the mailbox window.
+    pub(super) fn draft_in_window(&self) -> bool {
+        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
     }
 
     /// Whether a message waits for its account to sign in again.
@@ -712,10 +760,35 @@ impl App {
         let id = self.next_compose_id();
         self.compose = Some(Compose {
             id,
+            senders: self.sender_addresses(),
             domains: self.settings.recipient_domains(),
             ..Compose::default()
         });
         Effects::none()
+    }
+
+    /// The account's addresses a draft can go out from, in Proton's order.
+    fn sender_addresses(&self) -> Vec<String> {
+        self.backend
+            .as_ref()
+            .map(MailBackend::addresses)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|address| address.email)
+            .collect()
+    }
+
+    /// The account's address an answer to `message` goes out from unless
+    /// another is chosen, as core picks it: the one the message reached, or
+    /// went out from. `None` when mail cannot go out from that address, and
+    /// core sends from the first.
+    fn answer_sender(&self, message: &MailMessage) -> Option<String> {
+        self.backend
+            .as_ref()?
+            .addresses()
+            .into_iter()
+            .find(|address| address.id == message.address_id)
+            .map(|address| address.email)
     }
 
     /// One message is written at a time: asking for another leaves the open
@@ -752,13 +825,19 @@ impl App {
         // Read what the composer shows while the reader still holds the
         // message, rather than copying its decrypted body and attachments.
         let answering = answering_for(kind, message, reader.detail().subject.as_deref());
-        self.open_answer(kind.outgoing(message_id), answering)
+        let from = self.answer_sender(message);
+        self.open_answer(kind.outgoing(message_id), answering, from)
     }
 
     /// Answers or forwards a message. A reply opens addressed to whom core
     /// would answer, in fields the writer may change, Cc on show when Reply
     /// all copies anyone in.
-    fn open_answer(&mut self, kind: OutgoingKind, answering: Answering) -> Effects {
+    fn open_answer(
+        &mut self,
+        kind: OutgoingKind,
+        answering: Answering,
+        from: Option<String>,
+    ) -> Effects {
         if self.compose.is_some() {
             return self.ask_for_another_message();
         }
@@ -768,6 +847,8 @@ impl App {
             id,
             kind,
             answering: Some(answering),
+            from,
+            senders: self.sender_addresses(),
             copies_shown: !cc.is_empty(),
             opened_to: to.clone(),
             opened_cc: cc.clone(),
@@ -818,6 +899,13 @@ impl App {
     pub(super) fn change_compose(&mut self, field: ComposeField, value: String) {
         if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
             compose.set(field, value);
+        }
+    }
+
+    /// Sends the draft from another of the account's addresses.
+    pub(super) fn choose_compose_sender(&mut self, address: String) {
+        if let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) {
+            compose.choose_sender(address);
         }
     }
 
@@ -979,6 +1067,11 @@ impl App {
     pub(super) fn send_compose(&mut self) -> Effects {
         let epoch = self.session_epoch;
         let format = self.settings.compose_format;
+        // Without a mailbox to send through, the message stays as written: on
+        // its way, it could no longer be edited, sent again or closed.
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
         let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) else {
             return Effects::none();
         };
@@ -988,9 +1081,6 @@ impl App {
         };
         compose.state = Sending::InFlight;
 
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
         Effects::perform(
             async move { backend.send(&outgoing).await },
             move |result| Message::Sent(epoch, result),
@@ -1013,7 +1103,7 @@ impl App {
             // landed in catches up.
             Ok(()) => {
                 self.compose = None;
-                self.notice = Some(super::Notice::Sent);
+                self.session.notice = Some(super::Notice::Sent);
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.invalidate_listings();
                     mailbox.invalidate_reader_cache();

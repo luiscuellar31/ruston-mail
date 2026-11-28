@@ -47,7 +47,9 @@ cargo run
 Remove-Item Env:RUSTON_DEMO
 ```
 
-Sent demo messages stay inside the process and disappear when it exits.
+The demo account has a folder and three labels of its own, so moving and
+labeling can be tried there. Sent demo messages, like every change, stay inside
+the process and disappear when it exits.
 Demo preferences are kept in `settings-demo.json`, apart from your own.
 **Exit demo** closes the fictional mailbox, but a process started in demo mode
 refuses to sign in, and to open email links once its mailbox is closed. Close it
@@ -105,7 +107,10 @@ and `ruston-cli.exe` and checks them with
 architecture, that the desktop is a window app and the CLI a console program,
 that they load only DLLs Windows includes, their manifest, and their version
 information against each package. This catches a missing resource or C
-runtime. Then [`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts
+runtime. [`test-mailto-registration.ps1`](../packaging/windows/test-mailto-registration.ps1)
+registers it as a `mailto` handler twice and unregisters it, checking that
+other apps' registrations and the default email app stay as they were. Then
+[`smoke-test.ps1`](../packaging/windows/smoke-test.ps1) starts
 the desktop once: runners have no GPU, so its window must open and draw with
 WARP, as in a virtual machine.
 A Windows-only test also sets and reads back the process AppUserModelID through
@@ -136,11 +141,11 @@ cargo test --locked --workspace --all-features
 For mailbox layout changes, also check a 480×420 window, the smallest the app
 allows, and an 820×480 one at interface scales
 of 100%, 150%, 175%, and 200% in both themes. At high scales, use Folders/Mail/
-Reading to navigate the compact view, scroll to the sidebar's final label,
+Reader to navigate the compact view, scroll to the sidebar's final label,
 verify Settings/sign-out stay accessible, open a conversation, and write a
 draft with Cc/Bcc and attachments. Grow and shrink the window while preserving
-the open message, draft, and list position. Verify that unsaved Settings changes still require
-a decision when leaving. Run these checks on macOS and Linux as well; automated
+the open message, draft, and list position. Verify that a Settings change takes
+effect as it is made. Run these checks on macOS and Linux as well; automated
 egui geometry/input tests cover clipping and navigation, while native smoke
 checks cover compositor and platform behavior.
 
@@ -190,7 +195,8 @@ try {
   by default and with OpenGL when DirectX 12 fails or this variable asks for
   it. Check the separate composer with both. Where available, check a virtual
   machine or Remote Desktop session without a GPU, where DirectX 12 runs on
-  WARP, Windows' software renderer.
+  WARP, Windows' software renderer. On macOS the default is Metal: repeat the
+  window checks there with `RUSTON_RENDERER=opengl` too.
 - Switch between light and dark appearance, resize the panes, close the app,
   and reopen it. Verify that applied appearance and settled sizes are restored.
 - With Windows in the other app mode, verify that the title bars of the main
@@ -278,12 +284,11 @@ mail is needed. Record OS/build, display scaling, application zoom, and package.
 - Check **Settings…** in the application menu and **File > New Message** with
   their keyboard equivalents, from both windows and with the mailbox minimized.
   Preserve About, Services, Hide, and Quit. New Message must keep an existing
-  draft; dirty Settings must still ask before navigating. Mail commands must be
+  draft, and leaves Settings without asking. Mail commands must be
   disabled while signed out or a confirmation/native file dialog is open.
 - In both composer placements, write a draft, close the main window, repeat the
   close request, cancel, and confirm discard. Test menu Quit and Cmd+Q too.
-  Escape/backdrop dismissal must preserve the draft. Repeat with unapplied
-  Settings changes, choosing each Settings decision before resolving the draft.
+  Escape/backdrop dismissal must preserve the draft. Repeat from Settings.
 - While a demo send is pending, close requests must be cancelled; a failed send
   must preserve its message. An untouched composer may close without a prompt.
   Confirm file dialogs block closing until they complete. Repeat window close
@@ -417,10 +422,11 @@ rm assets/macos/ruston-mail.icns   # the next package.sh run rebuilds it
 
 ## README screenshots
 
-The README shows the main window from `assets/screenshots/`: the demo's inbox
-with a conversation open, dark and light, as macOS draws the window, with its
-rounded corners, colored buttons and shadow. When the window looks different,
-take them again on a Mac with a Retina display:
+The README shows the app from `assets/screenshots/`: the demo's inbox with a
+conversation open, Settings, and a message being written, each dark and light,
+as macOS draws the window, with its rounded corners, colored buttons and
+shadow. When one of them looks different, take them again on a Mac with a
+Retina display:
 
 ```sh
 packaging/readme-screenshots.sh
@@ -429,11 +435,16 @@ packaging/readme-screenshots.sh
 It builds the app with the `readme-screenshots` feature, which no release turns
 on, in `target/readme-screenshots`, and starts the demo with a home directory of
 its own, so your settings stay as they are. The window takes the README's size,
-opens the conversation beside a sample folder and labels (the demo has none of
-its own), saves itself dark and then light with `screencapture`, keeping only
-each PNG's picture and color, and closes; the script then copies both over the
-old ones. Leave the window in front until it closes: one without focus shows
-gray buttons, and the script gives up after two minutes.
+opens the conversation, and saves itself dark and then light with
+`screencapture`, keeping only each PNG's picture and color. It does the same
+for Settings and for a message being written, going back to the inbox before
+each, and closes; the script then copies the six files over the old ones.
+Leave the window in front until it closes: one without focus shows gray
+buttons, and the script gives up after two minutes.
+
+`terminal.png`, the terminal interface, is taken by hand: run
+`ruston-cli --demo tui` in a terminal of 112 columns and 32 rows, open a
+conversation, and capture the window with Shift-Command-4 and then Space.
 
 ## Desktop installation (Linux)
 
@@ -480,7 +491,7 @@ not establish how a particular desktop shell displays them.
 ## Typography and local font coverage
 
 The existing bundled face remains the default. To compare, enable **Use system
-interface font** under Settings → Interface and Apply; disabling it restores
+interface font** under Settings → Appearance; disabling it restores
 the bundled typography. Sizes and monospace primary stay unchanged. System
 language fallbacks are active in both modes, depending on installed fonts.
 

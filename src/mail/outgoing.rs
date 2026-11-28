@@ -77,6 +77,9 @@ pub type ProtectionCheck = (String, Result<Protection, MailboxError>);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Outgoing {
     pub kind: OutgoingKind,
+    /// The account's address it goes out from; `None` leaves the choice to
+    /// core.
+    pub from: Option<String>,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -225,6 +228,7 @@ mod tests {
     fn message(body: &str, format: BodyFormat) -> Outgoing {
         Outgoing {
             kind: OutgoingKind::New,
+            from: None,
             to: Vec::new(),
             cc: Vec::new(),
             bcc: Vec::new(),

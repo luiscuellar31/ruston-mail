@@ -23,10 +23,9 @@ use crate::cache::CacheIdentity;
 use crate::crypto::keys::KeyStore;
 use crate::error::{Error, Result};
 use crate::model::enums::key_flag;
-use crate::session::{Paths, SecretStore};
+use crate::session::ProfileStorage;
 use crate::transport::HttpClient;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -79,11 +78,10 @@ impl SenderKeyCache {
 pub struct Client {
     http: HttpClient,
     keys: KeyStore,
-    paths: Paths,
-    profile: String,
+    /// Where the session it runs on is saved.
+    storage: ProfileStorage,
     session_uid: String,
     cache_identity: CacheIdentity,
-    store: Arc<dyn SecretStore>,
     sender_cache: Mutex<SenderKeyCache>,
 }
 
@@ -96,9 +94,13 @@ impl Client {
     }
 
     /// The email of the account's primary address, which new mail is sent
-    /// from unless another is chosen.
+    /// from unless another is chosen; the first address when mail can go out
+    /// from none, which still names the account.
     pub fn primary_email(&self) -> Option<&str> {
-        self.keys.primary_address().map(|a| a.email.as_str())
+        self.keys
+            .primary_address()
+            .or_else(|| self.keys.addresses.first())
+            .map(|a| a.email.as_str())
     }
 
     /// The ID of the Proton account this client is signed in to. It stays the

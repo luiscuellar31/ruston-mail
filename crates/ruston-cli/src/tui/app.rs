@@ -182,6 +182,32 @@ pub(crate) enum Question {
     },
 }
 
+/// The names Tab offers after a command, by what the command takes.
+#[derive(Default)]
+struct Completions {
+    /// Every place's, after `:folder` and a search's `in:`.
+    places: Vec<String>,
+    /// Those of the folders a conversation can move to, after `:move`.
+    moves: Vec<String>,
+    /// Those of the labels, after `:label`.
+    labels: Vec<String>,
+    /// Those of the labels the conversations acted on bear, after `:unlabel`.
+    borne: Vec<String>,
+}
+
+impl Completions {
+    /// What Tab offers after `command`.
+    fn after(&self, command: &str) -> Vec<String> {
+        match command {
+            "folder" | "in:" => self.places.clone(),
+            "move" => self.moves.clone(),
+            "label" => self.labels.clone(),
+            "unlabel" => self.borne.clone(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// What the interface shows and where the keys go.
 pub(crate) struct App {
     /// Whose mail this is, for the status bar.
@@ -944,15 +970,8 @@ impl App {
             KeyCode::Down => line.recall(&self.history, false),
             KeyCode::Tab | KeyCode::BackTab => {
                 let backwards = key.code == KeyCode::BackTab;
-                let (places, folders, labels, their_labels) = completions.unwrap_or_default();
-                let after = |command: &str| match command {
-                    "folder" | "in:" => places.clone(),
-                    "move" => folders.clone(),
-                    "label" => labels.clone(),
-                    "unlabel" => their_labels.clone(),
-                    _ => Vec::new(),
-                };
-                line.complete(after, backwards);
+                let completions = completions.unwrap_or_default();
+                line.complete(|command| completions.after(command), backwards);
             }
             KeyCode::Char(c) if !shortcut => line.type_char(c),
             _ => {}
@@ -960,11 +979,8 @@ impl App {
         Vec::new()
     }
 
-    /// The names Tab offers after `:folder` and a search's `in:`, every
-    /// place's, after `:move`, those of the folders a conversation can move
-    /// to, after `:label`, those of the labels, and after `:unlabel`, those
-    /// of the labels the conversations acted on bear.
-    fn completions(&self) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    /// The names Tab offers now, by the command they complete.
+    fn completions(&self) -> Completions {
         let names = |takes: fn(&Place) -> bool| -> Vec<String> {
             self.places
                 .iter()
@@ -972,12 +988,12 @@ impl App {
                 .map(|place| place.name.clone())
                 .collect()
         };
-        (
-            names(|_| true),
-            names(takes_moves),
-            names(|place| place.kind == PlaceKind::Label),
-            self.label_names(&self.targets()),
-        )
+        Completions {
+            places: names(|_| true),
+            moves: names(takes_moves),
+            labels: names(|place| place.kind == PlaceKind::Label),
+            borne: self.label_names(&self.targets()),
+        }
     }
 
     /// The names of the labels any of `conversations` bears, in the order

@@ -1,7 +1,7 @@
 //! Mailbox keyboard shortcuts. The UI only reports raw key presses.
 
-use super::{App, Effects, Mailbox, Step, UiEffect};
-use crate::settings::ComposePlacement;
+use super::{AnswerKind, App, Effects, Mailbox, ReaderState, SettingsSection, Step, UiEffect};
+use crate::mail::{Folder, ListFilter, MailAction, MailFolder};
 
 /// What a key press means to the mailbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,11 +21,30 @@ enum Shortcut {
     ToggleSettings,
     Compose,
     Send,
-    Trash,
+    /// Move the conversations acted on to one of Proton's folders.
+    MoveTo(MailFolder),
+    /// Mark the conversations acted on as read, or reply to the open one
+    /// when they are read already.
+    ReadOrReply,
+    MarkUnread,
+    /// Star the conversations acted on, or take the star from them when
+    /// every one has it.
+    Star,
+    /// Answer the newest message of the open conversation.
+    Answer(AnswerKind),
+    /// List only the conversations a filter keeps.
+    Show(ListFilter),
+    /// Take back the move the list still offers to undo.
+    Undo,
+    /// Show the list of these keys.
+    Help,
+    /// Fold the sidebar into its strip of icons, or unfold it.
+    ToggleSidebar,
 }
 
-/// The meaning of a key press, or `None` when it is not a shortcut. Plain
-/// keys carry no modifiers, so typing never moves the mailbox underneath.
+/// The meaning of a key press, or `None` when it is not a shortcut. The
+/// letters alone are Proton Mail's own, which the terminal interface takes
+/// too; the window sends one only while no text field has the keyboard.
 fn shortcut(press: KeyPress) -> Option<Shortcut> {
     if press.command {
         return match press.key {
@@ -34,8 +53,9 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
             Key::Character(',') => Some(Shortcut::ToggleSettings),
             Key::Character('n') => Some(Shortcut::Compose),
             Key::Character('a') => Some(Shortcut::SelectAll),
+            Key::Character('z') => Some(Shortcut::Undo),
             Key::Enter => Some(Shortcut::Send),
-            Key::Backspace | Key::Delete => Some(Shortcut::Trash),
+            Key::Backspace | Key::Delete => Some(Shortcut::MoveTo(MailFolder::Trash)),
             _ => None,
         };
     }
@@ -43,6 +63,10 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
         return match press.key {
             Key::ArrowDown => Some(Shortcut::Extend(Step::Next)),
             Key::ArrowUp => Some(Shortcut::Extend(Step::Previous)),
+            Key::Character('r') => Some(Shortcut::Answer(AnswerKind::ReplyAll)),
+            Key::Character('f') => Some(Shortcut::Answer(AnswerKind::Forward)),
+            Key::Character('u') => Some(Shortcut::Show(ListFilter::Unread)),
+            Key::Character('a') => Some(Shortcut::Show(ListFilter::All)),
             _ => None,
         };
     }
@@ -55,7 +79,17 @@ fn shortcut(press: KeyPress) -> Option<Shortcut> {
         Key::ArrowUp | Key::Character('k') => Some(Shortcut::Move(Step::Previous)),
         Key::Enter => Some(Shortcut::Open),
         Key::Escape => Some(Shortcut::Dismiss),
-        Key::Delete => Some(Shortcut::Trash),
+        Key::Character('n') => Some(Shortcut::Compose),
+        Key::Character('/') => Some(Shortcut::Search),
+        Key::Character('r') => Some(Shortcut::ReadOrReply),
+        Key::Character('u') => Some(Shortcut::MarkUnread),
+        Key::Character('*') => Some(Shortcut::Star),
+        Key::Character('i') => Some(Shortcut::MoveTo(MailFolder::Inbox)),
+        Key::Character('a') => Some(Shortcut::MoveTo(MailFolder::Archive)),
+        Key::Character('s') => Some(Shortcut::MoveTo(MailFolder::Spam)),
+        Key::Delete | Key::Character('t') => Some(Shortcut::MoveTo(MailFolder::Trash)),
+        Key::Character('?') => Some(Shortcut::Help),
+        Key::F9 => Some(Shortcut::ToggleSidebar),
         _ => None,
     }
 }
@@ -69,6 +103,7 @@ pub enum Key {
     Escape,
     Backspace,
     Delete,
+    F9,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,17 +142,6 @@ impl KeyPress {
         }
     }
 
-    /// Whether this key leaves Settings: the one that backs out of what is
-    /// on top, or the one that opens them. The window asks before leaving
-    /// unapplied changes, and reads it here so that it asks for every key
-    /// the mailbox takes to leave.
-    pub fn leaves_settings(self) -> bool {
-        matches!(
-            shortcut(self),
-            Some(Shortcut::Dismiss | Shortcut::ToggleSettings)
-        )
-    }
-
     /// Whether this key opens the selected conversation.
     pub fn opens_conversation(self) -> bool {
         shortcut(self) == Some(Shortcut::Open)
@@ -125,29 +149,15 @@ impl KeyPress {
 }
 
 impl App {
-    /// Whether a draft fills the reading pane; a folded one leaves the reader
-    /// in view.
-    pub(super) fn draft_covers_reader(&self) -> bool {
-        self.compose
-            .as_ref()
-            .is_some_and(|compose| !compose.folded())
-            && self.settings.compose_placement == ComposePlacement::ReadingPane
-    }
-
-    /// A draft in its own window takes that window's Escape and Send keys;
-    /// the keys handled here come from the mailbox window.
-    pub(super) fn draft_in_window(&self) -> bool {
-        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
-    }
-
     pub(super) fn handle_key(&mut self, press: KeyPress) -> Effects {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
         };
-        // Settings blocks mailbox shortcuts except Escape and its toggle;
-        // link prompts allow only Escape.
-        let shortcut_blocked = (self.showing_settings && shortcut != Shortcut::ToggleSettings)
-            || self.pending_link.is_some();
+        // Settings blocks mailbox shortcuts except Escape, its toggle and the
+        // sidebar's, which stays beside it; link prompts allow only Escape.
+        let shortcut_blocked = (self.showing_settings
+            && !matches!(shortcut, Shortcut::ToggleSettings | Shortcut::ToggleSidebar))
+            || self.session.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
         }
@@ -159,6 +169,20 @@ impl App {
             Shortcut::Move(_) | Shortcut::Extend(_) | Shortcut::SelectAll | Shortcut::Open
         ) && self.draft_covers_reader()
         {
+            return Effects::none();
+        }
+
+        // A draft being written keeps the conversation behind it as it is; the
+        // one a folded draft leaves in view can change.
+        let acts_on_rows = matches!(
+            shortcut,
+            Shortcut::MoveTo(_)
+                | Shortcut::ReadOrReply
+                | Shortcut::MarkUnread
+                | Shortcut::Star
+                | Shortcut::Answer(_)
+        );
+        if acts_on_rows && self.compose().is_some_and(|compose| !compose.folded()) {
             return Effects::none();
         }
 
@@ -200,42 +224,7 @@ impl App {
 
                 self.select_conversation(selected)
             }
-            // One layer at a time, starting with the most recent.
-            Shortcut::Dismiss => {
-                // The link prompt is a dialog over the whole window.
-                if self.pending_link.take().is_some() {
-                    return Effects::none();
-                }
-                // Leave settings before touching a message still open behind it.
-                if self.showing_settings {
-                    self.showing_settings = false;
-                    return Effects::none();
-                }
-                // In-flight messages cannot be dismissed, and a folded draft
-                // leaves the key to the reader it shows.
-                if self.draft_covers_reader()
-                    && let Some(compose) = self.compose().filter(|c| !c.in_flight())
-                {
-                    if compose.confirming_discard() {
-                        self.cancel_discard();
-                    } else {
-                        self.close_compose();
-                    }
-                    return Effects::none();
-                }
-                if let Some(mailbox) = self.active_mailbox() {
-                    if mailbox.clear_selection() {
-                        return Effects::none();
-                    }
-                    if mailbox.has_search_text() {
-                        mailbox.set_search_query(String::new());
-                    } else {
-                        mailbox.close_reader();
-                    }
-                }
-
-                Effects::none()
-            }
+            Shortcut::Dismiss => self.dismiss(),
             Shortcut::Refresh => self.refresh_mailbox(),
             Shortcut::Search => Effects::ui(UiEffect::FocusSearch),
             Shortcut::ToggleSettings => {
@@ -249,18 +238,119 @@ impl App {
                 }
                 Effects::none()
             }
-            Shortcut::Trash => {
-                // The conversation a folded draft leaves in view can go.
-                if self.compose().is_some_and(|compose| !compose.folded()) {
-                    return Effects::none();
+            Shortcut::MoveTo(folder) => self.move_by_key(folder),
+            Shortcut::ReadOrReply => {
+                if self.rows_acted_on().iter().any(|row| row.unread) {
+                    self.apply_action(MailAction::SetUnread(false))
+                } else {
+                    self.answer_open(AnswerKind::Reply)
                 }
-                let trash = crate::mail::Folder::System(crate::mail::MailFolder::Trash);
-                if self.mailbox().is_some_and(|m| m.folder() == &trash) {
-                    return Effects::none();
-                }
-                self.apply_action(crate::mail::MailAction::MoveTo(trash))
+            }
+            Shortcut::MarkUnread => self.apply_action(MailAction::SetUnread(true)),
+            Shortcut::Star => {
+                let starred = self.rows_acted_on().iter().all(|row| row.starred);
+                self.apply_action(MailAction::SetStarred(!starred))
+            }
+            Shortcut::Answer(kind) => self.answer_open(kind),
+            Shortcut::Show(filter) => self.show_only(filter),
+            Shortcut::Undo => self.undo_move(),
+            Shortcut::Help => {
+                self.showing_settings = true;
+                self.settings_section = SettingsSection::Keyboard;
+                Effects::none()
+            }
+            Shortcut::ToggleSidebar => {
+                self.remember(|settings| settings.sidebar_folded = !settings.sidebar_folded);
+                Effects::none()
             }
         }
+    }
+
+    /// The rows a key acts on: those chosen together, or else the open one.
+    fn rows_acted_on(&self) -> Vec<&crate::mail::ConversationSummary> {
+        self.mailbox()
+            .map(Mailbox::summaries_acted_on)
+            .unwrap_or_default()
+    }
+
+    /// Moves the rows acted on to `folder`, as the reader's buttons would:
+    /// none that is already there, and none of the account's own mail to the
+    /// Inbox, which Proton keeps out of it.
+    fn move_by_key(&mut self, folder: MailFolder) -> Effects {
+        let destination = Folder::System(folder);
+        let Some(mailbox) = self.mailbox() else {
+            return Effects::none();
+        };
+        let own_mail = matches!(
+            mailbox.folder().system(),
+            Some(MailFolder::Sent | MailFolder::Drafts)
+        );
+        if mailbox.folder() == &destination || (folder == MailFolder::Inbox && own_mail) {
+            return Effects::none();
+        }
+        let rows = mailbox
+            .rows_acted_on()
+            .into_iter()
+            .filter(|row| mailbox.location_of(row) != Some(&destination))
+            .collect();
+        self.apply_to_rows(rows, MailAction::MoveTo(destination))
+    }
+
+    /// Answers the newest message of the conversation the reader shows.
+    fn answer_open(&mut self, kind: AnswerKind) -> Effects {
+        let Some(mailbox) = self.mailbox() else {
+            return Effects::none();
+        };
+        // Rows chosen together take the reader's place.
+        if !mailbox.selected_rows().is_empty() {
+            return Effects::none();
+        }
+        let ReaderState::Loaded(reader) = mailbox.reader_state() else {
+            return Effects::none();
+        };
+        let Some(newest) = reader.detail().messages.last() else {
+            return Effects::none();
+        };
+        let newest = newest.id.clone();
+        self.answer(&newest, kind)
+    }
+
+    /// What Escape does: it takes away one layer at a time, starting with the
+    /// most recent.
+    fn dismiss(&mut self) -> Effects {
+        // The link prompt is a dialog over the whole window.
+        if self.session.pending_link.take().is_some() {
+            return Effects::none();
+        }
+        // Leave settings before touching a message still open behind it.
+        if self.showing_settings {
+            self.showing_settings = false;
+            return Effects::none();
+        }
+        // In-flight messages cannot be dismissed, and a folded draft
+        // leaves the key to the reader it shows.
+        if self.draft_covers_reader()
+            && let Some(compose) = self.compose().filter(|c| !c.in_flight())
+        {
+            if compose.confirming_discard() {
+                self.cancel_discard();
+            } else {
+                self.close_compose();
+            }
+            return Effects::none();
+        }
+        if let Some(mailbox) = self.active_mailbox() {
+            if mailbox.clear_selection() {
+                return Effects::none();
+            }
+            if mailbox.has_search_text() {
+                mailbox.set_search_query(String::new());
+            } else {
+                mailbox.close_reader();
+            }
+        }
+
+        Effects::none()
     }
 }
 
@@ -271,11 +361,6 @@ mod tests {
     #[test]
     fn the_window_reads_what_a_key_means_from_the_same_table() {
         let (plain, command) = (KeyPress::plain, KeyPress::with_command);
-        // What leaves Settings, which the window asks about first.
-        assert!(plain(Key::Escape).leaves_settings());
-        assert!(command(Key::Character(',')).leaves_settings());
-        assert!(!plain(Key::Character(',')).leaves_settings());
-        assert!(!command(Key::Escape).leaves_settings());
         // What opens a conversation, which a narrow window then shows.
         assert!(plain(Key::Enter).opens_conversation());
         assert!(!command(Key::Enter).opens_conversation());
@@ -284,19 +369,33 @@ mod tests {
             ..plain(Key::Enter)
         };
         assert!(!held.opens_conversation());
-        // Neither can drift from the mailbox: a key it takes to back out
-        // leaves Settings, whichever key that comes to be.
-        for key in [Key::Escape, Key::Enter, Key::Delete, Key::Character('j')] {
-            for press in [plain(key), command(key)] {
-                assert_eq!(
-                    press.leaves_settings(),
-                    matches!(
-                        shortcut(press),
-                        Some(Shortcut::Dismiss | Shortcut::ToggleSettings)
-                    ),
-                    "{press:?}"
-                );
-            }
+    }
+
+    #[test]
+    fn protons_single_keys_are_shortcuts() {
+        let key = |letter| shortcut(KeyPress::plain(Key::Character(letter)));
+        let shifted = |letter| shortcut(KeyPress::with_shift(Key::Character(letter)));
+        assert_eq!(key('n'), Some(Shortcut::Compose));
+        assert_eq!(key('/'), Some(Shortcut::Search));
+        assert_eq!(key('r'), Some(Shortcut::ReadOrReply));
+        assert_eq!(key('u'), Some(Shortcut::MarkUnread));
+        assert_eq!(key('*'), Some(Shortcut::Star));
+        assert_eq!(key('?'), Some(Shortcut::Help));
+        for (letter, folder) in [
+            ('i', MailFolder::Inbox),
+            ('a', MailFolder::Archive),
+            ('s', MailFolder::Spam),
+            ('t', MailFolder::Trash),
+        ] {
+            assert_eq!(key(letter), Some(Shortcut::MoveTo(folder)), "{letter}");
+        }
+        assert_eq!(shifted('r'), Some(Shortcut::Answer(AnswerKind::ReplyAll)));
+        assert_eq!(shifted('f'), Some(Shortcut::Answer(AnswerKind::Forward)));
+        assert_eq!(shifted('u'), Some(Shortcut::Show(ListFilter::Unread)));
+        assert_eq!(shifted('a'), Some(Shortcut::Show(ListFilter::All)));
+        // Proton's keys Ruston Mail has nothing for.
+        for letter in ['g', 'm', 'l', 'x', 'o', 'f'] {
+            assert_eq!(key(letter), None, "{letter}");
         }
     }
 
@@ -333,12 +432,11 @@ mod tests {
         for key in [Key::Character('j'), Key::Enter, Key::Escape, Key::Delete] {
             assert_eq!(shortcut(shift(key)), None, "{key:?}");
         }
-        // Command and A choose every conversation listed; A alone is nothing.
+        // Command and A choose every conversation listed.
         assert_eq!(
             shortcut(command(Key::Character('a'))),
             Some(Shortcut::SelectAll)
         );
-        assert_eq!(shortcut(plain(Key::Character('a'))), None);
         assert_eq!(
             shortcut(command(Key::Character('r'))),
             Some(Shortcut::Refresh)
@@ -356,15 +454,19 @@ mod tests {
             Some(Shortcut::Compose)
         );
         assert_eq!(shortcut(command(Key::Enter)), Some(Shortcut::Send));
-        assert_eq!(shortcut(command(Key::Backspace)), Some(Shortcut::Trash));
-        assert_eq!(shortcut(command(Key::Delete)), Some(Shortcut::Trash));
-        assert_eq!(shortcut(plain(Key::Delete)), Some(Shortcut::Trash));
+        let trash = Some(Shortcut::MoveTo(MailFolder::Trash));
+        assert_eq!(shortcut(command(Key::Backspace)), trash);
+        assert_eq!(shortcut(command(Key::Delete)), trash);
+        assert_eq!(shortcut(plain(Key::Delete)), trash);
+        assert_eq!(shortcut(command(Key::Character('z'))), Some(Shortcut::Undo));
+        assert_eq!(shortcut(plain(Key::F9)), Some(Shortcut::ToggleSidebar));
 
         // A modifier turns a plain shortcut into somebody else's business.
         assert_eq!(shortcut(command(Key::Character('j'))), None);
         assert_eq!(shortcut(command(Key::ArrowDown)), None);
-        assert_eq!(shortcut(plain(Key::Character('r'))), None);
         assert_eq!(shortcut(plain(Key::Character('z'))), None);
         assert_eq!(shortcut(plain(Key::Backspace)), None);
+        assert_eq!(shortcut(command(Key::F9)), None);
+        assert_eq!(shortcut(shift(Key::F9)), None);
     }
 }

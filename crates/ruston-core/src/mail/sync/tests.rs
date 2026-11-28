@@ -76,32 +76,16 @@ fn full_message(meta: MessageMetadata) -> FullMessage {
 #[tokio::test]
 async fn indexing_reads_bodies_without_looking_up_sender_keys() {
     use crate::crypto::{AddressKeys, StoredKey};
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
     use secrecy::SecretString;
 
     let server = MockServer::start().await;
     let provider = crate::crypto::provider();
-    let key = provider
-        .new_key_generator()
-        .with_user_id("Test", "me@proton.me")
-        .with_algorithm(KeyGeneratorAlgorithm::ECC)
-        .generate()
-        .unwrap();
-    let armored = String::from_utf8(
-        provider
-            .private_key_export(&key, "pass", DataEncoding::Armor)
-            .unwrap()
-            .as_ref()
-            .to_vec(),
-    )
-    .unwrap();
     let address = AddressKeys {
         address_id: "address".into(),
         email: "me@proton.me".into(),
+        can_send: true,
         keys: vec![StoredKey {
-            armored,
+            armored: crate::crypto::test_support::test_key("me@proton.me", "pass").private,
             passphrase: SecretString::from("pass"),
             unlocked: None,
         }],
@@ -152,8 +136,9 @@ async fn indexing_reads_bodies_without_looking_up_sender_keys() {
 
 #[test]
 fn a_saved_account_s_cache_opens_without_contacting_proton() {
-    use crate::session::{MemoryStore, Tokens};
+    use crate::session::{MemoryStore, Paths, Session, Tokens};
     use secrecy::SecretString;
+    use std::sync::Arc;
 
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let base = std::env::temp_dir().join(format!(
@@ -169,8 +154,11 @@ fn a_saved_account_s_cache_opens_without_contacting_proton() {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(&cache_dir).unwrap();
-    let paths = Paths::with_base(base.join("config"));
-    let store = MemoryStore::new();
+    let storage = ProfileStorage::new(
+        Paths::with_base(base.join("config")),
+        "default",
+        Arc::new(MemoryStore::new()),
+    );
     let save = |user_id: &str| {
         let session = Session {
             uid: "UID1".into(),
@@ -185,24 +173,11 @@ fn a_saved_account_s_cache_opens_without_contacting_proton() {
             access: SecretString::from("acc"),
             refresh: SecretString::from("ref"),
         };
-        session
-            .save(
-                &paths,
-                "default",
-                &store,
-                &tokens,
-                &SecretString::from("skp"),
-            )
+        storage
+            .save(&session, &tokens, &SecretString::from("skp"))
             .unwrap();
     };
-    let open = || {
-        LocalCache::open_saved(
-            &paths,
-            &store,
-            "default",
-            |_| Ok(cache_dir.join("cache.db")),
-        )
-    };
+    let open = || LocalCache::open_saved(&storage, |_| Ok(cache_dir.join("cache.db")));
 
     // Signed out, there is no account to read.
     assert!(matches!(open(), Err(Error::Unauthorized)));

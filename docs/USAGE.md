@@ -7,9 +7,12 @@ place, and on Windows and Linux whether it was maximized. A place on a screen
 that is no longer connected is not reused.
 
 When a small window or a high interface scale leaves too little room for all
-three panes, the app shows one pane at a time. The window can be as narrow as
+three panes, the app shows one pane at a time. The reader keeps at least 410
+points, room for its buttons on one line, so the three panes need a window of
+about 812 points, or about 663 with the sidebar folded into its strip; dragging
+a divider never narrows the reader past that either. The window can be as narrow as
 480 points, so it fits half a laptop screen in this mode. Use **Folders**, **Mail**, and
-**Reading** at the top to move between them; **Reading** becomes **Message**
+**Reader** at the top to move between them; **Reader** becomes **Message**
 while writing in the reading pane. Opening a conversation switches to its
 content, and the search shortcut returns to **Mail**. Widening the window or
 reducing the interface scale brings back the three panes and their saved widths.
@@ -57,7 +60,7 @@ accounts: choose another to switch
 to it, or **Add account** to sign in to one more. The others keep their
 sessions saved, as a restart does, and check no mail and send no notifications
 until you open them. Each opens in the folder you last read in it, unless
-**Starting up** in Settings names one for all. Switching opens the other account's saved session; if it
+**Folder at start**, under Settings → General, names one for all. Switching opens the other account's saved session; if it
 has ended, you sign in to that account again, with its address filled in. The
 sign-in screen lists your other accounts, so you can open one instead, when
 adding an account or when one's session has ended, even as Ruston starts;
@@ -84,14 +87,26 @@ in the color it has in Proton. Unread counts update as mail changes. If your fol
 cannot be loaded, the open folder stays open and the next refresh tries again.
 Folders and labels scroll independently when they do not fit. The account,
 Settings, and sign-out actions remain at the bottom of the sidebar.
+The button beside **Ruston Mail** folds the sidebar into a strip of icons and
+gives its room to the reader: **New message**, Proton's folders, each with a
+dot while it holds unread mail, your folders and your labels behind a menu
+each, and **Settings** at the foot; each says its name when the pointer rests
+on it. The strip's top button unfolds it again, as does **View > Show
+Sidebar** (`Ctrl+Cmd+S`) on macOS; on Linux and Windows `F9` folds and
+unfolds it. Ruston Mail remembers the choice, and
+**Reset window and pane sizes** unfolds it; a window narrow enough for one
+column always shows the whole sidebar.
 While the desktop has focus, it checks for new mail about once a minute. While
 open without focus, it checks about every three minutes, including minimized
-windows. Returning after at least 30 seconds can trigger an earlier check,
+windows. On Linux under Wayland, a window that is minimized or hidden checks
+nothing, and announces no new mail, until it shows again; it then checks at
+once. Returning after at least 30 seconds can trigger an earlier check,
 unless one just succeeded or a failure is still backing off. Busy operations
 delay automatic checks; failed folder refreshes increase the wait to at most five minutes.
 Closing the app or signing out stops these checks. The demo does not poll Proton.
-These checks leave the **Refresh** button as it is; pressing it during one shows
-that refresh instead of starting another.
+**Refresh**, the turning arrow beside the folder's name, asks for the list
+again, and stays marked until it is back. The checks above leave the button as
+it is; pressing it during one shows that refresh instead of starting another.
 
 When **Show desktop notifications for new mail** is enabled, Ruston checks the
 20 latest Inbox message records separately from the folder on screen. The first
@@ -120,6 +135,17 @@ ask Proton to search the whole mailbox; while the folder is still loading, the
 search starts once it has loaded. What Proton finds is titled **Search
 results**, since it comes from every folder. Clear the field to return to the
 open folder.
+
+**Filter**, beside the search field, chooses which of the open folder's
+conversations the list shows: **All**, **Unread**, **Read**, or **With
+attachments**, as Proton finds them across the whole folder. It also chooses
+their order, **Newest first** or **Oldest first**. The button stays marked
+while the list shows anything but all of them, newest first; choose those
+again and that list is back at once as it was. A conversation you read while
+only unread ones are listed stays where it is until the list is loaded again,
+by **Refresh** or an automatic check, so the rows do not move while you read;
+so does one you mark unread among the read ones. Another folder opens with
+all its conversations, newest first.
 
 When Proton cannot be reached, a search can look on this device instead: turn
 on **Search this device when Proton cannot be reached** under Settings ›
@@ -223,7 +249,10 @@ The reader can:
   Spam it is **Not spam**.
 - Move it into one of your folders, or back to the Inbox, with **Move to…**.
 - Add or remove a custom label from the tag button, which is filled while the
-  conversation carries one.
+  conversation carries one. In the list, a conversation shows a dot in the
+  color of each of your labels it carries, up to three and a count of the
+  rest, before its count of messages; their names show when the pointer rests
+  on them.
 - Undo the latest move while its notice remains visible at the foot of the
   list, for 5 seconds unless you choose another time under Settings →
   Interface; it stays while the pointer rests on it. Under a label,
@@ -232,9 +261,11 @@ The reader can:
   **Move to…** can still put it back.
 
 Right-click a conversation in the list, or click it with two fingers on a
-trackpad, for the same moves the reader offers it, **Mark as read** or **Mark as
-unread**, and **Add star** or **Remove star**. They act on that conversation
-without opening it, so it is not marked read, and the open one stays open.
+trackpad, for the same moves the reader offers it, **Move to…** among them,
+**Mark as read** or **Mark as unread**, **Add star** or **Remove star**, and
+**Labels**, which checks the labels it carries. **Move to…** and **Labels** open
+their lists beside the menu. They act on that conversation without opening it,
+so it is not marked read, and the open one stays open.
 
 To act on several conversations at once, choose them in the list: click one
 with `Cmd` (`Ctrl` on Linux and Windows) to add it to those chosen or take it
@@ -249,7 +280,7 @@ Trash. A move of several can be undone together, from the same notice. `Esc`
 clears the selection, and a plain click or arrow opens one conversation again.
 Conversations chosen together reach Proton in one request, up to 50 at a time;
 if Proton refuses it, all of them come back and the folder reloads.
-In one column, the selection is under **Reading**.
+In one column, the selection is under **Reader**.
 
 Actions show at once, without waiting for Proton: a moved conversation leaves
 the list and the next one opens, and its undo is offered right away. Under
@@ -366,7 +397,11 @@ attachments already stored on Proton do not count toward this local file limit.
 
 ## Writing
 
-Select **Write** for a new message. Recipient fields accept multiple addresses
+Select **Write** for a new message. When your account has more than one
+address mail can go out from, **From**, above **To**, chooses the one the
+message goes out from; an address disabled in Proton is not offered. A new
+message starts with the first in Proton's order, as Proton's web client
+does. Recipient fields accept multiple addresses
 separated by commas or semicolons. Invalid addresses stop the whole send instead
 of being silently skipped. Domains are written in ASCII: unaccented letters,
 digits, and hyphens. Type an international domain, including one with accents,
@@ -418,7 +453,7 @@ Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**
 to cancel or **Discard and close** to exit. Repeating the close request does not
 discard the draft. Closing is blocked while a message is being sent or a native
-file dialog is open. Unapplied Settings changes are resolved before the draft.
+file dialog is open.
 If changes you just made, such as moves or stars, are still on their way to
 Proton, the window says so and closes once they arrive. **Close now** closes at
 once and loses them, as closing again does; **Keep open** stays. Signing out
@@ -436,7 +471,8 @@ for native window buttons according to their measured size and interface zoom.
 confirmation as its close button; closing the main window quits. **Edit** has
 Cut, Copy, Paste and Select All for text, as well as in native file dialogs,
 along with the system's Emoji & Symbols and Dictation; Undo and Redo keep
-working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Actual Size**
+working with `Cmd+Z` and `Shift+Cmd+Z`. **View** has **Hide Sidebar**
+(`Ctrl+Cmd+S`), **Actual Size**
 (`Cmd+0`), **Zoom In** (`Cmd++`) and **Zoom Out** (`Cmd+-`), which step the
 interface scale from Settings, and **Enter Full Screen**. **Window > Minimize**
 (`Cmd+M`), **Zoom** and the list of open windows work as in other Mac apps.
@@ -449,8 +485,10 @@ people you sent it to. These recipients are in the composer's **To** and **Cc**
 fields, where you can add or remove anyone before sending, and the composer
 warns when the message's Reply-To sends the reply somewhere other than its
 sender. The subject
-is written for you. Replies and forwards are sent from the address the original
-message reached. The original's text is quoted under yours when it can be
+is written for you. Replies and forwards go out from the address the original
+message reached, or from the first when mail can no longer go out from that
+one, which **From** shows and can change.
+The original's text is quoted under yours when it can be
 opened, unless you untick **Quote the original under your text** in the
 composer; a forward also carries the original's files, images in its body
 included. The composer lists the attachments a forward sends, each with
@@ -467,26 +505,30 @@ messages yet.
 
 ## Settings
 
-Select **Settings** in the sidebar to show preferences beside it, in place of
-the conversation list and reader. **Apply** saves changes without leaving.
-Press `Esc`, select a folder, or choose **Back to mail** to return. If you have
-unapplied changes, Ruston Mail asks whether to apply them, discard them, or keep
-editing. The same confirmation appears before writing a new message or signing
-out from Settings.
+Select **Settings** in the sidebar to show preferences in place of the
+conversation list and reader. Settings comes in sections: **Reading**,
+**Writing**, **Appearance**, **General**, **Advanced**, **Keyboard** and
+**About**, one shown at a time. While Settings is open the
+sidebar lists them where the folders were, each with its icon, under **Mail**,
+which returns to the mailbox, as in Proton's web client; folded, the strip of
+icons lists them instead, and a window narrow enough for one column shows them
+as a row above the page. A change takes effect and is saved as you make it;
+there is nothing to apply. Settings opens again to the section you left. Press
+`Esc`, or choose **Mail** or **Back to mail**, to return.
 
-The **About** section at the bottom shows the app version, credits, and license.
+The **About** section, the last, shows the app version, credits, and license.
 Choose **Source code** to open the project's repository in your browser, or
 **Third-party notices** to read the licenses of the software Ruston Mail
 includes, which open in your system's app for text files. Only a packaged app
 has that button: a build from source has no notices beside it.
-Turn on **Check for updates** there, and Apply, to have Ruston Mail ask GitHub
+Turn on **Check for updates** there to have Ruston Mail ask GitHub
 as it starts and once a day whether a newer release is out; it is off by
 default. A newer version is announced at the foot of the window and stays in
 About, with a **Download** button that opens its release page in your browser.
 Nothing is downloaded or installed for you. About also says when you have the
 latest version, or when GitHub could not be asked. The
 [privacy guide](PRIVACY.md#network-connections) lists what the check sends.
-**Advanced**, above the keyboard shortcuts, holds choices most people can leave
+**Advanced**, before the keyboard shortcuts, holds choices most people can leave
 alone.
 
 Settings control:
@@ -523,10 +565,9 @@ Settings control:
   › Personalization › Taskbar › Taskbar behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
-pane sizes** under Settings → Interface to restore the defaults; this action
-takes effect immediately and does not apply other pending preference changes.
-Choose Dark or Light, or on macOS and Windows System, under Settings →
-Interface and press Apply. The selection is saved for the next run. System
+pane sizes** under Settings → Appearance to restore the defaults.
+Choose the **Theme**, Dark or Light, or on macOS and Windows System, under
+Settings → Appearance. The selection is saved for the next run. System
 follows the light or dark mode of macOS or Windows as it changes and keeps the
 last scheme you chose, which an older version of Ruston opens with. Linux has
 no System choice yet, since its windowing library reports no system mode. The
@@ -534,8 +575,8 @@ sign-in screen also has a theme button in its header, which switches to the
 other scheme from the one on screen, and a control beside each password field
 to show or hide what you type.
 
-**Use system interface font** under Settings → Interface is optional and takes
-effect after Apply, without changing text sizes. The default keeps Ruston's
+**Use system interface font** under Settings → Appearance is optional and
+changes no text size. The default keeps Ruston's
 existing look. macOS tries San Francisco, Windows Segoe UI, and Linux the
 configured Fontconfig sans-serif family; unavailable fonts fall back to Ruston's.
 Installed language fonts also provide missing characters in either mode. They
@@ -544,7 +585,7 @@ show placeholder boxes for a moment at startup.
 Coverage depends on local fonts; there are no font downloads. This expands
 glyph coverage but does not provide complete bidirectional/RTL text layout.
 
-## Graphics on Windows
+## Graphics
 
 On Windows, Ruston Mail draws with DirectX 12 on the graphics processor that
 uses the least power, or with Windows' software renderer where there is none,
@@ -557,8 +598,12 @@ user in PowerShell and start Ruston again:
 [Environment]::SetEnvironmentVariable('RUSTON_RENDERER', 'opengl', 'User')
 ```
 
-Pass `$null` instead of `'opengl'` to go back to DirectX 12. macOS and Linux
-always draw with OpenGL.
+Pass `$null` instead of `'opengl'` to go back to DirectX 12.
+
+On macOS, Ruston Mail draws with Metal, on the graphics processor that uses
+the least power on a Mac with two, and with OpenGL if Metal cannot draw the
+window. Starting it with `RUSTON_RENDERER=opengl` uses OpenGL from the start.
+Linux always draws with OpenGL.
 
 ## Keyboard shortcuts
 
@@ -569,16 +614,31 @@ always draw with OpenGL.
 | `Enter` | Open the selected conversation; search all mail from the search field |
 | `Esc` | Close the open menu, or else the topmost view or prompt |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
-| `Cmd`/`Ctrl` + `F` | Focus the search field |
+| `/`, or `Cmd`/`Ctrl` + `F` | Focus the search field |
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
-| `Cmd`/`Ctrl` + `N` | Write a new message |
+| `n`, or `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
+| `r` | Mark as read; once it is read, reply to the open conversation's newest message |
+| `Shift` + `R`, `Shift` + `F` | Reply to all, or forward, the open conversation's newest message |
+| `u` | Mark as unread |
+| `*` | Add the star, or remove it when every conversation chosen has it |
+| `i`, `a`, `s` | Move to Inbox, Archive or Spam |
 | `Shift` + `Down` or `Up` | Choose the next or previous conversation too |
 | `Cmd`/`Ctrl` + `A` | Choose every conversation listed, outside a text field |
-| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation, or all those chosen, to Trash |
+| `t`, `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move to Trash |
+| `Cmd`/`Ctrl` + `Z` | Undo a move, while the list still offers to |
+| `Shift` + `U`, `Shift` + `A` | List the unread conversations alone, or all of them |
+| `?` | Show these keys, in Settings |
+| `F9` on Linux/Windows, `Ctrl` + `Cmd` + `S` on macOS | Fold the sidebar into a strip of icons, or unfold it |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
-Shortcuts do not run while a text field is using the same key. When `Tab` has
+The single keys are Proton Mail's own, and those that act on mail act on the
+selected conversation or on all those chosen. Ruston Mail does not take Proton's
+`g` keys for folders, `m`, `l`, `x` or its command panel, and `Cmd`/`Ctrl` +
+`Backspace` moves to Trash here, where Proton deletes for good.
+
+Shortcuts do not run while a text field is using the same key, and the single
+keys wait while a menu is open. When `Tab` has
 put focus on a button or a row, which shows a violet ring, the arrows move that
 focus and `Enter` presses it; `j` and `k` still move through the list. On
 Windows, `Ctrl` + `Alt` with a key runs no `Ctrl` shortcut, since Windows types
@@ -587,9 +647,12 @@ with it what `AltGr` types.
 Screen readers cannot read the composer when it opens in a new window yet:
 with one, keep **Settings** › **Writing** on **Reading pane**, the default.
 
-On Windows, turning off **Animation effects** (Windows Settings ›
-Accessibility › Visual effects) holds Ruston still too: no fades or gliding
-scrolls, and loading placeholders and a waiting ring that do not pulse.
+On macOS, turning on **Reduce motion** (System Settings › Accessibility ›
+Display), on Windows turning off **Animation effects** (Windows Settings ›
+Accessibility › Visual effects), or on Linux turning animations off in the
+desktop's accessibility settings, as GNOME's has, holds Ruston still too: no
+fades or gliding scrolls, and loading placeholders and a waiting ring that do
+not pulse.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has
@@ -772,8 +835,9 @@ forwards it with its files, as in Proton; `:reply`, `:replyall` and
 which you can change, and says when the message asked for replies to go to
 someone other than its sender. Proton writes an answer's subject, and the
 original goes under your text unless Ctrl+Q leaves it out. A message goes
-from your primary address, or an answer from the one the original reached;
-From shows which. Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
+from your primary address, or an answer from the one the original reached
+while mail can still go out from it; From shows which.
+Ctrl+A, for Proton's Ctrl+Shift+A, which many terminals
 cannot tell from it, lists the files the message carries: type the path of
 one, Tab completes it as a shell does, `~` being your home folder, and Enter
 attaches it, once it is a file that can be read, of at most 32 MiB, with all

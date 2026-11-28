@@ -3,13 +3,14 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use ruston_core::Quote;
 use ruston_core::model::enums::message_flag;
+use ruston_core::{AddressInfo, Quote};
 
 use super::outgoing::{Outgoing, OutgoingKind, SendError};
 use super::{
-    ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail, MailAddress,
-    MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, IncomingMail,
+    ListFilter, ListOrder, MailAddress, MailFolder, MailMessage, MailboxCounts, MailboxError,
+    MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 
 mod fixtures;
@@ -31,11 +32,36 @@ const THREAD_GAP: i64 = 3 * HOUR + 17 * MINUTE;
 const DEMO_USER_NAME: &str = "Demo User";
 const DEMO_USER_ADDRESS: &str = "demo@example.com";
 
+/// The fictional account's addresses, each with the ID Proton would give
+/// it, in the order Proton lists them: new mail goes from the first unless
+/// another is chosen. Like many Proton accounts, it has its name under a
+/// second domain.
+const DEMO_ADDRESSES: [(&str, &str); 2] = [
+    ("demo-address-1", DEMO_USER_ADDRESS),
+    ("demo-address-2", "demo@example.org"),
+];
+
 /// What joins a conversation's correspondents in [`Fixture::correspondents`].
 const CORRESPONDENT_SEPARATOR: &str = ", ";
 
+/// The ID of the folder the demo account made.
+const RECEIPTS: &str = "demo-receipts";
+/// The IDs of the labels the demo account made.
+const WORK: &str = "demo-work";
+const FAMILY: &str = "demo-family";
+const TRAVEL: &str = "demo-travel";
+/// The demo account's labels: ID, name and color.
+const OWN_LABELS: [(&str, &str, [u8; 3]); 3] = [
+    (WORK, "Work", [0x80, 0x80, 0xFF]),
+    (FAMILY, "Family", [0x1D, 0xA5, 0x83]),
+    (TRAVEL, "Travel", [0xF7, 0x84, 0x00]),
+];
+
 struct Fixture {
-    folder: MailFolder,
+    /// One of Proton's folders, or the one the demo account made.
+    folder: Folder,
+    /// The IDs of the demo account's labels it carries.
+    labels: Vec<String>,
     /// Whether the demo user sent the original conversation.
     outgoing: bool,
     /// Senders, or recipients in Sent and Drafts, joined by
@@ -54,6 +80,9 @@ struct Fixture {
     to: Vec<String>,
     /// Written in this run rather than shipped with the demo.
     composed: bool,
+    /// Which of [`DEMO_ADDRESSES`] the demo user writes from and is
+    /// written to at.
+    address: usize,
 }
 
 /// Process-local mutable state for the offline mailbox.
@@ -82,19 +111,30 @@ impl DemoMailbox {
 
     /// The newest of the Inbox, as a check for new mail reads it.
     pub fn recent_inbox(&self, limit: u32, now: i64) -> Vec<IncomingMail> {
-        list_from(&self.lock(), &Folder::INBOX, 0, limit, now)
-            .conversations
-            .into_iter()
-            .map(|row| IncomingMail {
-                id: row.id,
-                time: row.time.unwrap_or_default(),
-                unread: row.unread,
-                sender: row.correspondents.unwrap_or_default(),
-                subject: row.subject.unwrap_or_default(),
-            })
-            .collect()
+        let newest_first = ListOrder::NewestFirst;
+        list_from(
+            &self.lock(),
+            &Folder::INBOX,
+            |_, _| true,
+            newest_first,
+            0,
+            limit,
+            now,
+        )
+        .conversations
+        .into_iter()
+        .map(|row| IncomingMail {
+            id: row.id,
+            time: row.time.unwrap_or_default(),
+            unread: row.unread,
+            sender: row.correspondents.unwrap_or_default(),
+            subject: row.subject.unwrap_or_default(),
+        })
+        .collect()
     }
 
+    /// Every conversation of `folder`, a page at a time, as tests list them.
+    #[cfg(test)]
     pub fn list_conversations(
         &self,
         folder: &Folder,
@@ -102,8 +142,38 @@ impl DemoMailbox {
         page_size: u32,
         now: i64,
     ) -> Result<ConversationPage, MailboxError> {
+        let (all, newest_first) = (ListFilter::All, ListOrder::NewestFirst);
+        self.list_filtered(folder, all, newest_first, page, page_size, now)
+    }
+
+    /// One page of the conversations of `folder` that `filter` shows, in
+    /// `order`.
+    pub fn list_filtered(
+        &self,
+        folder: &Folder,
+        filter: ListFilter,
+        order: ListOrder,
+        page: u32,
+        page_size: u32,
+        now: i64,
+    ) -> Result<ConversationPage, MailboxError> {
         let fixtures = self.lock();
-        Ok(list_from(&fixtures, folder, page, page_size, now))
+        let shows = |_: usize, fixture: &Fixture| filtered_in(fixture, filter);
+        Ok(list_from(
+            &fixtures, folder, shows, order, page, page_size, now,
+        ))
+    }
+
+    /// The fictional account's addresses, in the order Proton lists them.
+    pub fn addresses(&self) -> Vec<AddressInfo> {
+        DEMO_ADDRESSES
+            .iter()
+            .map(|(id, email)| AddressInfo {
+                id: (*id).to_owned(),
+                email: (*email).to_owned(),
+                can_send: true,
+            })
+            .collect()
     }
 
     /// Searches every folder, the way the server does for a real account.
@@ -142,15 +212,24 @@ impl DemoMailbox {
         detail_from(&fixtures, id, now).ok_or(MailboxError::Unavailable)
     }
 
+    /// The first `page_size` conversations of `folder` that `filter` shows,
+    /// in `order`, with the counts, after a change. A conversation `listed`
+    /// already stays listed, as a Proton account's would until the list is
+    /// loaded again.
     pub fn snapshot(
         &self,
         folder: &Folder,
+        (filter, order): (ListFilter, ListOrder),
+        listed: impl Fn(&str) -> bool,
         page_size: u32,
         now: i64,
     ) -> (ConversationPage, MailboxCounts) {
         let fixtures = self.lock();
+        let shows = |index: usize, fixture: &Fixture| {
+            filtered_in(fixture, filter) || listed(&conversation_id(index))
+        };
         (
-            list_from(&fixtures, folder, 0, page_size, now),
+            list_from(&fixtures, folder, shows, order, 0, page_size, now),
             counts_from(&fixtures),
         )
     }
@@ -191,7 +270,8 @@ impl DemoMailbox {
             }
         }
         fixtures.push(Fixture {
-            folder: MailFolder::Sent,
+            folder: MailFolder::Sent.into(),
+            labels: Vec::new(),
             outgoing: true,
             correspondents: everyone.join(CORRESPONDENT_SEPARATOR),
             subject: answered.as_ref().map_or_else(
@@ -212,6 +292,11 @@ impl DemoMailbox {
             html: outgoing.is_html(),
             to: everyone,
             composed: true,
+            // Core sends from the first address unless another is chosen.
+            address: DEMO_ADDRESSES
+                .iter()
+                .position(|(_, email)| outgoing.from.as_deref() == Some(*email))
+                .unwrap_or_default(),
         });
 
         Ok(())
@@ -231,14 +316,28 @@ impl DemoMailbox {
         self.update(id, |fixture| fixture.starred = starred)
     }
 
-    /// Moves a row between Proton's own folders. The fictional mailbox has no
-    /// folders of its own, so a move into one changes nothing.
+    /// Moves a row to one of Proton's folders or to the one the demo account
+    /// made. A label is not a place to move to, so that changes nothing.
     pub fn move_to(&self, id: &str, folder: &Folder) -> bool {
-        let Some(folder) = folder.system() else {
+        if folder.system().is_none() && !owns(folder, CustomKind::Folder) {
+            return false;
+        }
+
+        self.update(id, |fixture| fixture.folder = folder.clone())
+    }
+
+    /// Gives a row one of the demo account's labels, or takes it away.
+    pub fn set_label(&self, id: &str, label: &Folder, on: bool) -> bool {
+        let Some(label) = label.custom_id().filter(|_| owns(label, CustomKind::Label)) else {
             return false;
         };
 
-        self.update(id, |fixture| fixture.folder = folder)
+        self.update(id, |fixture| {
+            fixture.labels.retain(|carried| carried != label);
+            if on {
+                fixture.labels.push(label.to_owned());
+            }
+        })
     }
 
     fn update(&self, id: &str, update: impl FnOnce(&mut Fixture)) -> bool {
@@ -283,7 +382,7 @@ fn search_from(
         .enumerate()
         .filter(|(_, fixture)| matches_query(fixture, &query))
         .collect();
-    page_of(matching, page, page_size, now)
+    page_of(matching, ListOrder::NewestFirst, page, page_size, now)
 }
 
 /// The same places the mailbox search looks: who wrote it, what it is about,
@@ -302,19 +401,70 @@ fn matches_query(fixture: &Fixture, query: &str) -> bool {
     .any(|value| value.to_lowercase().contains(query))
 }
 
-/// The fictional mailbox has only Proton's own folders, so a folder the
-/// account made never holds any of it.
-fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
-    let Some(folder) = folder.system() else {
-        return false;
+/// The folder and labels the demo account made, as the sidebar lists them.
+pub fn own_places() -> OwnPlaces {
+    let mut places = OwnPlaces {
+        folders: vec![receipts()],
+        ..OwnPlaces::default()
     };
-
-    fixture.folder == folder || (folder == MailFolder::Starred && fixture.starred)
+    for (id, name, color) in OWN_LABELS {
+        places.folders.push(Folder::label(id, name));
+        let look = PlaceLook {
+            color: Some(color),
+            ..PlaceLook::default()
+        };
+        places.looks.insert(id.to_owned(), look);
+    }
+    places
 }
 
+/// The folder the demo account made.
+fn receipts() -> Folder {
+    Folder::custom(RECEIPTS, "Receipts")
+}
+
+/// Whether the demo account made `place`, as a folder or as a label.
+fn owns(place: &Folder, kind: CustomKind) -> bool {
+    place.kind() == Some(kind) && own_places().folders.contains(place)
+}
+
+/// Whether `folder` lists the row: the folder it is in, Starred for a starred
+/// one, or a label it carries.
+fn in_folder(fixture: &Fixture, folder: &Folder) -> bool {
+    if folder.kind() == Some(CustomKind::Label) {
+        return folder
+            .custom_id()
+            .is_some_and(|label| fixture.labels.iter().any(|carried| carried == label));
+    }
+
+    fixture.folder == *folder || (folder.system() == Some(MailFolder::Starred) && fixture.starred)
+}
+
+/// The IDs of what the demo account made that the row is filed under, as
+/// Proton lists them: its labels, and its folder when it is in that one.
+fn own_ids(fixture: &Fixture) -> Vec<String> {
+    let folder = fixture.folder.custom_id().map(str::to_owned);
+    fixture.labels.iter().cloned().chain(folder).collect()
+}
+
+/// Whether `filter` shows the row. The fictional mailbox carries no files,
+/// so nothing passes the filter that asks for them.
+fn filtered_in(fixture: &Fixture, filter: ListFilter) -> bool {
+    match filter {
+        ListFilter::All => true,
+        ListFilter::Unread => fixture.unread,
+        ListFilter::Read => !fixture.unread,
+        ListFilter::WithFiles => false,
+    }
+}
+
+/// Page `page` of the conversations of `folder` that `shows` lets through,
+/// given each one's place in the mailbox, in `order`.
 fn list_from(
     fixtures: &[Fixture],
     folder: &Folder,
+    shows: impl Fn(usize, &Fixture) -> bool,
+    order: ListOrder,
     page: u32,
     page_size: u32,
     now: i64,
@@ -322,20 +472,21 @@ fn list_from(
     let matching = fixtures
         .iter()
         .enumerate()
-        .filter(|(_, fixture)| in_folder(fixture, folder))
+        .filter(|(index, fixture)| in_folder(fixture, folder) && shows(*index, fixture))
         .collect();
-    page_of(matching, page, page_size, now)
+    page_of(matching, order, page, page_size, now)
 }
 
 /// Page `page` of the `matching` conversations, by their places in the
-/// mailbox, newest first.
+/// mailbox, in `order`.
 fn page_of(
     mut matching: Vec<(usize, &Fixture)>,
+    order: ListOrder,
     page: u32,
     page_size: u32,
     now: i64,
 ) -> ConversationPage {
-    matching.sort_by_key(|(_, fixture)| fixture.age);
+    matching.sort_by_key(|(_, fixture)| std::cmp::Reverse(order.rank(now - fixture.age)));
     let total = matching.len() as u32;
     let conversations = matching
         .into_iter()
@@ -355,6 +506,7 @@ fn counts_from(fixtures: &[Fixture]) -> MailboxCounts {
     MailFolder::ALL
         .into_iter()
         .map(Folder::System)
+        .chain(own_places().folders)
         .map(|folder| {
             let unread = fixtures
                 .iter()
@@ -382,8 +534,7 @@ fn detail_at(fixtures: &[Fixture], index: usize, now: i64) -> Option<Conversatio
         id: conversation_id(index),
         subject: non_empty(&fixture.subject),
         messages,
-        // The demo account owns no labels, so nothing carries one.
-        labels: Vec::new(),
+        labels: own_ids(fixture),
     })
 }
 
@@ -501,6 +652,7 @@ fn summary(index: usize, fixture: &Fixture, now: i64) -> ConversationSummary {
         message_count: u32::try_from(fixture.message_count()).unwrap_or(u32::MAX),
         // The fictional mailbox carries no files.
         has_attachments: false,
+        labels: own_ids(fixture),
     }
 }
 
@@ -514,7 +666,7 @@ fn correspondent_addresses(fixture: &Fixture) -> impl Iterator<Item = MailAddres
 }
 
 fn fixture_participants(fixture: &Fixture) -> Vec<MailAddress> {
-    std::iter::once(demo_user())
+    std::iter::once(demo_user(fixture))
         .chain(correspondent_addresses(fixture))
         .chain(
             fixture
@@ -548,14 +700,14 @@ fn message(
     let from_demo_user = newer.is_multiple_of(2) == fixture.outgoing;
 
     let (sender, mut recipients) = if from_demo_user {
-        (demo_user(), participants.to_vec())
+        (demo_user(fixture), participants.to_vec())
     } else {
         let sender = if participants.is_empty() {
             MailAddress::default()
         } else {
             participants[(position / 2) % participants.len()].clone()
         };
-        let recipients = std::iter::once(demo_user())
+        let recipients = std::iter::once(demo_user(fixture))
             .chain(
                 participants
                     .iter()
@@ -578,7 +730,7 @@ fn message(
     // demo user sent it, received it, or only wrote it, as a draft.
     let flags = if !from_demo_user {
         message_flag::RECEIVED
-    } else if fixture.folder == MailFolder::Drafts && newer == 0 {
+    } else if fixture.folder.system() == Some(MailFolder::Drafts) && newer == 0 {
         0
     } else {
         message_flag::SENT
@@ -593,9 +745,14 @@ fn message(
         to_list: recipients.iter().map(core_recipient).collect(),
         ..ruston_core::MessageMetadata::default()
     };
-    let reply = ruston_core::reply_recipients(&meta, &[], &[demo_user().address]);
+    let own: Vec<String> = DEMO_ADDRESSES
+        .iter()
+        .map(|(_, email)| (*email).to_owned())
+        .collect();
+    let reply = ruston_core::reply_recipients(&meta, &[], &own);
     MailMessage {
         id: message_id(index, position),
+        address_id: DEMO_ADDRESSES[fixture.address].0.to_owned(),
         verdict: super::Verdict::Unverified,
         reply_to: reply.to,
         reply_all_cc: reply.cc,
@@ -617,10 +774,11 @@ fn message(
     }
 }
 
-fn demo_user() -> MailAddress {
+/// The demo user, at the address `fixture` involves.
+fn demo_user(fixture: &Fixture) -> MailAddress {
     MailAddress {
         name: Some(DEMO_USER_NAME.to_owned()),
-        address: DEMO_USER_ADDRESS.to_owned(),
+        address: DEMO_ADDRESSES[fixture.address].1.to_owned(),
     }
 }
 

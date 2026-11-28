@@ -3,7 +3,13 @@
 use super::*;
 
 fn deliver_attachment(app: &mut App, result: Result<PathBuf, SaveError>) {
-    let request = app.saving_attachment.as_ref().unwrap().request.clone();
+    let request = app
+        .session
+        .saving_attachment
+        .as_ref()
+        .unwrap()
+        .request
+        .clone();
     let _ = app.update(Message::AttachmentSaved(request, result));
 }
 
@@ -46,7 +52,13 @@ fn choose_attachment_destination(app: &mut App) -> AttachmentSaveRequest {
 fn a_save_in_flight_does_not_outlive_the_session() {
     let mut app = loaded_demo_app();
     let _ = app.update(save("demo-0", "file"));
-    let previous_request = app.saving_attachment.as_ref().unwrap().request.clone();
+    let previous_request = app
+        .session
+        .saving_attachment
+        .as_ref()
+        .unwrap()
+        .request
+        .clone();
     assert_eq!(app.saving_attachment(), Some("file"));
 
     let _ = app.update(Message::Logout);
@@ -204,7 +216,10 @@ fn save_as_dialog_results_after_sign_out_cannot_start_a_download() {
         .units(),
         0
     );
-    assert_eq!(app.saving_attachment.as_ref().unwrap().request, current);
+    assert_eq!(
+        app.session.saving_attachment.as_ref().unwrap().request,
+        current
+    );
 }
 
 #[test]

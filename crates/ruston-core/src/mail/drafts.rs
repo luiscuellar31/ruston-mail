@@ -201,6 +201,7 @@ mod tests {
         AddressKeys {
             address_id: address_id.into(),
             email: email.into(),
+            can_send: true,
             keys: vec![StoredKey {
                 armored: String::from_utf8(armored.as_ref().to_vec()).unwrap(),
                 passphrase: SecretString::from("pass"),

@@ -23,15 +23,11 @@ pub(super) fn open<T>(
     // Configure and start together while the native owner is retained. rfd
     // copies handles and macOS creates its panel synchronously on this thread.
     let dialog = AsyncFileDialog::new();
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
     if owner == DialogOwner::ActiveWindow
         && let Some(parent) = active::Parent::new()
     {
         return start(dialog.set_parent(&parent));
     }
-    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    // eframe exposes only the root native handle for immediate child viewports.
-    let _ = owner;
     let dialog = match root {
         Some(window) => dialog.set_parent(window.as_ref()),
         None => dialog,
@@ -116,6 +112,35 @@ mod active {
         fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
             // SAFETY: Windows display handles contain no borrowed pointers.
             Ok(unsafe { DisplayHandle::borrow_raw(WindowsDisplayHandle::new().into()) })
+        }
+    }
+}
+
+/// No window but the main one: eframe exposes only the root's native handle
+/// for its immediate child viewports, so there is never another parent.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+mod active {
+    use winit::raw_window_handle::{
+        DisplayHandle, HandleError, HasDisplayHandle, HasWindowHandle, WindowHandle,
+    };
+
+    pub(super) enum Parent {}
+
+    impl Parent {
+        pub(super) fn new() -> Option<Self> {
+            None
+        }
+    }
+
+    impl HasWindowHandle for Parent {
+        fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
+            match *self {}
+        }
+    }
+
+    impl HasDisplayHandle for Parent {
+        fn display_handle(&self) -> Result<DisplayHandle<'_>, HandleError> {
+            match *self {}
         }
     }
 }

@@ -31,37 +31,37 @@ impl App {
         // A demo process never signs in, so once its fictional mailbox is
         // closed a link would wait for a sign-in that cannot happen.
         if self.demo_process && !self.auth_state.is_authenticated() {
-            self.mailto_error = Some(MailtoError::Demo);
+            self.session.mailto_error = Some(MailtoError::Demo);
             return;
         }
-        if self.pending_mailto.len() == MAX_PENDING {
-            self.mailto_error = Some(MailtoError::TooManyWaiting);
+        if self.session.pending_mailto.len() == MAX_PENDING {
+            self.session.mailto_error = Some(MailtoError::TooManyWaiting);
             return;
         }
-        self.pending_mailto.push_back(request);
+        self.session.pending_mailto.push_back(request);
     }
 
     pub fn pending_mailto_count(&self) -> usize {
-        self.pending_mailto.len()
+        self.session.pending_mailto.len()
     }
 
     pub fn mailto_error(&self) -> Option<MailtoError> {
-        self.mailto_error
+        self.session.mailto_error
     }
 
     pub fn can_open_pending_mailto(&self) -> bool {
         self.auth_state.is_authenticated()
-            && !self.pending_mailto.is_empty()
+            && !self.session.pending_mailto.is_empty()
             && self.compose.is_none()
             && !self.showing_settings
-            && self.pending_link.is_none()
+            && self.session.pending_link.is_none()
     }
 
     pub(super) fn open_pending_mailto(&mut self) -> Effects {
         if !self.can_open_pending_mailto() {
             return Effects::none();
         }
-        let Some(request) = self.pending_mailto.pop_front() else {
+        let Some(request) = self.session.pending_mailto.pop_front() else {
             return Effects::none();
         };
         let opened = self.open_compose();

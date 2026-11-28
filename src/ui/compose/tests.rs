@@ -11,7 +11,7 @@ fn screen_readers_hear_each_field_by_its_name() {
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         show(ui, app.compose().unwrap(), &mut Vec::new());
     });
-    let names = theme::text_field_names(&output);
+    let names = widgets::text_field_names(&output);
     output.drop_without_applying_deltas();
 
     for name in ["To", "Cc", "Bcc", "Subject", "Message"] {
@@ -20,6 +20,44 @@ fn screen_readers_hear_each_field_by_its_name() {
             "{name} in {names:?}"
         );
     }
+}
+
+#[test]
+fn the_composer_asks_which_address_sends_above_to() {
+    use egui::accesskit::Role;
+
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = crate::app::App::boot(true, crate::settings::Settings::default());
+    let _ = app.update(Message::OpenCompose);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        show(ui, app.compose().unwrap(), &mut Vec::new());
+    });
+    let from = crate::ui::test_support::text_rect(&output.shapes, "From");
+    let sender = crate::ui::test_support::text_rect(&output.shapes, "demo@example.com");
+    let to = crate::ui::test_support::text_rect(&output.shapes, "To");
+    assert!(
+        from.bottom() <= sender.top() && sender.bottom() <= to.top(),
+        "From {from:?}, its address {sender:?}, To {to:?}"
+    );
+    // Screen readers hear the choice by its label.
+    let nodes: std::collections::HashMap<_, _> = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| update.nodes.iter().cloned())
+        .collect();
+    let labelled_from = nodes.values().any(|node| {
+        node.role() == Role::ComboBox
+            && node
+                .labelled_by()
+                .iter()
+                .filter_map(|id| nodes.get(id))
+                .any(|label| label.label().or(label.value()) == Some("From"))
+    });
+    output.drop_without_applying_deltas();
+    assert!(labelled_from);
 }
 
 #[test]
@@ -447,15 +485,9 @@ fn an_answer_offers_to_leave_the_original_out() {
         let choice =
             crate::ui::test_support::text_rect(&shapes, "Quote the original under your text")
                 .center();
-        let press = |pressed| egui::Event::PointerButton {
-            pos: choice,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
         let (_, asked) = frame(
             &app,
-            vec![egui::Event::PointerMoved(choice), press(true), press(false)],
+            crate::ui::test_support::click_events(choice, egui::PointerButton::Primary),
         );
         assert!(
             matches!(asked.as_slice(), [Message::ToggleComposeQuote]),
@@ -753,15 +785,9 @@ fn a_forward_lists_the_files_it_carries_and_each_can_be_left_out() {
     crate::ui::test_support::text_rect(&shapes, "📎 receipt.png (2.0 KB)");
     // The first Remove is the invoice's.
     let remove = crate::ui::test_support::text_rect(&shapes, "Remove").center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: remove,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
     let (_, asked) = frame(
         &app,
-        vec![egui::Event::PointerMoved(remove), press(true), press(false)],
+        crate::ui::test_support::click_events(remove, egui::PointerButton::Primary),
     );
     // Leaving To for the button also says the field was left.
     let left_out: Vec<&String> = asked

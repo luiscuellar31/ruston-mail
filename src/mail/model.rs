@@ -201,6 +201,9 @@ pub struct ConversationSummary {
     /// Whether any message carries a file: the list shows a paperclip, and
     /// files are fetched only when someone saves one.
     pub has_attachments: bool,
+    /// Proton's IDs of the labels and folders it is filed under, Proton's
+    /// own included: the list marks the account's labels among them.
+    pub labels: Vec<String>,
 }
 
 /// A mail address. Either part may be missing in server data.
@@ -249,6 +252,10 @@ impl MessageBody {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MailMessage {
     pub id: String,
+    /// Proton's ID for the account's address the message belongs to: the
+    /// one it reached, or the one it went out from. An answer goes out from
+    /// that address unless another is chosen.
+    pub address_id: String,
     pub sender: MailAddress,
     pub to: Vec<MailAddress>,
     pub cc: Vec<MailAddress>,
@@ -316,6 +323,39 @@ impl ConversationDetail {
         self.labels.retain(|carried| carried != id);
         if on {
             self.labels.push(id.to_owned());
+        }
+    }
+}
+
+/// Which of a folder's conversations a listing shows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListFilter {
+    #[default]
+    All,
+    /// Only those with a message still unread.
+    Unread,
+    /// Only those with every message read.
+    Read,
+    /// Only those that carry a file.
+    WithFiles,
+}
+
+/// The order a listing puts a folder's conversations in, by date.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ListOrder {
+    #[default]
+    NewestFirst,
+    OldestFirst,
+}
+
+impl ListOrder {
+    /// `time` as a number that is higher the earlier this order lists it, so
+    /// whatever keeps rows in order compares these alone, either way round.
+    pub fn rank(self, time: i64) -> i64 {
+        match self {
+            Self::NewestFirst => time,
+            // Reversed without the overflow negating the lowest date has.
+            Self::OldestFirst => !time,
         }
     }
 }

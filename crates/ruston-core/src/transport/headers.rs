@@ -12,10 +12,10 @@ use secrecy::ExposeSecret;
 /// session.
 pub fn build_headers(auth: &AuthState, prepared: &Prepared) -> HeaderMap {
     let bearer = auth
-        .access
+        .tokens
         .as_ref()
         .filter(|_| !prepared.omit_auth)
-        .map(|token| format!("Bearer {}", token.expose_secret()));
+        .map(|tokens| format!("Bearer {}", tokens.access.expose_secret()));
     // Proton reads a verification token only with its type: both go, or neither.
     let (hv_token, hv_type) = prepared
         .hv
@@ -37,7 +37,10 @@ pub fn build_headers(auth: &AuthState, prepared: &Prepared) -> HeaderMap {
         ),
         ("x-pm-appversion", Some(auth.app_version.as_str())),
         ("user-agent", auth.user_agent.as_deref()),
-        ("x-pm-uid", auth.uid.as_deref()),
+        (
+            "x-pm-uid",
+            auth.tokens.as_ref().map(|tokens| tokens.uid.as_str()),
+        ),
         ("authorization", bearer.as_deref()),
         ("x-pm-human-verification-token", hv_token),
         ("x-pm-human-verification-token-type", hv_type),
@@ -58,14 +61,18 @@ pub fn build_headers(auth: &AuthState, prepared: &Prepared) -> HeaderMap {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::session::Tokens;
     use crate::transport::{HttpClient, Request};
     use secrecy::SecretString;
 
     /// A signed-in session whose client presents a browser's user agent.
     fn signed_in() -> AuthState {
         AuthState {
-            uid: Some("UID123".into()),
-            access: Some(SecretString::from("ACCESS")),
+            tokens: Some(Tokens {
+                uid: "UID123".into(),
+                access: SecretString::from("ACCESS"),
+                refresh: SecretString::from("REFRESH"),
+            }),
             user_agent: Some("Mozilla/5.0 test-ua".into()),
             ..AuthState::unauthenticated("Other")
         }
@@ -154,10 +161,8 @@ mod tests {
 
     #[test]
     fn a_value_that_cannot_be_a_header_is_left_out() {
-        let auth = AuthState {
-            access: Some(SecretString::from("expired\r\ntoken")),
-            ..signed_in()
-        };
+        let mut auth = signed_in();
+        auth.tokens.as_mut().unwrap().access = SecretString::from("expired\r\ntoken");
         let headers = sent(&auth, Request::get("/x"));
         assert!(
             headers

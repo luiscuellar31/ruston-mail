@@ -82,6 +82,76 @@ fn trash_shortcuts_move_selected_conversation() {
 }
 
 #[test]
+fn protons_keys_flag_move_and_answer_the_open_conversation() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-3");
+    let row = |app: &App| app.mailbox().unwrap().selected_summary().unwrap().clone();
+
+    press(&mut app, Key::Character('u'));
+    assert!(row(&app).unread);
+    // Unread, r marks it read; read, r replies to it.
+    press(&mut app, Key::Character('r'));
+    assert!(!row(&app).unread);
+    assert!(app.compose().is_none());
+    press(&mut app, Key::Character('r'));
+    let answering = app.compose().unwrap().answering().unwrap();
+    assert_eq!(answering.kind, AnswerKind::Reply);
+
+    // A draft being written keeps the conversation behind it as it is.
+    for key in ['u', '*', 'a', 't'] {
+        press(&mut app, Key::Character(key));
+    }
+    let _ = app.update(Message::CloseCompose);
+    let kept = row(&app);
+    assert!(!kept.unread && is_listed(&app, "demo-3"));
+
+    press(&mut app, Key::Character('*'));
+    assert_ne!(row(&app).starred, kept.starred);
+    press(&mut app, Key::Character('*'));
+    assert_eq!(row(&app).starred, kept.starred);
+
+    press(&mut app, Key::Character('a'));
+    assert!(!is_listed(&app, "demo-3"));
+    press_command(&mut app, Key::Character('z'));
+    assert!(is_listed(&app, "demo-3"));
+
+    // The Inbox's mail is in the Inbox already.
+    open_conversation(&mut app, "demo-3");
+    press(&mut app, Key::Character('i'));
+    assert!(is_listed(&app, "demo-3"));
+    assert!(app.mailbox().unwrap().undo().is_none());
+}
+
+#[test]
+fn shift_and_a_letter_answer_all_forward_and_filter() {
+    let mut app = loaded_demo_app();
+    open_conversation(&mut app, "demo-3");
+    let shift = |app: &mut App, letter| {
+        let _ = app.update(Message::KeyPressed(KeyPress::with_shift(Key::Character(
+            letter,
+        ))));
+    };
+    for (letter, kind) in [('r', AnswerKind::ReplyAll), ('f', AnswerKind::Forward)] {
+        shift(&mut app, letter);
+        assert_eq!(app.compose().unwrap().answering().unwrap().kind, kind);
+        let _ = app.update(Message::CloseCompose);
+    }
+
+    shift(&mut app, 'u');
+    assert_eq!(app.mailbox().unwrap().filter(), ListFilter::Unread);
+    shift(&mut app, 'a');
+    assert_eq!(app.mailbox().unwrap().filter(), ListFilter::All);
+}
+
+#[test]
+fn the_question_mark_shows_the_keys() {
+    let mut app = loaded_demo_app();
+    press(&mut app, Key::Character('?'));
+    assert!(app.showing_settings());
+    assert_eq!(app.settings_section(), SettingsSection::Keyboard);
+}
+
+#[test]
 fn settings_shortcuts_do_not_reach_the_hidden_mailbox_panes() {
     let mut app = loaded_demo_app();
     press(&mut app, Key::Character('j'));
@@ -131,6 +201,24 @@ fn keys_do_not_reach_the_mailbox_under_a_link_prompt() {
 
     press(&mut app, Key::Escape);
     assert!(app.pending_link().is_none());
+}
+
+#[test]
+fn f9_folds_and_unfolds_the_sidebar_even_beside_settings() {
+    let mut app = loaded_demo_app();
+    press(&mut app, Key::F9);
+    assert!(app.settings().sidebar_folded);
+
+    // Settings shows beside the sidebar, which still folds.
+    let _ = app.update(Message::ShowSettings(true));
+    press(&mut app, Key::F9);
+    assert!(!app.settings().sidebar_folded);
+
+    // A link prompt over the window takes only Escape.
+    let _ = app.update(Message::ShowSettings(false));
+    let _ = app.update(Message::LinkClicked("https://example.com/".to_owned()));
+    press(&mut app, Key::F9);
+    assert!(!app.settings().sidebar_folded);
 }
 
 #[test]

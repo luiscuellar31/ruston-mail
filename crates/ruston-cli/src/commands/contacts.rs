@@ -27,7 +27,12 @@ pub async fn addresses(ctx: &Ctx, cmd: AddressesCmd) -> Result<()> {
     let client = Client::resume(&ctx.profile).await?;
     match cmd {
         AddressesCmd::List => {
-            render::addresses_list(ctx.json, &client.addresses());
+            let addresses: Vec<_> = client
+                .addresses()
+                .into_iter()
+                .filter(|address| address.can_send)
+                .collect();
+            render::addresses_list(ctx.json, &addresses);
             Ok(())
         }
         AddressesCmd::Update {

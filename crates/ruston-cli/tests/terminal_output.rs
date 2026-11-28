@@ -112,10 +112,15 @@ fn calling_off_a_send_in_the_demo_reports_the_message_it_found() {
             "demo": true
         })
     );
+    // What is not there ends as with an account: status 3, for not found.
     let unknown = run(&["--demo", "messages", "cancel-send", "nothing like it"]);
-    assert!(!unknown.status.success());
+    assert_eq!(unknown.status.code(), Some(3));
     let error = String::from_utf8(unknown.stderr).unwrap();
-    assert!(error.contains("demo message not found"), "{error}");
+    assert!(error.contains("message not found"), "{error}");
+    let unknown = run(&["--demo", "conversations", "read", "nothing-like-it"]);
+    assert_eq!(unknown.status.code(), Some(3));
+    let error = String::from_utf8(unknown.stderr).unwrap();
+    assert!(error.contains("conversation not found"), "{error}");
 }
 
 #[test]
@@ -146,9 +151,9 @@ fn answers_and_attachments_in_the_demo_find_the_message_as_the_rest_do() {
             more,
         ]
         .concat());
-        assert!(!unknown.status.success(), "{command}");
+        assert_eq!(unknown.status.code(), Some(3), "{command}");
         let error = String::from_utf8(unknown.stderr).unwrap();
-        assert!(error.contains("demo message not found"), "{error}");
+        assert!(error.contains("message not found"), "{error}");
     }
 
     // Attachments are found by words of the subject too.
@@ -220,12 +225,9 @@ fn acting_on_messages_in_the_demo_reports_the_messages_it_found() {
 
         // A reference that finds nothing is an error, as in the real commands.
         let unknown = run(&[&args[..args.len() - 1], &["nothing like it"]].concat());
-        assert!(!unknown.status.success(), "{args:?}");
+        assert_eq!(unknown.status.code(), Some(3), "{args:?}");
         let error = String::from_utf8(unknown.stderr).unwrap();
-        assert!(
-            error.contains("demo message not found"),
-            "{args:?}: {error}"
-        );
+        assert!(error.contains("message not found"), "{args:?}: {error}");
     }
 }
 

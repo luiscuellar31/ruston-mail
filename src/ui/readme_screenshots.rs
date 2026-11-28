@@ -1,6 +1,7 @@
 //! The README's screenshots, taken by the app itself: the demo's inbox with the
-//! booking newsletter open, dark and then light, as macOS draws the window, with
-//! its rounded corners, colored buttons and shadow on a transparent background.
+//! booking newsletter open, Settings, and a message being written, each dark and
+//! then light, as macOS draws the window, with its rounded corners, colored
+//! buttons and shadow on a transparent background.
 //! Only the `readme-screenshots` feature builds it, and
 //! `packaging/readme-screenshots.sh` runs it.
 
@@ -10,8 +11,7 @@ use std::thread::JoinHandle;
 
 use eframe::egui;
 
-use crate::app::{App, Message};
-use crate::mail::{Folder, OwnPlaces};
+use crate::app::{App, ComposeField, Message, SettingsSection};
 use crate::settings::Appearance;
 
 /// The folder the screenshots are saved in; the script sets it.
@@ -24,8 +24,8 @@ const SUBJECT: &str = "Your reading room booking";
 const SETTLE: f64 = 1.5;
 /// Seconds to wait for the demo's inbox before giving up.
 const PATIENCE: f64 = 20.0;
-/// How many times the window may be found without focus or without its sample
-/// folder and labels before giving up.
+/// How many times the window may be found without focus, or before the demo's
+/// folder and labels arrive, before giving up.
 const RETRIES: u32 = 5;
 const PNG_SIGNATURE: &[u8] = b"\x89PNG\r\n\x1a\n";
 /// The PNG chunks showing the picture needs: the critical ones, transparency
@@ -40,6 +40,8 @@ pub(super) struct Session {
     step: Step,
     /// When the step began, on egui's clock.
     began: Option<f64>,
+    /// Whether the window has been brought to the step's view.
+    entered: bool,
     retries: u32,
     /// The screenshot being saved, off the interface thread.
     saving: Option<JoinHandle<io::Result<()>>>,
@@ -49,9 +51,71 @@ pub(super) struct Session {
 enum Step {
     /// Waits for the demo's inbox to list the conversation.
     Open,
-    /// Lets the window settle in this appearance, then saves it.
-    Shoot(Appearance),
+    /// Lets the window settle on this view in this appearance, then saves it.
+    Shoot(View, Appearance),
     Finished,
+}
+
+/// What the window shows in a pair of screenshots, in the order they are
+/// taken.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum View {
+    /// The inbox with the booking open.
+    Mailbox,
+    Settings,
+    /// A message being written, where the booking was.
+    Compose,
+}
+
+impl View {
+    /// The view after this one.
+    fn next(self) -> Option<Self> {
+        match self {
+            Self::Mailbox => Some(Self::Settings),
+            Self::Settings => Some(Self::Compose),
+            Self::Compose => None,
+        }
+    }
+
+    /// What brings the window from the inbox to this view.
+    fn enter(self) -> Vec<Message> {
+        match self {
+            Self::Mailbox => Vec::new(),
+            Self::Settings => vec![
+                Message::ShowSettings(true),
+                Message::ShowSettingsSection(SettingsSection::Appearance),
+            ],
+            Self::Compose => vec![
+                Message::OpenCompose,
+                Message::ComposeChanged(ComposeField::To, "alex.rivera@example.com".into()),
+                Message::ComposeChanged(ComposeField::Subject, "Plans for Thursday".into()),
+                Message::ComposeChanged(
+                    ComposeField::Body,
+                    "Hi Alex,\n\nShall we meet at the café on Thursday at 10? I can bring \
+                     the printed notes so we can go through them together.\n\nBest,\nDemo"
+                        .into(),
+                ),
+            ],
+        }
+    }
+
+    /// What brings the window back to the inbox.
+    fn leave(self) -> Vec<Message> {
+        match self {
+            Self::Mailbox => Vec::new(),
+            Self::Settings => vec![Message::ShowSettings(false)],
+            Self::Compose => vec![Message::DiscardCompose],
+        }
+    }
+
+    /// How its screenshots' names begin.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Mailbox => "main-window",
+            Self::Settings => "settings",
+            Self::Compose => "compose",
+        }
+    }
 }
 
 impl Session {
@@ -62,6 +126,7 @@ impl Session {
             folder: folder.into(),
             step: Step::Open,
             began: None,
+            entered: false,
             retries: 0,
             saving: None,
         })
@@ -80,7 +145,7 @@ impl Session {
         self.began.get_or_insert(now);
         match self.step {
             Step::Open => self.open(context, app, now),
-            Step::Shoot(appearance) => self.shoot(context, frame, app, appearance, now),
+            Step::Shoot(view, appearance) => self.shoot(context, frame, app, view, appearance, now),
             Step::Finished => Vec::new(),
         }
     }
@@ -99,7 +164,7 @@ impl Session {
         ));
         // macOS colors the window's buttons only while the window has focus.
         context.send_viewport_cmd(egui::ViewportCommand::Focus);
-        self.next(Step::Shoot(Appearance::Dark), now);
+        self.next(Step::Shoot(View::Mailbox, Appearance::Dark), now);
         messages
     }
 
@@ -108,31 +173,39 @@ impl Session {
         context: &egui::Context,
         frame: &eframe::Frame,
         app: &App,
+        view: View,
         appearance: Appearance,
         now: f64,
     ) -> Vec<Message> {
         if let Some(saving) = self.saving.take_if(|saving| saving.is_finished()) {
             return match saving.join() {
-                Ok(Ok(())) => self.saved(context, appearance, now),
+                Ok(Ok(())) => self.saved(context, view, appearance, now),
                 Ok(Err(error)) => {
-                    let name = file_name(appearance);
+                    let name = file_name(view, appearance);
                     self.fail(context, &format!("saving {name}: {error}"))
                 }
                 Err(_) => self.fail(context, "saving a screenshot panicked"),
             };
         }
+        if !self.entered {
+            // A frame after the last view was left.
+            self.entered = true;
+            self.began = Some(now);
+            let mut messages = vec![Message::SetAppearance(appearance)];
+            messages.extend(view.enter());
+            return messages;
+        }
         if self.saving.is_some() || self.waited(now) < SETTLE {
             return Vec::new();
         }
-        // A window without focus shows gray buttons, and a late answer from the
-        // demo can take the sample folder and labels away: either waits again.
+        // A window without focus shows gray buttons, and the sidebar lists no
+        // folder or labels until the demo's arrive: either waits again.
         let focused = context.input(|input| input.viewport().focused) == Some(true);
-        let samples_shown = app.folders() == sample_places().folders.as_slice();
-        if !(focused && samples_shown) {
+        if !focused || app.folders().is_empty() {
             if self.retries == RETRIES {
                 return self.fail(
                     context,
-                    "the window lost focus or its sample folders; leave it in front until it closes",
+                    "the window lost focus or shows no folders; leave it in front until it closes",
                 );
             }
             self.retries += 1;
@@ -140,15 +213,11 @@ impl Session {
             if !focused {
                 context.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
-            return if samples_shown {
-                Vec::new()
-            } else {
-                vec![show_samples(app)]
-            };
+            return Vec::new();
         }
         match window_number(frame) {
             Ok(window) => {
-                let path = self.folder.join(file_name(appearance));
+                let path = self.folder.join(file_name(view, appearance));
                 self.saving = Some(std::thread::spawn(move || save_window(window, &path)));
                 Vec::new()
             }
@@ -156,19 +225,28 @@ impl Session {
         }
     }
 
-    /// After a screenshot is saved: the light one next, or the end.
-    fn saved(&mut self, context: &egui::Context, appearance: Appearance, now: f64) -> Vec<Message> {
-        match appearance {
-            Appearance::Dark => {
-                self.next(Step::Shoot(Appearance::Light), now);
-                vec![Message::SetAppearance(Appearance::Light)]
-            }
-            Appearance::Light => {
+    /// After a screenshot is saved: back to the inbox, and then the view's
+    /// light one, the next view's dark one, or the end.
+    fn saved(
+        &mut self,
+        context: &egui::Context,
+        view: View,
+        appearance: Appearance,
+        now: f64,
+    ) -> Vec<Message> {
+        let next = match appearance {
+            Appearance::Dark => Some((view, Appearance::Light)),
+            Appearance::Light => view.next().map(|next| (next, Appearance::Dark)),
+        };
+        match next {
+            Some((view, appearance)) => self.next(Step::Shoot(view, appearance), now),
+            None => {
                 self.step = Step::Finished;
                 context.send_viewport_cmd(egui::ViewportCommand::Close);
-                Vec::new()
             }
         }
+        // A message left open would ask before the window closes.
+        view.leave()
     }
 
     /// Closes the window without the screenshots; the script reports them
@@ -183,6 +261,7 @@ impl Session {
     fn next(&mut self, step: Step, now: f64) {
         self.step = step;
         self.began = Some(now);
+        self.entered = false;
         self.retries = 0;
     }
 
@@ -200,8 +279,8 @@ pub(super) fn ignore_input(raw_input: &mut egui::RawInput) {
     raw_input.events.push(egui::Event::PointerGone);
 }
 
-/// What sets up the README's view once the demo's inbox lists the booking: a
-/// sample folder and labels, the booking open, and the dark appearance.
+/// What sets up the README's view once the demo's inbox lists the booking:
+/// the booking open, and the dark appearance.
 fn opening(app: &App) -> Option<Vec<Message>> {
     let booking = app
         .mailbox()?
@@ -210,37 +289,17 @@ fn opening(app: &App) -> Option<Vec<Message>> {
         .id
         .clone();
     Some(vec![
-        show_samples(app),
         Message::SelectConversation(booking),
         Message::SetAppearance(Appearance::Dark),
     ])
 }
 
-/// Hands the app [`sample_places`] as the open account's own.
-fn show_samples(app: &App) -> Message {
-    Message::FoldersLoaded(app.session_epoch(), Ok(sample_places()))
-}
-
-/// A folder and labels such as an account has. The demo has none of its own,
-/// and without them the sidebar has no Folders or Labels and the reader no
-/// Move to or Labels.
-fn sample_places() -> OwnPlaces {
-    OwnPlaces {
-        folders: vec![
-            Folder::custom("sample-receipts", "Receipts"),
-            Folder::label("sample-work", "Work"),
-            Folder::label("sample-family", "Family"),
-            Folder::label("sample-travel", "Travel"),
-        ],
-        ..OwnPlaces::default()
-    }
-}
-
-fn file_name(appearance: Appearance) -> &'static str {
-    match appearance {
-        Appearance::Dark => "main-window-dark.png",
-        Appearance::Light => "main-window-light.png",
-    }
+fn file_name(view: View, appearance: Appearance) -> String {
+    let appearance = match appearance {
+        Appearance::Dark => "dark",
+        Appearance::Light => "light",
+    };
+    format!("{}-{appearance}.png", view.name())
 }
 
 /// The number macOS's window server knows the window by.
@@ -313,6 +372,7 @@ fn without_metadata(png: &[u8]) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mail::Folder;
     use crate::settings::Settings;
 
     /// A chunk of `kind` holding `data`, with a checksum that is copied as it is.
@@ -369,8 +429,9 @@ mod tests {
         assert_eq!(without_metadata(&png[..png.len() - 12]), None, "no end");
     }
 
-    #[test]
-    fn the_readme_view_opens_the_demos_booking_beside_sample_folders() {
+    /// The demo with the README's view set up, starting from the light
+    /// appearance.
+    fn readme_view() -> App {
         let mut settings = Settings::default();
         settings.appearance = Appearance::Light;
         let (mut app, _) = App::boot(true, settings);
@@ -381,14 +442,56 @@ mod tests {
             crate::mail::demo::now(),
         );
         let _ = app.update(Message::ConversationsLoaded(1, page));
-
         for message in opening(&app).expect("the demo's inbox lists the booking") {
             let _ = app.update(message);
         }
+        app
+    }
+
+    #[test]
+    fn the_readme_view_opens_the_demos_booking_in_the_dark_appearance() {
+        let app = readme_view();
 
         let open = app.mailbox().unwrap().selected_summary();
         assert_eq!(open.and_then(|row| row.subject.as_deref()), Some(SUBJECT));
-        assert_eq!(app.folders(), sample_places().folders.as_slice());
         assert_eq!(app.settings().appearance, Appearance::Dark);
+    }
+
+    #[test]
+    fn each_view_is_entered_from_the_inbox_and_left_for_it() {
+        let mut app = readme_view();
+        let mut view = Some(View::Mailbox);
+        let mut names = Vec::new();
+
+        while let Some(shown) = view {
+            for message in shown.enter() {
+                let _ = app.update(message);
+            }
+            assert_eq!(app.showing_settings(), shown == View::Settings, "{shown:?}");
+            let subject = app
+                .compose()
+                .map(|compose| compose.field(ComposeField::Subject));
+            assert_eq!(
+                subject,
+                (shown == View::Compose).then_some("Plans for Thursday"),
+                "{shown:?}"
+            );
+            for message in shown.leave() {
+                let _ = app.update(message);
+            }
+            assert!(!app.showing_settings(), "{shown:?}");
+            assert!(app.compose().is_none(), "{shown:?}");
+            names.push(file_name(shown, Appearance::Dark));
+            view = shown.next();
+        }
+
+        assert_eq!(
+            names,
+            [
+                "main-window-dark.png",
+                "settings-dark.png",
+                "compose-dark.png"
+            ]
+        );
     }
 }

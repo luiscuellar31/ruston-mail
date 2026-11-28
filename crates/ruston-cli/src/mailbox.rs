@@ -10,7 +10,7 @@ use ruston_core::mail::read::search_window;
 use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, label_type};
 use ruston_core::{
-    AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount,
+    AddressInfo, Client, Conversation, ConversationMessage, Error, Label, LabelCount, ListOptions,
     MessageMetadata, Quote, Recipient, RecipientProtection, Result, SearchOpts, SendOptions,
 };
 use std::collections::HashSet;
@@ -180,7 +180,8 @@ impl Mailbox {
     }
 
     /// Every address of the account: a reply leaves them out of whom it
-    /// goes to, and goes from the one the original reached.
+    /// goes to, and goes from the one the original reached when mail can go
+    /// out from it.
     pub(crate) fn own_addresses(&self) -> Vec<AddressInfo> {
         match self {
             Self::Proton(client) => client.addresses(),
@@ -215,7 +216,11 @@ impl Mailbox {
         page: u32,
     ) -> Result<(u32, Vec<Conversation>)> {
         match self {
-            Self::Proton(client) => client.list_conversations(id, page, PAGE_SIZE, false).await,
+            Self::Proton(client) => {
+                client
+                    .list_conversations(id, page, PAGE_SIZE, ListOptions::default())
+                    .await
+            }
             Self::Demo(session) => Ok(session.conversations(id, page, PAGE_SIZE)),
         }
     }

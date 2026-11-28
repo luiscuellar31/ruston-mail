@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
-use super::theme::{self, Emphasis};
-use super::{identity, mailbox::detail, reader};
+use super::widgets::{self, Emphasis, detail};
+use super::{identity, reader, theme};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;
@@ -185,6 +185,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             quote_choice(ui, compose, leaving, messages);
         }
     }
+    sender_choice(ui, compose, leaving, messages);
     recipient_fields(ui, compose, leaving, messages);
     ui.add_space(4.0);
     if compose.asks_for_subject() {
@@ -236,7 +237,7 @@ fn title_and_actions(
                 if ui
                     .add_enabled(
                         compose.can_send(),
-                        theme::primary(egui::Button::new(send_label)),
+                        widgets::primary(egui::Button::new(send_label)),
                     )
                     .clicked()
                 {
@@ -271,7 +272,7 @@ fn send_label(sending: &Sending) -> &'static str {
 /// Asks whether to throw the written message away, over the window the
 /// draft is in, so the form under the question stays where it is.
 fn discard_prompt(context: &egui::Context) -> Option<Message> {
-    theme::confirmation(
+    widgets::confirmation(
         context,
         "discard-draft",
         "Discard unsaved message?",
@@ -282,6 +283,33 @@ fn discard_prompt(context: &egui::Context) -> Option<Message> {
         ],
         Message::CancelDiscard,
     )
+}
+
+/// Which of the account's addresses the message goes out from, offered
+/// when it has more than one: the first unless the message answers mail
+/// that reached another.
+fn sender_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
+    let choices = compose.sender_choices();
+    let Some(sender) = compose.sender().filter(|_| !choices.is_empty()) else {
+        return;
+    };
+    let name = ui.label(egui::RichText::new("From").color(theme::colors(ui).muted));
+    let mut chosen = sender.to_owned();
+    ui.add_enabled_ui(!leaving, |ui| {
+        egui::ComboBox::from_id_salt(("compose-sender", compose.id()))
+            .selected_text(sender)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for address in choices {
+                    ui.selectable_value(&mut chosen, address.clone(), address.as_str());
+                }
+            })
+            .response
+            .labelled_by(name.id);
+    });
+    if chosen != sender {
+        messages.push(Message::ComposeSender(chosen));
+    }
 }
 
 /// To, and Cc and Bcc once asked for; what the typed addresses mean for how
@@ -319,7 +347,7 @@ fn recipient_fields(
         "More options"
     };
     if ui
-        .add_enabled(!leaving, theme::compact_button(ui, more))
+        .add_enabled(!leaving, widgets::compact_button(ui, more))
         .clicked()
     {
         messages.push(Message::ToggleComposeCopies);
@@ -348,7 +376,7 @@ fn attachment_list(
                 egui::RichText::new(format!("📎 {name}{size}")).color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button(ui, "Remove"))
+                .add_enabled(!leaving, widgets::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::RemoveComposeAttachment(index));
@@ -377,7 +405,7 @@ fn forwarded_list(
                 .color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button(ui, "Remove"))
+                .add_enabled(!leaving, widgets::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::LeaveOutForwarded(file.id.clone()));
@@ -407,7 +435,7 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
                 ui,
                 theme::BODY_SIZE,
             )))
-            .frame(theme::field_frame(ui))
+            .frame(widgets::field_frame(ui))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
     );
@@ -451,7 +479,7 @@ pub(super) fn folded_strip(ui: &mut egui::Ui, compose: &Compose, messages: &mut 
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui
-                    .add(theme::compact_button(ui, "Continue writing"))
+                    .add(widgets::compact_button(ui, "Continue writing"))
                     .clicked()
                 {
                     messages.push(Message::ContinueWriting);
@@ -502,7 +530,7 @@ fn quote_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &
     let mut quoted = compose.quote() == Some(Quote::Original);
     let choice = ui.add_enabled(
         !leaving,
-        theme::Checkbox::new(&mut quoted, "Quote the original under your text"),
+        widgets::Checkbox::new(&mut quoted, "Quote the original under your text"),
     );
     if choice.changed() {
         messages.push(Message::ToggleComposeQuote);
@@ -524,7 +552,7 @@ fn line(
     let response = ui
         .add_enabled(
             !leaving,
-            theme::text_field(ui, &mut value)
+            widgets::text_field(ui, &mut value)
                 .id(field_id(field, compose.id()))
                 .desired_width(f32::INFINITY),
         )

@@ -211,21 +211,25 @@ mod tests {
         assert!(!inspections.can_start(), "nothing waits");
         inspections.enqueue((0..200).flat_map(|i| [i.to_string(), i.to_string()]));
         assert_eq!(inspections.admitted.len(), CAPACITY);
-        for request in 1..=4 {
+        let slots = RequestId::try_from(INSPECTION_CONCURRENCY).unwrap();
+        for request in 1..=slots {
             assert!(inspections.can_start());
             assert!(inspections.start(request).is_some());
         }
         // Every slot is taken: an ID asked for now would go unused.
+        let next = slots + 1;
         assert!(!inspections.can_start());
-        assert!(inspections.start(5).is_none());
+        assert!(inspections.start(next).is_none());
         inspections.enqueue(["0".into(), "extra".into()]);
         assert_eq!(inspections.admitted.len(), CAPACITY);
         assert!(!inspections.finish(99, "0"));
         assert!(inspections.finish(1, "0"));
         assert!(!inspections.finish(1, "0"));
-        let (id, _) = inspections.start(5).unwrap();
-        assert_eq!(id, "4");
-        inspections.enqueue(["4".into(), "extra".into()]);
+        // The slot freed goes to the first conversation still waiting.
+        let waiting = slots.to_string();
+        let (id, _) = inspections.start(next).unwrap();
+        assert_eq!(id, waiting);
+        inspections.enqueue([waiting, "extra".into()]);
         assert_eq!(inspections.admitted.len(), CAPACITY);
         assert_eq!(inspections.queued.back().unwrap(), "extra");
     }

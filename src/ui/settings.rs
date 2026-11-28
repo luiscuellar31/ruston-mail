@@ -2,25 +2,26 @@ use std::path::Path;
 
 use eframe::egui::{self, Align, Layout};
 
-use super::theme::{self, Emphasis};
-use crate::app::{Message, UpdateStatus};
+use super::{theme, widgets};
+use crate::app::{App, Message, SettingsSection, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{
     Appearance, ComposePlacement, MAX_NOTICE_SECONDS, MIN_NOTICE_SECONDS, Settings, StartFolder,
     TEXT_SCALES,
 };
 
-/// Settings, with Apply and Back to mail at their foot. Returns where the
-/// page scrolls, above those buttons, which a notice must leave uncovered.
+/// The section of Settings that is open, with Back to mail at its foot. A
+/// choice made in it applies at once. `sections_row` lists the sections above
+/// it, for a window whose sidebar does not. Returns where the page scrolls,
+/// above that button, which a notice must leave uncovered.
 pub(super) fn show(
     root: &mut egui::Ui,
-    current: &Settings,
-    draft: &mut Settings,
+    app: &App,
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
-    third_party_notices: Option<&Path>,
-    update_status: Option<UpdateStatus>,
+    sections_row: bool,
 ) -> egui::Rect {
+    let section = app.settings_section();
     egui::Panel::bottom("settings-actions")
         .frame(
             theme::panel_frame(theme::colors(root).panel).outer_margin(egui::Margin {
@@ -33,101 +34,114 @@ pub(super) fn show(
                 if ui.button("Back to mail").clicked() {
                     messages.push(Message::ShowSettings(false));
                 }
-
-                let changes = preference_changes(current, draft);
-                if ui
-                    .add_enabled(
-                        !changes.is_empty(),
-                        theme::primary(egui::Button::new("Apply")),
-                    )
-                    .clicked()
-                {
-                    messages.extend(changes);
-                }
             });
         });
 
     root.scope(|ui| {
         ui.spacing_mut().scroll = theme::panel_scroll_style();
+        // Each section keeps where it was scrolled to.
         egui::ScrollArea::vertical()
+            .id_salt(("settings-page", section))
             .auto_shrink([false, false])
             .show(ui, |ui| {
+                ui.heading(
+                    egui::RichText::new("Settings")
+                        .size(theme::text_size(ui, theme::PAGE_TITLE_SIZE))
+                        .strong(),
+                );
+                ui.add_space(18.0);
+                if sections_row {
+                    sections(ui, section, messages);
+                    ui.add_space(14.0);
+                }
+                // The controls edit a copy, and what they change in it is
+                // asked for at once.
+                let mut edited = app.settings().clone();
                 page(
                     ui,
-                    draft,
+                    section,
+                    &mut edited,
                     messages,
                     notification_status,
-                    third_party_notices,
-                    update_status,
-                )
+                    app.third_party_notices(),
+                    app.update_status(),
+                );
+                messages.extend(preference_changes(app.settings(), &edited));
             });
     })
     .response
     .rect
 }
 
-#[derive(Clone, Copy)]
-pub(super) enum ExitDecision {
-    KeepEditing,
-    Discard,
-    Apply,
+/// What each section is called, in the navigation and on its card.
+pub(super) fn title(section: SettingsSection) -> &'static str {
+    match section {
+        SettingsSection::Reading => "Reading",
+        SettingsSection::Writing => "Writing",
+        SettingsSection::Appearance => "Appearance",
+        SettingsSection::General => "General",
+        SettingsSection::Advanced => "Advanced",
+        SettingsSection::Keyboard => "Keyboard",
+        SettingsSection::About => "About",
+    }
 }
 
-pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
-    theme::confirmation(
-        context,
-        "unsaved-settings",
-        "Unsaved settings",
-        "Apply your changes before leaving Settings?",
-        &[
-            (
-                "Keep editing",
-                Emphasis::Secondary,
-                ExitDecision::KeepEditing,
-            ),
-            ("Discard changes", Emphasis::Danger, ExitDecision::Discard),
-            ("Apply and continue", Emphasis::Primary, ExitDecision::Apply),
-        ],
-        ExitDecision::KeepEditing,
-    )
+/// The icon each section has in the sidebar, as each folder has one.
+pub(super) fn icon(section: SettingsSection) -> theme::Icon {
+    match section {
+        SettingsSection::Reading => theme::Icon::Reading,
+        SettingsSection::Writing => theme::Icon::Compose,
+        SettingsSection::Appearance => theme::Icon::Palette,
+        SettingsSection::General => theme::Icon::Toggles,
+        SettingsSection::Advanced => theme::Icon::Sliders,
+        SettingsSection::Keyboard => theme::Icon::Keyboard,
+        SettingsSection::About => theme::Icon::About,
+    }
 }
 
+/// The sections as a row of buttons, the open one chosen, where no sidebar
+/// lists them.
+fn sections(ui: &mut egui::Ui, open: SettingsSection, messages: &mut Vec<Message>) {
+    ui.horizontal_wrapped(|ui| {
+        for section in SettingsSection::ALL {
+            if ui
+                .add(egui::Button::selectable(section == open, title(section)))
+                .clicked()
+            {
+                messages.push(Message::ShowSettingsSection(section));
+            }
+        }
+    });
+}
+
+/// The card of one section.
 fn page(
     ui: &mut egui::Ui,
+    section: SettingsSection,
     settings: &mut Settings,
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
     third_party_notices: Option<&Path>,
     update_status: Option<UpdateStatus>,
 ) {
-    ui.heading(
-        egui::RichText::new("Settings")
-            .size(theme::text_size(ui, theme::PAGE_TITLE_SIZE))
-            .strong(),
-    );
-    ui.add_space(18.0);
-
-    reading(ui, settings);
-    ui.add_space(14.0);
-    links_and_images(ui, settings);
-    ui.add_space(14.0);
-    writing(ui, settings);
-    ui.add_space(14.0);
-    starting_up(ui, settings);
-    ui.add_space(14.0);
-    interface(ui, settings, messages, notification_status);
-    ui.add_space(14.0);
-    advanced(ui, settings);
-    ui.add_space(14.0);
-    keyboard(ui);
-    ui.add_space(14.0);
-    about(ui, settings, messages, third_party_notices, update_status);
+    match section {
+        SettingsSection::Reading => reading(ui, settings),
+        SettingsSection::Writing => writing(ui, settings),
+        SettingsSection::Appearance => appearance(ui, settings, messages),
+        SettingsSection::General => general(ui, settings, notification_status),
+        SettingsSection::Advanced => advanced(ui, settings),
+        SettingsSection::Keyboard => keyboard(ui),
+        SettingsSection::About => {
+            about(ui, settings, messages, third_party_notices, update_status);
+        }
+    }
 }
 
-/// What opens with a conversation, and how much of what its sender wrote shows.
+/// What opens with a conversation, how much of what its sender wrote shows,
+/// and what a message may open or show beyond its own text.
 fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
-    section(ui, "Reading", |ui| {
-        ui.add(theme::Checkbox::new(
+    section(ui, title(SettingsSection::Reading), |ui| {
+        ui.add(widgets::Checkbox::new(
             &mut settings.mark_read_on_open,
             "Mark mail as read when I open it",
         ));
@@ -137,7 +151,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.expand_all_messages,
             "Open every message in a conversation",
         ));
@@ -147,7 +161,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_quoted_text,
             "Show quoted text without unfolding it",
         ));
@@ -157,7 +171,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_hidden_text,
             "Show text the sender hid",
         ));
@@ -167,7 +181,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.sender_text_styles,
             "Use the sender's text styles",
         ));
@@ -177,7 +191,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.data_tables,
             "Show tables of data in columns",
         ));
@@ -185,13 +199,9 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
             ui,
             "Receipts, invoices and timetables keep their columns. Tables that only lay a newsletter out read as text either way.",
         );
-    });
-}
+        ui.add_space(6.0);
 
-/// What a message may open or show beyond its own text.
-fn links_and_images(ui: &mut egui::Ui, settings: &mut Settings) {
-    section(ui, "Links and images", |ui| {
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.confirm_links,
             "Ask before opening a link",
         ));
@@ -201,7 +211,7 @@ fn links_and_images(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_inline_images,
             "Show pictures a message carries within it",
         ));
@@ -214,7 +224,7 @@ fn links_and_images(ui: &mut egui::Ui, settings: &mut Settings) {
 
 /// Where a message is written and how it is sent.
 fn writing(ui: &mut egui::Ui, settings: &mut Settings) {
-    section(ui, "Writing", |ui| {
+    section(ui, title(SettingsSection::Writing), |ui| {
         ui.horizontal_wrapped(|ui| {
             for (placement, label) in [
                 (ComposePlacement::ReadingPane, "Reading pane"),
@@ -246,44 +256,12 @@ fn writing(ui: &mut egui::Ui, settings: &mut Settings) {
     });
 }
 
-/// The folder a run opens in.
-fn starting_up(ui: &mut egui::Ui, settings: &mut Settings) {
-    section(ui, "Starting up", |ui| {
-        egui::ComboBox::from_id_salt("start-folder")
-            .selected_text(start_label(settings.start))
-            .width(180.0)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(
-                    &mut settings.start,
-                    StartFolder::LastRead,
-                    "Where I left off",
-                );
-                for folder in MailFolder::ALL {
-                    ui.selectable_value(
-                        &mut settings.start,
-                        StartFolder::Always(folder),
-                        folder.name(),
-                    );
-                }
-            });
-        description(
-            ui,
-            "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
-        );
-    });
-}
-
-/// How the window looks and what it tells the system.
-fn interface(
-    ui: &mut egui::Ui,
-    settings: &mut Settings,
-    messages: &mut Vec<Message>,
-    notification_status: super::notifications::Status,
-) {
-    section(ui, "Interface", |ui| {
+/// How the window looks: its scheme, font and sizes.
+fn appearance(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Message>) {
+    section(ui, title(SettingsSection::Appearance), |ui| {
         appearance_choice(ui, settings);
         ui.add_space(8.0);
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.system_font,
             "Use system interface font",
         ));
@@ -320,13 +298,56 @@ fn interface(
             ui,
             "Makes the text alone larger or smaller. Rows and buttons grow or shrink with it.",
         );
+        ui.add_space(12.0);
+        if ui.button("Reset window and pane sizes").clicked() {
+            messages.push(Message::ResetLayout);
+        }
+        description(ui, "Restores the default layout immediately.");
+    });
+}
+
+/// The folder a run opens in, and what the app tells the system and the
+/// window's foot.
+fn general(
+    ui: &mut egui::Ui,
+    settings: &mut Settings,
+    notification_status: super::notifications::Status,
+) {
+    section(ui, title(SettingsSection::General), |ui| {
+        let label = ui.label("Folder at start");
+        egui::ComboBox::from_id_salt("start-folder")
+            .selected_text(start_label(settings.start))
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(
+                    &mut settings.start,
+                    StartFolder::LastRead,
+                    "Where I left off",
+                );
+                for folder in MailFolder::ALL {
+                    ui.selectable_value(
+                        &mut settings.start,
+                        StartFolder::Always(folder),
+                        folder.name(),
+                    );
+                }
+            })
+            .response
+            .labelled_by(label.id);
+        description(
+            ui,
+            "A folder the account made cannot be pinned: it could be renamed or gone by the next run.",
+        );
         ui.add_space(8.0);
         if let Some((label, what_it_does)) = UNREAD_BADGE {
-            ui.add(theme::Checkbox::new(&mut settings.show_unread_badge, label));
+            ui.add(widgets::Checkbox::new(
+                &mut settings.show_unread_badge,
+                label,
+            ));
             description(ui, what_it_does);
             ui.add_space(8.0);
         }
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",
         ));
@@ -357,18 +378,13 @@ fn interface(
             ui,
             "How long notices at the foot of the window stay, such as Message sent or the offer to undo a move. A notice also stays while the pointer rests on it.",
         );
-        ui.add_space(12.0);
-        if ui.button("Reset window and pane sizes").clicked() {
-            messages.push(Message::ResetLayout);
-        }
-        description(ui, "Restores the default layout immediately.");
     });
 }
 
 /// Dark, light or, where the system tells which it is in, the system's own.
 /// Choosing a scheme stops following the system.
 fn appearance_choice(ui: &mut egui::Ui, settings: &mut Settings) {
-    ui.label("Appearance");
+    ui.label("Theme");
     // winit tells the system's mode on macOS and Windows, not on Linux.
     let offer_system = !cfg!(target_os = "linux");
     ui.horizontal_wrapped(|ui| {
@@ -419,8 +435,8 @@ const UNREAD_BADGE: Option<(&str, &str)> = if cfg!(target_os = "macos") {
 
 /// Choices that ask Proton, or this device, for more than the defaults do.
 fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
-    section(ui, "Advanced", |ui| {
-        ui.add(theme::Checkbox::new(
+    section(ui, title(SettingsSection::Advanced), |ui| {
+        ui.add(widgets::Checkbox::new(
             &mut settings.check_recipient_protection,
             "Check recipient encryption while writing",
         ));
@@ -430,7 +446,7 @@ fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.accept_international_domains,
             "Accept international domain names",
         ));
@@ -440,7 +456,7 @@ fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.search_device_offline,
             "Search this device when Proton cannot be reached",
         ));
@@ -453,10 +469,10 @@ fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
 
 /// The keys the mailbox answers to.
 fn keyboard(ui: &mut egui::Ui) {
-    section(ui, "Keyboard", |ui| {
+    section(ui, title(SettingsSection::Keyboard), |ui| {
         description(
             ui,
-            "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type.",
+            "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type. The single keys are Proton Mail's own.",
         );
         ui.add_space(6.0);
         let width = keys_width(ui);
@@ -474,7 +490,7 @@ fn about(
     third_party_notices: Option<&Path>,
     update_status: Option<UpdateStatus>,
 ) -> egui::Response {
-    section(ui, "About", |ui| {
+    section(ui, title(SettingsSection::About), |ui| {
         ui.horizontal_top(|ui| {
             ui.add(
                 egui::Image::new(egui::include_image!("../../assets/ui/ruston-mail-128.png"))
@@ -515,19 +531,19 @@ fn about(
         );
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.add(theme::compact_button(ui, "Source code")).clicked() {
+            if ui.add(widgets::compact_button(ui, "Source code")).clicked() {
                 messages.push(Message::OpenSourceCode);
             }
             if third_party_notices.is_some()
                 && ui
-                    .add(theme::compact_button(ui, "Third-party notices"))
+                    .add(widgets::compact_button(ui, "Third-party notices"))
                     .clicked()
             {
                 messages.push(Message::OpenThirdPartyNotices);
             }
         });
         ui.add_space(12.0);
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.check_for_updates,
             "Check for updates",
         ));
@@ -559,7 +575,7 @@ fn update_found(ui: &mut egui::Ui, status: UpdateStatus, messages: &mut Vec<Mess
 /// Opens a newer release's page, where it is downloaded from.
 pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
     if ui
-        .add(theme::compact_button(ui, "Download"))
+        .add(widgets::compact_button(ui, "Download"))
         .on_hover_text("Opens the release page in your browser.")
         .clicked()
     {
@@ -567,7 +583,8 @@ pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
     }
 }
 
-pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
+/// The messages that make `current` what `draft`, the copy the page edited, is.
+fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     let mut messages = Vec::new();
     if draft.mark_read_on_open != current.mark_read_on_open {
         messages.push(Message::SetMarkReadOnOpen(draft.mark_read_on_open));
@@ -692,7 +709,7 @@ pub(super) fn zoom_step(current: f32, step: ZoomStep) -> f32 {
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
-const SHORTCUTS: [(&str, &str); 11] = [
+const SHORTCUTS: [(&str, &str); 20] = [
     ("j  /  Down", "Open the next conversation"),
     ("k  /  Up", "Open the previous one"),
     (
@@ -708,39 +725,62 @@ const SHORTCUTS: [(&str, &str); 11] = [
     (COMMAND_COMMA, "Open or close Settings"),
     (COMMAND_N, "Write a new message"),
     (COMMAND_ENTER, "Send the message being written"),
-    (COMMAND_TRASH, "Move selected conversation to Trash"),
+    (
+        "r",
+        "Mark as read, or reply to the open conversation once it is read",
+    ),
+    ("Shift + R  /  Shift + F", "Reply to all, or forward"),
+    ("u", "Mark as unread"),
+    ("*", "Add the star, or remove it"),
+    ("i  /  a  /  s", "Move to Inbox, Archive or Spam"),
+    (COMMAND_TRASH, "Move to Trash"),
+    (COMMAND_Z, "Undo a move, while the list offers to"),
+    (
+        "Shift + U  /  Shift + A",
+        "List the unread conversations alone, or all of them",
+    ),
+    (FOLD_SIDEBAR, "Fold or unfold the sidebar"),
     (COMMAND_ZOOM, "Zoom in, zoom out, or back to 100%"),
+    ("?", "Show these keys"),
 ];
 
 #[cfg(target_os = "macos")]
 const COMMAND_R: &str = "Cmd + R";
 #[cfg(target_os = "macos")]
-const COMMAND_F: &str = "Cmd + F";
+const COMMAND_F: &str = "Slash  /  Cmd + F";
 #[cfg(target_os = "macos")]
 const COMMAND_COMMA: &str = "Cmd + ,";
 #[cfg(target_os = "macos")]
-const COMMAND_N: &str = "Cmd + N";
+const COMMAND_N: &str = "n  /  Cmd + N";
 #[cfg(target_os = "macos")]
 const COMMAND_ENTER: &str = "Cmd + Enter";
 #[cfg(target_os = "macos")]
-const COMMAND_TRASH: &str = "Cmd + Backspace";
+const COMMAND_TRASH: &str = "t  /  Cmd + Backspace";
+#[cfg(target_os = "macos")]
+const COMMAND_Z: &str = "Cmd + Z";
 #[cfg(target_os = "macos")]
 const COMMAND_ZOOM: &str = "Cmd + Plus / Minus / 0";
+#[cfg(target_os = "macos")]
+const FOLD_SIDEBAR: &str = "Ctrl + Cmd + S";
 
 #[cfg(not(target_os = "macos"))]
 const COMMAND_R: &str = "Ctrl + R";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_F: &str = "Ctrl + F";
+const COMMAND_F: &str = "Slash  /  Ctrl + F";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_COMMA: &str = "Ctrl + ,";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_N: &str = "Ctrl + N";
+const COMMAND_N: &str = "n  /  Ctrl + N";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_ENTER: &str = "Ctrl + Enter";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_TRASH: &str = "Delete / Ctrl + Backspace";
+const COMMAND_TRASH: &str = "t  /  Delete  /  Ctrl + Backspace";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_Z: &str = "Ctrl + Z";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_ZOOM: &str = "Ctrl + Plus / Minus / 0";
+#[cfg(not(target_os = "macos"))]
+const FOLD_SIDEBAR: &str = "F9";
 
 /// One key and what it does, with the keys in a column of their own so the
 /// descriptions line up however wide the window is.

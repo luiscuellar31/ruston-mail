@@ -32,9 +32,9 @@ const RESIZE_STEP: f32 = 8.0;
 
 use crate::mail::{
     AuthError, BodyFormat, ConversationDetail, ConversationPage, ConversationSummary, Folder,
-    IncomingMail, MailAction, MailBackend, MailboxCounts, MailboxError, OwnPlaces, PlaceLook,
-    ProtectionCheck, ProtonMailService, ResumeOutcome, SendError, SignInOutcome, SignInPrompt,
-    SummaryKind, demo::DemoMailbox,
+    IncomingMail, ListFilter, ListOrder, MailAction, MailBackend, MailboxCounts, MailboxError,
+    OwnPlaces, PlaceLook, ProtectionCheck, ProtonMailService, ResumeOutcome, SendError,
+    SignInOutcome, SignInPrompt, SummaryKind, demo::DemoMailbox,
 };
 
 use attachments::AttachmentSave;
@@ -46,7 +46,8 @@ pub use compose::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Sendi
 pub use effect::{Effect, Effects, UiEffect};
 pub use keys::{Key, KeyPress};
 pub use layout::{
-    MIN_PANEL_WIDTH, compact as compact_layout, ratios as panel_ratios, widths as panel_widths,
+    MIN_PANEL_WIDTH, MIN_READER_WIDTH, compact as compact_layout, ratios as panel_ratios,
+    widths as panel_widths, widths_beside_rail,
 };
 pub use links::PendingLink;
 use mailbox::ActionStart;
@@ -66,6 +67,32 @@ pub use updates::UpdateStatus;
 type SessionEpoch = u64;
 pub(crate) type AuthAttempt = u64;
 const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
+
+/// The parts Settings is split into, each shown on its own, in the order
+/// its navigation lists them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum SettingsSection {
+    #[default]
+    Reading,
+    Writing,
+    Appearance,
+    General,
+    Advanced,
+    Keyboard,
+    About,
+}
+
+impl SettingsSection {
+    pub const ALL: [Self; 7] = [
+        Self::Reading,
+        Self::Writing,
+        Self::Appearance,
+        Self::General,
+        Self::Advanced,
+        Self::Keyboard,
+        Self::About,
+    ];
+}
 
 #[derive(Clone)]
 pub enum Message {
@@ -99,6 +126,11 @@ pub enum Message {
     /// already came to.
     DuplicateLogoutFinished(SessionEpoch, Result<(), AuthError>),
     SelectFolder(Folder),
+    /// Lists only the open folder's conversations this shows, or all of them
+    /// again.
+    ShowOnly(ListFilter),
+    /// Lists the open folder's conversations in this order.
+    SortBy(ListOrder),
     SelectConversation(String),
     /// Adds a row to the rows chosen, or takes it out, as a Command click
     /// (Ctrl on Windows and Linux) does.
@@ -162,6 +194,8 @@ pub enum Message {
     ActionFinished(Vec<ActionRequest>, Result<(), MailboxError>),
     MarkReadFinished(ActionRequest, Result<(), MailboxError>),
     PanelsResized(Panels),
+    /// Folds the sidebar into a strip of icons, or unfolds it.
+    FoldSidebar(bool),
     /// A settings write finished: the revision it wrote, and whether the file
     /// holds it now.
     SettingsWritten(u64, bool),
@@ -195,6 +229,8 @@ pub enum Message {
     RevealAttachment(PathBuf),
     /// Shows or hides Settings beside the mailbox sidebar.
     ShowSettings(bool),
+    /// Shows one part of Settings in place of the one shown.
+    ShowSettingsSection(SettingsSection),
     /// Opens the project's own repository from the About card.
     OpenSourceCode,
     /// Opens the notices of the third-party software the package shipped,
@@ -284,6 +320,8 @@ pub enum Message {
     /// Leaves one of the original's files, by ID, out of a forward.
     LeaveOutForwarded(String),
     ComposeChanged(ComposeField, String),
+    /// Sends the draft from another of the account's addresses.
+    ComposeSender(String),
     /// A recipient field lost focus; its addresses are complete enough to look up.
     ComposeRecipientsLeft,
     /// How Proton will protect the message for the looked-up recipients.
@@ -313,6 +351,36 @@ pub enum Notice {
     UpdateAvailable(Version),
 }
 
+/// What a session gathers and no other may see: all of it goes when the
+/// mailbox closes, so one account's never reaches the next one's.
+#[derive(Default)]
+struct SessionState {
+    /// A link clicked in a message, waiting for the user to confirm it.
+    pending_link: Option<PendingLink>,
+    pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
+    mailto_error: Option<MailtoError>,
+    /// The folders the account made, which the sidebar shows below Proton's
+    /// own. Empty until they arrive, and in demo mode for good.
+    folders: Vec<Folder>,
+    /// How each of `folders` looks in the sidebar, by custom ID.
+    place_looks: HashMap<String, PlaceLook>,
+    /// The folder list failed to load, so the next refresh asks again.
+    refetch_folders: bool,
+    /// The page a refresh the app started on its own asked for. The list
+    /// does not show such a refresh unless someone asks for one meanwhile.
+    automatic_refresh: Option<RequestId>,
+    /// A conversation opened while a draft covered the reader, so nobody saw
+    /// it. It is marked read once the reader shows it, if still open there.
+    read_once_shown: Option<String>,
+    /// The confirmation shown at the foot of the mailbox.
+    notice: Option<Notice>,
+    /// The attachment whose last save failed, by ID, and why; its row says so.
+    failed_save: Option<(String, SaveError)>,
+    /// The attachment in flight, preventing duplicate downloads.
+    saving_attachment: Option<AttachmentSave>,
+    new_mail: notifications::NewMail,
+}
+
 pub struct App {
     /// Set for a process started for the fictional mailbox. Such a process
     /// never signs in to Proton, even after its demo mailbox is closed.
@@ -334,10 +402,6 @@ pub struct App {
     auth_attempt: AuthAttempt,
     /// The question a running sign-in is waiting on, if any.
     pending_prompt: Option<SignInPrompt>,
-    /// A link clicked in a message, waiting for the user to confirm it.
-    pending_link: Option<PendingLink>,
-    pending_mailto: std::collections::VecDeque<crate::mailto::Request>,
-    mailto_error: Option<MailtoError>,
     backend: Option<MailBackend>,
     /// The Proton account the open session belongs to. The demo has none.
     account: Option<String>,
@@ -353,16 +417,8 @@ pub struct App {
     /// The conversation loading into the reader cache in the background. It
     /// stops whenever the reader's load would, and when another replaces it.
     preload: Option<AbortHandle>,
-    /// The folders the account made, which the sidebar shows below Proton's
-    /// own. Empty until they arrive, and in demo mode for good.
-    folders: Vec<Folder>,
-    /// How each of `folders` looks in the sidebar, by custom ID.
-    place_looks: HashMap<String, PlaceLook>,
-    /// The folder list failed to load, so the next refresh asks again.
-    refetch_folders: bool,
-    /// The page a refresh the app started on its own asked for. The list
-    /// does not show such a refresh unless someone asks for one meanwhile.
-    automatic_refresh: Option<RequestId>,
+    /// What the open session gathered, which ends with it.
+    session: SessionState,
     /// What the app remembers between runs.
     settings: Settings,
     /// Settings changes and the last revision written to disk.
@@ -379,6 +435,9 @@ pub struct App {
     settings_on_disk: Arc<Mutex<u64>>,
     /// Whether Settings replaces the conversation list and reader.
     showing_settings: bool,
+    /// The part of Settings shown, which it opens to again while the app
+    /// runs.
+    settings_section: SettingsSection,
     /// The notices of third-party software that came with the app, which
     /// the About card opens. A build run from Cargo has none.
     third_party_notices: Option<PathBuf>,
@@ -387,23 +446,13 @@ pub struct App {
     /// The message being written when Proton ended the session, kept in
     /// memory only until its own account signs in again.
     parked_draft: Option<ParkedDraft>,
-    /// A conversation opened while a draft covered the reader, so nobody saw
-    /// it. It is marked read once the reader shows it, if still open there.
-    read_once_shown: Option<String>,
     /// Changes for each opened draft so asynchronous attachment pickers from a
     /// closed or discarded draft cannot inject files into a subsequent draft.
     last_compose_id: ComposeId,
-    /// The confirmation shown at the foot of the mailbox.
-    notice: Option<Notice>,
-    /// The attachment whose last save failed, by ID, and why; its row says so.
-    failed_save: Option<(String, SaveError)>,
-    /// The attachment in flight, preventing duplicate downloads.
-    saving_attachment: Option<AttachmentSave>,
     /// The pictures of the open conversation, by attachment.
     inline_images: HashMap<String, InlineImage>,
     /// The turns those pictures take to be fetched.
     picture_turns: pictures::Turns,
-    new_mail: notifications::NewMail,
     /// What checking for updates last found, while it is on.
     update_status: Option<UpdateStatus>,
 }
@@ -439,9 +488,6 @@ impl App {
             adding_account: None,
             auth_attempt: 0,
             pending_prompt: None,
-            pending_link: None,
-            pending_mailto: std::collections::VecDeque::new(),
-            mailto_error: None,
             backend: None,
             account: None,
             mailbox: None,
@@ -450,10 +496,7 @@ impl App {
             inspections: Inspections::default(),
             reader_load: None,
             preload: None,
-            folders: Vec::new(),
-            place_looks: HashMap::new(),
-            refetch_folders: false,
-            automatic_refresh: None,
+            session: SessionState::default(),
             settings,
             settings_revision: 0,
             settings_written: 0,
@@ -461,17 +504,13 @@ impl App {
             settings_writing: false,
             settings_on_disk: Arc::new(Mutex::new(0)),
             showing_settings: false,
+            settings_section: SettingsSection::default(),
             third_party_notices: None,
             compose: None,
             parked_draft: None,
-            read_once_shown: None,
             last_compose_id: 0,
-            notice: None,
-            failed_save: None,
-            saving_attachment: None,
             inline_images: HashMap::new(),
             picture_turns: pictures::Turns::default(),
-            new_mail: notifications::NewMail::default(),
             update_status: None,
         }
     }
@@ -538,7 +577,7 @@ impl App {
 
     /// The confirmation to show at the foot of the mailbox.
     pub fn notice(&self) -> Option<&Notice> {
-        self.notice.as_ref()
+        self.session.notice.as_ref()
     }
 
     pub fn settings(&self) -> &Settings {
@@ -547,27 +586,24 @@ impl App {
 
     /// The folders the account made.
     pub fn folders(&self) -> &[Folder] {
-        &self.folders
-    }
-
-    /// Which sign-in is open: a message carrying it counts only while that
-    /// session lasts.
-    #[cfg(feature = "readme-screenshots")]
-    pub fn session_epoch(&self) -> SessionEpoch {
-        self.session_epoch
+        &self.session.folders
     }
 
     /// How the sidebar shows `folder`: plain for Proton's own.
     pub fn place_look(&self, folder: &Folder) -> PlaceLook {
         folder
             .custom_id()
-            .and_then(|id| self.place_looks.get(id))
+            .and_then(|id| self.session.place_looks.get(id))
             .copied()
             .unwrap_or_default()
     }
 
     pub fn showing_settings(&self) -> bool {
         self.showing_settings
+    }
+
+    pub fn settings_section(&self) -> SettingsSection {
+        self.settings_section
     }
 
     /// The notices of third-party software that came with the app, if any.
@@ -730,6 +766,8 @@ impl App {
                 return self.finish_duplicate_logout(epoch, result);
             }
             Message::SelectFolder(folder) => return self.select_folder(folder),
+            Message::ShowOnly(filter) => return self.show_only(filter),
+            Message::SortBy(order) => return self.sort_by(order),
             Message::SelectConversation(id) => {
                 // A conversation chosen while writing shows, with the draft
                 // folded above it.
@@ -782,13 +820,13 @@ impl App {
                 }
             }
             Message::DismissNotice(notice) => {
-                if self.notice.as_ref() == Some(&notice) {
-                    self.notice = None;
+                if self.session.notice.as_ref() == Some(&notice) {
+                    self.session.notice = None;
                 }
             }
             Message::RefreshMailbox => {
                 // Asked for during a refresh the app started, it shows that one.
-                self.automatic_refresh = None;
+                self.session.automatic_refresh = None;
                 return self.refresh_mailbox();
             }
             Message::AutoRefreshMailbox => return self.auto_refresh_mailbox(),
@@ -847,19 +885,19 @@ impl App {
                 if !self.settings.confirm_links {
                     return self.open_link_target(link.url);
                 }
-                self.pending_link = Some(link);
+                self.session.pending_link = Some(link);
             }
             Message::OpenLink => {
-                if let Some(link) = self.pending_link.take() {
+                if let Some(link) = self.session.pending_link.take() {
                     return self.open_link_target(link.url);
                 }
             }
             Message::CopyLink => {
-                if let Some(link) = self.pending_link.take() {
+                if let Some(link) = self.session.pending_link.take() {
                     return Effects::ui(UiEffect::CopyText(link.url));
                 }
             }
-            Message::DismissLink => self.pending_link = None,
+            Message::DismissLink => self.session.pending_link = None,
             // Copying takes the reader nowhere, so it needs no confirmation.
             Message::CopyLinkAddress(target) => {
                 if let Some(link) = PendingLink::parse(&target) {
@@ -870,14 +908,17 @@ impl App {
                 return Effects::ui(UiEffect::CopyText(addresses.join(", ")));
             }
             Message::ReceiveMailto(request) => self.receive_mailto(request),
-            Message::MailtoRejected => self.mailto_error = Some(MailtoError::Unreadable),
+            Message::MailtoRejected => self.session.mailto_error = Some(MailtoError::Unreadable),
             Message::OpenPendingMailto => return self.open_pending_mailto(),
             Message::DismissPendingMailto => {
-                self.pending_mailto.pop_front();
+                self.session.pending_mailto.pop_front();
             }
-            Message::DismissMailtoError => self.mailto_error = None,
+            Message::DismissMailtoError => self.session.mailto_error = None,
             Message::PanelsResized(panels) => {
                 self.remember(|settings| settings.panels = panels);
+            }
+            Message::FoldSidebar(folded) => {
+                self.remember(|settings| settings.sidebar_folded = folded);
             }
             Message::SettingsWritten(revision, written) => {
                 self.finish_settings_write(revision, written);
@@ -886,6 +927,7 @@ impl App {
                 self.remember(|settings| {
                     settings.window = Window::default();
                     settings.panels = Panels::default();
+                    settings.sidebar_folded = false;
                 });
                 return Effects::ui(UiEffect::ResetLayout);
             }
@@ -918,6 +960,7 @@ impl App {
             }
             Message::RevealAttachment(path) => return reveal_in_file_manager(path),
             Message::ShowSettings(showing) => self.showing_settings = showing,
+            Message::ShowSettingsSection(section) => self.settings_section = section,
             Message::SetMarkReadOnOpen(on) => {
                 self.remember(|settings| settings.mark_read_on_open = on);
             }
@@ -962,7 +1005,7 @@ impl App {
             }
             Message::SetDesktopNotifications(on) => {
                 self.remember(|settings| settings.desktop_notifications = on);
-                self.new_mail = notifications::NewMail::default();
+                self.session.new_mail = notifications::NewMail::default();
                 if on && !self.is_demo() {
                     return self.fetch_new_mail_notification();
                 }
@@ -998,6 +1041,7 @@ impl App {
             Message::ToggleComposeQuote => self.toggle_compose_quote(),
             Message::LeaveOutForwarded(id) => self.leave_out_forwarded(&id),
             Message::ComposeChanged(field, value) => self.change_compose(field, value),
+            Message::ComposeSender(address) => self.choose_compose_sender(address),
             Message::ComposeRecipientsLeft => return self.check_compose_protection(),
             Message::ComposeProtectionChecked(epoch, id, checks) => {
                 self.finish_protection_check(epoch, id, checks);
@@ -1074,7 +1118,7 @@ impl App {
     /// the list leaves unannounced.
     pub fn refreshing_on_its_own(&self) -> bool {
         self.mailbox.as_ref().is_some_and(|mailbox| {
-            matches!(mailbox.status(), ListStatus::Refreshing(id) if Some(id) == self.automatic_refresh)
+            matches!(mailbox.status(), ListStatus::Refreshing(id) if Some(id) == self.session.automatic_refresh)
         })
     }
 
@@ -1095,7 +1139,7 @@ impl App {
         if !self.auth_state.is_authenticated() {
             return Effects::none();
         }
-        self.pending_link = None;
+        self.session.pending_link = None;
         if let Some(MailBackend::Demo(service)) = self.backend.clone()
             && self.settings.mark_read_on_open
             && !self.postpone_read_while_covered(&id)
@@ -1165,8 +1209,7 @@ impl App {
                 MailAction::MoveTo(folder) => service.move_to(id, folder),
                 MailAction::SetUnread(unread) => service.set_unread(id, *unread),
                 MailAction::SetStarred(starred) => service.set_starred(id, *starred),
-                // The demo account owns no labels, so the reader offers none.
-                MailAction::SetLabel { .. } => false,
+                MailAction::SetLabel { label, on } => service.set_label(id, label, *on),
             })
             .collect();
         if applied.is_empty() {
@@ -1400,7 +1443,13 @@ impl App {
         let mailbox = self.mailbox.as_ref()?;
         let folder = mailbox.folder().clone();
         let page_size = mailbox.loaded_conversation_limit();
-        let (page, counts) = service.snapshot(&folder, page_size, crate::mail::demo::now());
+        let (page, counts) = service.snapshot(
+            &folder,
+            (mailbox.filter(), mailbox.order()),
+            |id| mailbox.lists(id),
+            page_size,
+            crate::mail::demo::now(),
+        );
 
         self.active_mailbox()?.apply_action_snapshot(page, counts)
     }

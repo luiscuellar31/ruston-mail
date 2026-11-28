@@ -129,6 +129,22 @@ impl Fixture {
             ..self
         }
     }
+
+    /// Gives it these labels of the demo account, by ID.
+    fn labeled(self, labels: &[&str]) -> Self {
+        Self {
+            labels: labels.iter().map(|label| (*label).to_owned()).collect(),
+            ..self
+        }
+    }
+
+    /// Files it in the folder the demo account made.
+    fn in_receipts(self) -> Self {
+        Self {
+            folder: receipts(),
+            ..self
+        }
+    }
 }
 
 fn mail(
@@ -139,7 +155,8 @@ fn mail(
     body: &'static str,
 ) -> Fixture {
     Fixture {
-        folder,
+        folder: folder.into(),
+        labels: Vec::new(),
         outgoing: matches!(folder, MailFolder::Sent | MailFolder::Drafts),
         correspondents: correspondents.to_owned(),
         subject: subject.to_owned(),
@@ -150,6 +167,7 @@ fn mail(
         html: false,
         to: Vec::new(),
         composed: false,
+        address: 0,
     }
 }
 
@@ -165,7 +183,8 @@ pub(super) fn fixtures() -> Vec<Fixture> {
             DESIGN_REVIEW_THREAD[0],
         )
         .unread()
-        .thread(&DESIGN_REVIEW_THREAD),
+        .thread(&DESIGN_REVIEW_THREAD)
+        .labeled(&[WORK]),
         mail(
             Inbox,
             "noreply@example.org",
@@ -183,7 +202,8 @@ pub(super) fn fixtures() -> Vec<Fixture> {
         )
         .unread()
         .starred()
-        .thread(&OFFSITE_THREAD),
+        .thread(&OFFSITE_THREAD)
+        .labeled(&[WORK, TRAVEL]),
         mail(
             Inbox,
             "Taylor Brooks",
@@ -222,7 +242,8 @@ pub(super) fn fixtures() -> Vec<Fixture> {
             2 * DAY + 3 * HOUR,
             "Hi Demo,\n\nAre you free for lunch Thursday at 12:30? The new noodle place near the station has outdoor tables.\n\nCasey",
         )
-        .starred(),
+        .starred()
+        .labeled(&[FAMILY]),
         mail(
             Inbox,
             "billing@example.com",
@@ -245,7 +266,8 @@ pub(super) fn fixtures() -> Vec<Fixture> {
             6 * DAY,
             "Hi Demo,\n\nI uploaded the photos from Saturday's hike. The folder includes the ridge viewpoint, the old fire tower, and our very muddy finish.\n\nMy favorite is IMG_1842. Feel free to add yours to the same album.\n\nJamie",
         )
-        .starred(),
+        .starred()
+        .labeled(&[FAMILY]),
         mail(
             Inbox,
             "Build Bot",
@@ -348,7 +370,8 @@ pub(super) fn fixtures() -> Vec<Fixture> {
             72 * DAY,
             "Hello Demo,\n\nYour outbound flight now departs at 16:20, 55 minutes later than scheduled. The flight number and arrival terminal are unchanged.\n\nYour airport transfer has been moved to 13:15. The updated itinerary is attached.\n\nTravel Desk",
         )
-        .starred(),
+        .starred()
+        .labeled(&[TRAVEL]),
         mail(
             Inbox,
             "Emerson Cole",
@@ -525,6 +548,24 @@ pub(super) fn fixtures() -> Vec<Fixture> {
             BOOKING_HTML,
         )
         .html(),
+        // Filed in the folder the demo account made.
+        mail(
+            Inbox,
+            "orders@example.com",
+            "Receipt for your order #2291",
+            5 * DAY + 4 * HOUR,
+            "Thank you for your order.\n\nOrder #2291: one desk lamp, $38.00, and shipping, $4.50. Total paid: $42.50.\n\nThis fictional receipt needs no action.",
+        )
+        .in_receipts(),
+        mail(
+            Inbox,
+            "Travel Desk",
+            "Receipt for your train tickets",
+            20 * DAY,
+            "Hello Demo,\n\nYour payment of $64.00 for two train tickets has been received. The tickets are valid on the date printed on them.\n\nTravel Desk",
+        )
+        .in_receipts()
+        .labeled(&[TRAVEL]),
     ]
 }
 

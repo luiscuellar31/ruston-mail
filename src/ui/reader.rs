@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 use jiff::tz::TimeZone;
 
-use super::mailbox::{detail, folder_icon};
+use super::mailbox::folder_icon;
+use super::widgets::{self, detail};
 use super::{UiState, theme};
 use crate::app::{
     AnswerKind, ConversationReader, InlineImage, Mailbox, Message, PendingLink, ReaderState,
@@ -101,7 +102,7 @@ pub(super) fn show(
 /// window's question, so it shows wherever the reader is, and the address
 /// scrolls inside it, so a long one cannot push the buttons away.
 pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option<Message> {
-    theme::confirmation_with(
+    widgets::confirmation_with(
         context,
         "link-prompt",
         &format!("Open a link to {}?", link.target),
@@ -113,9 +114,9 @@ pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option
                 .show(ui, |ui| ui.add(egui::Label::new(link.url.as_str()).wrap()));
         },
         &[
-            ("Cancel", theme::Emphasis::Secondary, Message::DismissLink),
-            ("Copy link", theme::Emphasis::Secondary, Message::CopyLink),
-            ("Open", theme::Emphasis::Primary, Message::OpenLink),
+            ("Cancel", widgets::Emphasis::Secondary, Message::DismissLink),
+            ("Copy link", widgets::Emphasis::Secondary, Message::CopyLink),
+            ("Open", widgets::Emphasis::Primary, Message::OpenLink),
         ],
         Message::DismissLink,
     )
@@ -511,7 +512,7 @@ fn move_and_flag_buttons(
         risky,
     } in moves(location)
     {
-        let mut button = theme::IconButton::new(icon, label);
+        let mut button = widgets::IconButton::new(icon, label);
         if risky {
             button = button.danger();
         }
@@ -536,7 +537,7 @@ fn move_and_flag_buttons(
     } in flags
     {
         if ui
-            .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
+            .add_enabled(enabled, widgets::IconButton::new(icon, label).selected(on))
             .clicked()
         {
             messages.push(Message::ApplyAction(action));
@@ -631,43 +632,66 @@ fn group_flags(rows: &[&ConversationSummary]) -> [FlagButton; 2] {
     )
 }
 
-/// The menu a right click opens on a conversation in the list: the moves and
-/// flags the reader offers, for that conversation, without opening it.
+/// The menu a right click opens on a conversation in the list: the moves,
+/// flags and labels the reader offers, for that conversation, without
+/// opening it.
 pub(super) fn conversation_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     row: &ConversationSummary,
+    places: &[Folder],
+    messages: &mut Vec<Message>,
+) {
+    let act = |action| Message::ApplyRowAction(row.id.clone(), action);
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.location_of(&row.id),
+        places,
+        flags(row.unread, row.starred),
+        act,
+        messages,
+    );
+    let labels = labels_carried(places, &row.labels);
+    if labels.is_empty() {
+        return;
+    }
+    ui.separator();
+    let enabled = mailbox.takes_actions();
+    icon_submenu(ui, enabled, theme::Icon::Label, "Labels", |ui| {
+        if let Some(action) = label_list(ui, &labels) {
+            messages.push(act(action));
+            ui.close();
+        }
+    });
+}
+
+/// The menu a right click opens on a row chosen with others: what the reader
+/// offers for all of them.
+pub(super) fn selection_menu(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    places: &[Folder],
     messages: &mut Vec<Message>,
 ) {
     action_menu(
         ui,
         mailbox,
-        mailbox.location_of(&row.id),
-        flags(row.unread, row.starred),
-        |action| Message::ApplyRowAction(row.id.clone(), action),
-        messages,
-    );
-}
-
-/// The menu a right click opens on a row chosen with others: what the reader
-/// offers for all of them.
-pub(super) fn selection_menu(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
-    action_menu(
-        ui,
-        mailbox,
         mailbox.selection_location(),
+        places,
         group_flags(&mailbox.selected_rows()),
         Message::ApplyAction,
         messages,
     );
 }
 
-/// A list menu of the moves out of `location` and of `flags`, each asking
-/// for the message `act` makes of its action.
+/// A list menu of the moves out of `location`, Move to among them, and of
+/// `flags`, each asking for the message `act` makes of its action.
 fn action_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     location: Option<&Folder>,
+    places: &[Folder],
     flags: [FlagButton; 2],
     act: impl Fn(MailAction) -> Message,
     messages: &mut Vec<Message>,
@@ -675,7 +699,7 @@ fn action_menu(
     ui.set_min_width(200.0);
     // An action asked for while the rows on screen take none would not start.
     let enabled = mailbox.takes_actions();
-    let mut item = |ui: &mut egui::Ui, icon, label, action| {
+    let item = |ui: &mut egui::Ui, messages: &mut Vec<Message>, icon, label, action| {
         if ui
             .add_enabled_ui(enabled, |ui| icon_item(ui, icon, label))
             .inner
@@ -692,7 +716,16 @@ fn action_menu(
         ..
     } in moves(location)
     {
-        item(ui, icon, label, MailAction::MoveTo(destination));
+        item(ui, messages, icon, label, MailAction::MoveTo(destination));
+    }
+    let destinations = move_destinations(location, mailbox.folder(), places);
+    if !destinations.is_empty() {
+        icon_submenu(ui, enabled, theme::Icon::Folder, "Move to…", |ui| {
+            if let Some(action) = destination_list(ui, &destinations) {
+                messages.push(act(action));
+                ui.close();
+            }
+        });
     }
     ui.separator();
     for FlagButton {
@@ -702,7 +735,7 @@ fn action_menu(
         ..
     } in flags
     {
-        item(ui, icon, label, action);
+        item(ui, messages, icon, label, action);
     }
 }
 
@@ -749,26 +782,30 @@ fn move_menu(
     wrap_for(ui, button_width(ui, title));
     ui.add_enabled_ui(enabled, |ui| {
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-            ui.set_min_width(MENU_MIN_WIDTH);
-            egui::ScrollArea::vertical()
-                .max_height(MENU_MAX_HEIGHT)
-                .show(ui, |ui| {
-                    for destination in destinations {
-                        if destination_item(ui, destination).clicked() {
-                            messages.push(Message::ApplyAction(MailAction::MoveTo(
-                                (*destination).clone(),
-                            )));
-                            ui.close();
-                        }
-                    }
-                });
+            if let Some(action) = destination_list(ui, destinations) {
+                messages.push(Message::ApplyAction(action));
+                ui.close();
+            }
         });
     });
 }
 
-/// One place in the Move to menu, with the icon the sidebar gives it.
-fn destination_item(ui: &mut egui::Ui, folder: &Folder) -> egui::Response {
-    icon_item(ui, folder_icon(folder), folder.name())
+/// The places of a Move to menu, each with the icon the sidebar gives it:
+/// the move to the one clicked, if any.
+fn destination_list(ui: &mut egui::Ui, destinations: &[&Folder]) -> Option<MailAction> {
+    ui.set_min_width(MENU_MIN_WIDTH);
+    egui::ScrollArea::vertical()
+        .max_height(MENU_MAX_HEIGHT)
+        .show(ui, |ui| {
+            let mut chosen = None;
+            for destination in destinations {
+                if icon_item(ui, folder_icon(destination), destination.name()).clicked() {
+                    chosen = Some(MailAction::MoveTo((*destination).clone()));
+                }
+            }
+            chosen
+        })
+        .inner
 }
 
 /// A menu entry led by its icon.
@@ -777,6 +814,38 @@ fn icon_item(ui: &mut egui::Ui, icon: theme::Icon, label: &str) -> egui::Respons
     let color = ui.style().interact(&layout.response).fg_stroke.color;
     theme::paint_atom_icon(ui, &layout, icon, color);
     layout.response
+}
+
+/// A menu entry led by its icon that opens `content` beside the menu, as
+/// egui's `SubMenuButton` does: when the pointer rests on it, or on a click.
+fn icon_submenu(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    icon: theme::Icon,
+    label: &str,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+    ui.add_enabled_ui(enabled, |ui| {
+        // Drawn as open while its menu is, so the way to it stays marked.
+        let id = SubMenu::id_from_widget_id(ui.next_auto_id());
+        let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(id));
+        let resting = ui.style().visuals.widgets.inactive;
+        if open {
+            ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
+        }
+        let layout = egui::Button::new((theme::icon_atom(), label))
+            .right_text(SubMenuButton::RIGHT_ARROW)
+            .atom_ui(ui);
+        let color = ui.style().interact(&layout.response).fg_stroke.color;
+        theme::paint_atom_icon(ui, &layout, icon, color);
+        ui.style_mut().visuals.widgets.inactive = resting;
+        // Named by its words alone, not by the arrow drawn after them.
+        layout.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+        });
+        SubMenu::new().show(ui, &layout.response, content);
+    });
 }
 
 /// The width of a text button showing `title` on one line.
@@ -807,18 +876,11 @@ fn label_menu(
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
-    let labels: Vec<_> = places
-        .iter()
-        .filter(|place| place.kind() == Some(CustomKind::Label))
-        .collect();
+    let labels = labels_carried(places, carried_labels);
     if labels.is_empty() {
         return;
     }
-    let carried_ids: HashSet<_> = carried_labels.iter().map(String::as_str).collect();
-    let applied = labels
-        .iter()
-        .filter(|label| label.custom_id().is_some_and(|id| carried_ids.contains(id)))
-        .count();
+    let applied = labels.iter().filter(|&&(_, carried)| carried).count();
     let title = if applied == 0 {
         "Labels".to_owned()
     } else {
@@ -827,33 +889,58 @@ fn label_menu(
     // The tag, as the sidebar marks labels; filled, like the star, while the
     // conversation carries any. Its size never changes, so a count arriving
     // with the detail cannot move the card.
-    let mut button = theme::IconButton::new(theme::Icon::Label, &title);
+    let mut button = widgets::IconButton::new(theme::Icon::Label, &title);
     if applied > 0 {
         button = button.selected(true);
     }
 
     ui.separator();
-    theme::icon_menu(ui, enabled, button, |ui| {
-        ui.set_min_width(MENU_MIN_WIDTH);
-        egui::ScrollArea::vertical()
-            .max_height(MENU_MAX_HEIGHT)
-            .show(ui, |ui| {
-                for label in labels {
-                    let carried = label.custom_id().is_some_and(|id| carried_ids.contains(id));
-                    let mut on = carried;
-                    if ui
-                        .add(theme::Checkbox::new(&mut on, label.name()))
-                        .changed()
-                    {
-                        messages.push(Message::ApplyAction(MailAction::SetLabel {
-                            label: label.clone(),
-                            on: !carried,
-                        }));
-                        ui.close();
-                    }
-                }
-            });
+    widgets::icon_menu(ui, enabled, button, |ui| {
+        if let Some(action) = label_list(ui, &labels) {
+            messages.push(Message::ApplyAction(action));
+            ui.close();
+        }
     });
+}
+
+/// The account's labels among `places`, each with whether `carried`, a
+/// conversation's labels, names it.
+fn labels_carried<'a>(places: &'a [Folder], carried: &[String]) -> Vec<(&'a Folder, bool)> {
+    places
+        .iter()
+        .filter(|place| place.kind() == Some(CustomKind::Label))
+        .map(|label| {
+            let on = label
+                .custom_id()
+                .is_some_and(|id| carried.iter().any(|known| known == id));
+            (label, on)
+        })
+        .collect()
+}
+
+/// The labels of a label menu as boxes, checked while the conversation
+/// carries them: the switch of the one clicked, if any.
+fn label_list(ui: &mut egui::Ui, labels: &[(&Folder, bool)]) -> Option<MailAction> {
+    ui.set_min_width(MENU_MIN_WIDTH);
+    egui::ScrollArea::vertical()
+        .max_height(MENU_MAX_HEIGHT)
+        .show(ui, |ui| {
+            let mut switched = None;
+            for &(label, carried) in labels {
+                let mut on = carried;
+                if ui
+                    .add(widgets::Checkbox::new(&mut on, label.name()))
+                    .changed()
+                {
+                    switched = Some(MailAction::SetLabel {
+                        label: label.clone(),
+                        on,
+                    });
+                }
+            }
+            switched
+        })
+        .inner
 }
 
 fn message_card(
@@ -920,7 +1007,7 @@ fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Mes
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), theme::compact_button_height(ui)),
+        egui::vec2(ui.available_width(), widgets::compact_button_height(ui)),
         // A narrow reader moves a button to the next row rather than letting
         // the row widen the card past the pane, which would cut off the body.
         Layout::left_to_right(Align::Center)
@@ -934,7 +1021,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 ("Forward", AnswerKind::Forward),
             ] {
                 if ui
-                    .add_enabled(message_id.is_some(), theme::compact_button(ui, label))
+                    .add_enabled(message_id.is_some(), widgets::compact_button(ui, label))
                     .clicked()
                     && let Some(message_id) = message_id
                 {
@@ -1384,7 +1471,7 @@ fn attachment_row(
         if ui
             .add_enabled(
                 !saving,
-                theme::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
+                widgets::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
             )
             .clicked()
         {
@@ -1394,7 +1481,7 @@ fn attachment_row(
             });
         }
         if ui
-            .add_enabled(!saving, theme::compact_button(ui, "Save as…"))
+            .add_enabled(!saving, widgets::compact_button(ui, "Save as…"))
             .clicked()
         {
             messages.push(Message::SaveAttachmentAs {
@@ -1490,7 +1577,7 @@ fn rich_body(
             let run = quoted_run(rest, 0);
             let expanded = reader.is_quote_expanded(message_id, quote_index, reading);
             if ui
-                .add(theme::compact_button(
+                .add(widgets::compact_button(
                     ui,
                     if expanded {
                         "Hide quoted text"

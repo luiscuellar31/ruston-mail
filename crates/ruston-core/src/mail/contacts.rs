@@ -9,13 +9,17 @@ use std::collections::HashSet;
 /// Contact email entries asked for at a time.
 const CONTACT_EMAILS_PAGE_SIZE: u32 = 100;
 
-/// One of the account's addresses that mail can go out from.
+/// One of the account's addresses.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct AddressInfo {
     /// The address's ID.
     pub id: String,
     /// The email address.
     pub email: String,
+    /// Whether mail can go out from it: Proton has it enabled and lets it
+    /// send. One that cannot is still the account's own, which a reply
+    /// leaves out of whom it goes to.
+    pub can_send: bool,
 }
 
 impl Client {
@@ -49,8 +53,8 @@ impl Client {
         Ok(emails)
     }
 
-    /// The addresses mail can go out from, those whose keys opened, in
-    /// Proton's `Order`.
+    /// The account's addresses whose keys opened, in Proton's `Order`, each
+    /// with whether mail can go out from it.
     pub fn addresses(&self) -> Vec<AddressInfo> {
         self.keys()
             .addresses
@@ -58,6 +62,7 @@ impl Client {
             .map(|a| AddressInfo {
                 id: a.address_id.clone(),
                 email: a.email.clone(),
+                can_send: a.can_send,
             })
             .collect()
     }
