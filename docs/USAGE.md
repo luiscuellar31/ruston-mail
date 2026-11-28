@@ -583,7 +583,7 @@ show placeholder boxes for a moment at startup.
 Coverage depends on local fonts; there are no font downloads. This expands
 glyph coverage but does not provide complete bidirectional/RTL text layout.
 
-## Graphics on Windows
+## Graphics
 
 On Windows, Ruston Mail draws with DirectX 12 on the graphics processor that
 uses the least power, or with Windows' software renderer where there is none,
@@ -596,8 +596,12 @@ user in PowerShell and start Ruston again:
 [Environment]::SetEnvironmentVariable('RUSTON_RENDERER', 'opengl', 'User')
 ```
 
-Pass `$null` instead of `'opengl'` to go back to DirectX 12. macOS and Linux
-always draw with OpenGL.
+Pass `$null` instead of `'opengl'` to go back to DirectX 12.
+
+On macOS, Ruston Mail draws with Metal, on the graphics processor that uses
+the least power on a Mac with two, and with OpenGL if Metal cannot draw the
+window. Starting it with `RUSTON_RENDERER=opengl` uses OpenGL from the start.
+Linux always draws with OpenGL.
 
 ## Keyboard shortcuts
 

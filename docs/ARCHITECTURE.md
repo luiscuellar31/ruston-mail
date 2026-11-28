@@ -99,13 +99,17 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
-- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: OpenGL (glow)
-  on macOS and Linux; on Windows DirectX 12 through wgpu, on the GPU that uses
-  the least power or on WARP, Windows' software renderer, without one, and
-  OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
-  created, `ui::run` opens the window again with OpenGL. The activation
+- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: the system's
+  own API through wgpu, Metal on macOS and DirectX 12 on Windows, on the GPU
+  that uses the least power, or on WARP, Windows' software renderer, without
+  one; OpenGL (glow) on Linux, and on the other two when
+  `RUSTON_RENDERER=opengl`. If Metal or DirectX 12 fails before the app is
+  created, `ui::run` opens the window again with OpenGL. Metal presents at
+  the display's rate, where OpenGL on macOS drew frames the display never
+  showed, and a draft's own window no longer costs a change of OpenGL context
+  every pass. The activation
   instance waits in a `Cell` until the app takes it, so the retry keeps the
-  single-instance lock and link hand-off. On macOS, glutin asks for OpenGL
+  single-instance lock and link hand-off. For OpenGL on macOS, glutin asks for
   renderers that may sit offline and the bundle's
   [`Info.plist`](../assets/macos/Info.plist) sets
   `NSSupportsAutomaticGraphicsSwitching`, as Apple requires both, so a Mac with

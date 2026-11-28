@@ -195,7 +195,8 @@ try {
   by default and with OpenGL when DirectX 12 fails or this variable asks for
   it. Check the separate composer with both. Where available, check a virtual
   machine or Remote Desktop session without a GPU, where DirectX 12 runs on
-  WARP, Windows' software renderer.
+  WARP, Windows' software renderer. On macOS the default is Metal: repeat the
+  window checks there with `RUSTON_RENDERER=opengl` too.
 - Switch between light and dark appearance, resize the panes, close the app,
   and reopen it. Verify that applied appearance and settled sizes are restored.
 - With Windows in the other app mode, verify that the title bars of the main
