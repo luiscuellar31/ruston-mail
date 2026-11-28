@@ -2,12 +2,12 @@ use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 use jiff::ZonedDateTime;
 
-use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme, widgets};
+use super::{UiState, compose, reader, settings, theme, widgets};
 use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, MIN_READER_WIDTH,
-    Mailbox, Message, Notice, SettingsSection, compact_layout, panel_ratios, panel_widths,
-    widths_beside_rail,
+    Mailbox, Message, Notice, SettingsSection, UndoMove, compact_layout, panel_ratios,
+    panel_widths, widths_beside_rail,
 };
 use crate::mail::{
     ConversationSummary, CustomKind, Folder, ListFilter, ListOrder, MailFolder, MailboxError,
@@ -1524,6 +1524,20 @@ enum Pointer {
     Away,
     /// Resting on the notice, which keeps it until the pointer leaves.
     OnNotice,
+}
+
+/// What the notice at the foot of the mailbox says: the offer to take back
+/// the last move, or a confirmation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum BottomNotice {
+    Undo(Box<UndoMove>),
+    Confirmation(Notice),
+}
+
+/// The bottom notice on screen, and when it goes.
+pub(super) struct TimedNotice {
+    notice: BottomNotice,
+    expires_at: f64,
 }
 
 /// The notice at the foot of `place`: the list it is about, rather than

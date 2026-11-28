@@ -529,6 +529,16 @@ fn action_item(
     item
 }
 
+/// Shows `count` on the Dock icon, or takes the count away.
+pub(super) fn show_unread(count: Option<u32>) {
+    if let Some(mtm) = MainThreadMarker::new() {
+        let label = count.map(|count| NSString::from_str(&count.to_string()));
+        NSApplication::sharedApplication(mtm)
+            .dockTile()
+            .setBadgeLabel(label.as_deref());
+    }
+}
+
 pub(super) fn update_window_chrome(context: &egui::Context, frame: &eframe::Frame) {
     let Some(metrics) = frame
         .window_handle()

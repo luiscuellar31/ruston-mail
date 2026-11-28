@@ -26,7 +26,7 @@ mod window_place;
 
 use eframe::egui;
 
-use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, Notice, UiEffect, UndoMove};
+use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, MIN_WINDOW_SIZE, Settings, Window};
@@ -50,22 +50,8 @@ pub(super) struct UiState {
     reveal_conversation: Option<String>,
     conversation_scroll: Option<mailbox::ConversationScroll>,
     compact_view: mailbox::CompactView,
-    bottom_notice: Option<TimedNotice>,
+    bottom_notice: Option<mailbox::TimedNotice>,
     notification_status: notifications::Status,
-}
-
-/// What the notice at the foot of the mailbox says: the offer to take back
-/// the last move, or a confirmation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum BottomNotice {
-    Undo(Box<UndoMove>),
-    Confirmation(Notice),
-}
-
-/// The bottom notice on screen, and when it goes.
-struct TimedNotice {
-    notice: BottomNotice,
-    expires_at: f64,
 }
 
 pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
@@ -1458,14 +1444,6 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
         });
 }
 
-fn version_label(ui: &mut egui::Ui) -> egui::Response {
-    ui.label(
-        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-            .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
-            .color(theme::colors(ui).muted),
-    )
-}
-
 fn window_title(app: &App, demo: bool) -> String {
     title_label(inbox_unread(app), demo)
 }
@@ -1511,15 +1489,7 @@ enum BadgeUpdate {
 /// and on Linux the dock or panel icon.
 #[cfg(target_os = "macos")]
 fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
-    use objc2_app_kit::NSApplication;
-    use objc2_foundation::{MainThreadMarker, NSString};
-
-    if let Some(mtm) = MainThreadMarker::new() {
-        let app = NSApplication::sharedApplication(mtm);
-        let dock_tile = app.dockTile();
-        let label = count.map(|c| NSString::from_str(&c.to_string()));
-        dock_tile.setBadgeLabel(label.as_deref());
-    }
+    macos::show_unread(count);
     BadgeUpdate::Settled
 }
 

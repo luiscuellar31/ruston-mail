@@ -79,8 +79,16 @@ fn version_overlay(context: &egui::Context) -> egui::Response {
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -5.0))
         .interactable(false)
         .fade_in(false)
-        .show(context, super::version_label)
+        .show(context, version_label)
         .inner
+}
+
+fn version_label(ui: &mut egui::Ui) -> egui::Response {
+    ui.label(
+        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+            .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
+            .color(theme::colors(ui).muted),
+    )
 }
 
 fn body(

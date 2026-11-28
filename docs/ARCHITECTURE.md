@@ -114,7 +114,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   [`Info.plist`](../assets/macos/Info.plist) sets
   `NSSupportsAutomaticGraphicsSwitching`, as Apple requires both, so a Mac with
   two GPUs can keep Ruston on the integrated one.
-- The Inbox unread count goes on the Dock tile on macOS and, through
+- The Inbox unread count goes on the Dock tile on macOS, through
+  [`ui/macos.rs`](../src/ui/macos.rs), and, through
   [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
   an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
   with GDI, and the count as its description. On Linux,
