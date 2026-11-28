@@ -1,5 +1,6 @@
 use super::*;
 use crate::mail::MailboxError;
+use crate::test_support::message;
 
 fn written(to: &str) -> Compose {
     let mut compose = Compose::default();
@@ -291,23 +292,15 @@ fn every_change_to_a_recipient_field_is_read_again() {
 
 fn answered_message(reply_to: &str) -> MailMessage {
     MailMessage {
-        address_id: String::new(),
-        id: "message".into(),
         sender: crate::mail::MailAddress {
             name: Some("Alex Rivera".into()),
             address: "alex@corp.example".into(),
         },
-        to: Vec::new(),
-        cc: Vec::new(),
-        bcc: Vec::new(),
         reply_to: vec![reply_to.into()],
         reply_all_cc: vec!["bob@corp.example".into()],
         reply_redirected: !reply_to.eq_ignore_ascii_case("alex@corp.example"),
-        time: None,
-        unread: false,
         body: crate::mail::MessageBody::PlainText("Invoice attached".into()),
-        verdict: crate::mail::Verdict::Unverified,
-        attachments: Vec::new(),
+        ..message("message")
     }
 }
 

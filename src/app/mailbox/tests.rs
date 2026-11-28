@@ -12,9 +12,9 @@ mod selection;
 mod splits;
 
 use super::*;
-use crate::mail::{MailAddress, MailMessage, MessageBody};
+use crate::mail::{MailAddress, MailMessage};
 use crate::settings::Reading;
-use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, summary, sys};
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, message, summary, sys};
 
 const PAGE_SIZE: u32 = 50;
 fn searchable_summary(
@@ -61,20 +61,8 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
             .iter()
             .enumerate()
             .map(|(time, message_id)| MailMessage {
-                address_id: String::new(),
-                id: (*message_id).to_owned(),
-                verdict: crate::mail::Verdict::Unverified,
-                sender: MailAddress::default(),
-                to: Vec::new(),
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                reply_to: Vec::new(),
-                reply_all_cc: Vec::new(),
-                reply_redirected: false,
                 time: Some(time as i64),
-                unread: false,
-                body: MessageBody::PlainText(String::new()),
-                attachments: Vec::new(),
+                ..message(message_id)
             })
             .collect(),
     }
