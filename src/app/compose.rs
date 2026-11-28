@@ -1051,6 +1051,11 @@ impl App {
     pub(super) fn send_compose(&mut self) -> Effects {
         let epoch = self.session_epoch;
         let format = self.settings.compose_format;
+        // Without a mailbox to send through, the message stays as written: on
+        // its way, it could no longer be edited, sent again or closed.
+        let Some(backend) = self.backend.clone() else {
+            return Effects::none();
+        };
         let Some(compose) = self.compose.as_mut().filter(|c| !c.in_flight()) else {
             return Effects::none();
         };
@@ -1060,9 +1065,6 @@ impl App {
         };
         compose.state = Sending::InFlight;
 
-        let Some(backend) = self.backend.clone() else {
-            return Effects::none();
-        };
         Effects::perform(
             async move { backend.send(&outgoing).await },
             move |result| Message::Sent(epoch, result),
