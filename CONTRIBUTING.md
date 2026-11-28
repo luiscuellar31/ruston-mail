@@ -17,8 +17,10 @@ Thanks for helping with Ruston Mail. The
 3. Review `docs/ARCHITECTURE.md` for **every change**. Update it in the same
    change whenever ownership, an important flow, persistence, or a path in its
    navigation table changes. Update README or the user and privacy guides when
-   their claims change. A change with no architectural impact needs no
-   artificial architecture edit.
+   their claims change, and take the README's screenshots again when what
+   they show looks different (see the
+   [development guide](docs/DEVELOPMENT.md#readme-screenshots)). A change with
+   no architectural impact needs no artificial architecture edit.
 4. Run the relevant checks. In the pull request, describe the affected
    packages, observed behavior, and whether the architecture map changed or
    remains accurate. For UI changes, use the fictional desktop mailbox when
@@ -28,7 +30,8 @@ Thanks for helping with Ruston Mail. The
 
 - Write each rule, and each value that must match another, once: Proton values
   in `ruston-core`'s `model/enums.rs`, values several views share in
-  `src/ui/theme.rs`, and behavior both apps need in `ruston-core`.
+  `src/ui/theme.rs`, widgets they share in `src/ui/widgets.rs`, and behavior
+  both apps need in `ruston-core`.
 - Reuse what the crate, `ruston-core`, and current dependencies provide. Add a
   trait, generic, wrapper, or crate only when a second user or a test double
   needs it.

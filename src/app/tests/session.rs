@@ -272,3 +272,20 @@ fn mailbox_actions_are_ignored_while_signing_out() {
 
     assert_eq!(app.mailbox().unwrap().folder(), &sys(MailFolder::Inbox));
 }
+
+#[test]
+fn a_closed_mailbox_leaves_the_next_session_nothing_of_its_own_to_act_on() {
+    let mut app = loaded_demo_app();
+    // What a session keeps to itself between two messages: folders to ask
+    // for again, its own refresh on its way, and a conversation to read once
+    // a draft uncovers it.
+    app.session.refetch_folders = true;
+    app.session.automatic_refresh = Some(7);
+    app.session.read_once_shown = Some("demo-1".into());
+
+    app.close_mailbox(None);
+
+    assert!(!app.session.refetch_folders);
+    assert_eq!(app.session.automatic_refresh, None);
+    assert_eq!(app.session.read_once_shown, None);
+}

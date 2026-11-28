@@ -56,14 +56,17 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --target)
+            (($# >= 2)) || die "Missing value for $1"
             TARGET_TRIPLE="$2"
             shift 2
             ;;
         --binary)
+            (($# >= 2)) || die "Missing value for $1"
             CUSTOM_BINARY="$2"
             shift 2
             ;;
         --dist)
+            (($# >= 2)) || die "Missing value for $1"
             DIST_DIR="$2"
             shift 2
             ;;
@@ -146,7 +149,7 @@ cp "$ICNS_PATH" "$APP_DIR/Contents/Resources/ruston-mail.icns"
 
 # The licenses: Ruston Mail's and those of what it ships with it. Settings
 # finds the notices here (src/licenses.rs), so keep the two in step.
-cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_LICENSES.txt" "$APP_DIR/Contents/Resources/"
+cp "$REPO_ROOT/LICENSE" "$REPO_ROOT/THIRD_PARTY_NOTICES.txt" "$APP_DIR/Contents/Resources/"
 
 PLIST_TEMPLATE="$ASSETS_DIR/Info.plist"
 [[ -f "$PLIST_TEMPLATE" ]] || die "Info.plist template missing at: $PLIST_TEMPLATE"

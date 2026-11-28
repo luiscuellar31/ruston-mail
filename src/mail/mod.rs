@@ -5,7 +5,7 @@ mod outgoing;
 mod proton;
 mod threading;
 
-pub use ruston_core::Verdict;
+pub use ruston_core::{AddressInfo, Verdict};
 use std::sync::Arc;
 
 /// Shared bound for scheduled inspections and their backend requests.
@@ -14,9 +14,9 @@ pub(crate) const INSPECTION_CONCURRENCY: usize = 4;
 pub use auth::{AuthError, LoginRequest};
 pub use model::{
     BlockKind, ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder,
-    IncomingMail, MailAction, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
-    MailboxError, MessageBody, OwnPlaces, PlaceLook, RichBlock, RichBody, RichSpan, SummaryKind,
-    UNREADABLE_NOTICE,
+    IncomingMail, ListFilter, ListOrder, MailAction, MailAddress, MailAttachment, MailFolder,
+    MailMessage, MailboxCounts, MailboxError, MessageBody, OwnPlaces, PlaceLook, RichBlock,
+    RichBody, RichSpan, SummaryKind, UNREADABLE_NOTICE,
 };
 pub use outgoing::{
     BodyFormat, Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError,
@@ -40,23 +40,21 @@ impl MailBackend {
     pub async fn recent_inbox(&self, limit: u32) -> Result<Vec<IncomingMail>, MailboxError> {
         match self {
             Self::Proton(service) => service.recent_inbox(limit).await,
-            Self::Demo(service) => Ok(service
-                .list_conversations(&Folder::INBOX, 0, limit, demo::now())?
-                .conversations
-                .into_iter()
-                .map(|row| IncomingMail {
-                    id: row.id,
-                    time: row.time.unwrap_or_default(),
-                    unread: row.unread,
-                    sender: row.correspondents.unwrap_or_default(),
-                    subject: row.subject.unwrap_or_default(),
-                })
-                .collect()),
+            Self::Demo(service) => Ok(service.recent_inbox(limit, demo::now())),
         }
     }
 
     pub fn demo() -> Self {
         Self::Demo(demo::DemoMailbox::new())
+    }
+
+    /// The account's addresses mail can go out from, in Proton's order: new
+    /// mail goes from the first unless another is chosen.
+    pub fn addresses(&self) -> Vec<AddressInfo> {
+        match self {
+            Self::Proton(service) => service.addresses().to_vec(),
+            Self::Demo(service) => service.addresses(),
+        }
     }
 
     pub fn page_size(&self) -> u32 {
@@ -66,15 +64,25 @@ impl MailBackend {
         }
     }
 
+    /// One page of the conversations of `folder` that `filter` shows, in
+    /// `order`.
     pub async fn list_conversations(
         &self,
         folder: &Folder,
+        filter: ListFilter,
+        order: ListOrder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
         match self {
-            Self::Proton(service) => service.list_conversations(folder, page, page_size).await,
-            Self::Demo(service) => service.list_conversations(folder, page, page_size, demo::now()),
+            Self::Proton(service) => {
+                service
+                    .list_conversations(folder, filter, order, page, page_size)
+                    .await
+            }
+            Self::Demo(service) => {
+                service.list_filtered(folder, filter, order, page, page_size, demo::now())
+            }
         }
     }
 
@@ -116,11 +124,11 @@ impl MailBackend {
         }
     }
 
-    /// Account folders and labels; demo mode has neither.
+    /// The folders and labels the account made; the demo has a few.
     pub async fn list_folders(&self) -> Result<OwnPlaces, MailboxError> {
         match self {
             Self::Proton(service) => service.list_folders().await,
-            Self::Demo(_) => Ok(OwnPlaces::default()),
+            Self::Demo(_) => Ok(demo::own_places()),
         }
     }
 

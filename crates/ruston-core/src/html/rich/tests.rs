@@ -29,6 +29,22 @@ fn outline(html: &str) -> Vec<String> {
                         .collect();
                     format!("table {}", rows.join(" / "))
                 }
+                BlockKind::Columns(columns) => {
+                    let columns: Vec<String> = columns
+                        .iter()
+                        .map(|cell| {
+                            let lines: Vec<String> = cell
+                                .iter()
+                                .map(|block| match &block.kind {
+                                    BlockKind::Paragraph(spans) => text(spans),
+                                    other => format!("{other:?}"),
+                                })
+                                .collect();
+                            lines.join("/")
+                        })
+                        .collect();
+                    format!("columns {}", columns.join(" | "))
+                }
             };
             format!("{}{line}", ">".repeat(usize::from(block.quote_depth)))
         })
@@ -45,6 +61,254 @@ fn spans(html: &str) -> Vec<RichSpan> {
         Some(BlockKind::Paragraph(spans)) => spans,
         other => panic!("expected a paragraph, got {other:?}"),
     }
+}
+
+/// Each block's text, a heading's after `#`, with `+` before a paragraph
+/// that follows the one before it closely.
+fn lines(html: &str) -> Vec<String> {
+    let text = |spans: &[RichSpan]| spans.iter().map(|s| s.text.as_str()).collect::<String>();
+    parse(html)
+        .blocks
+        .iter()
+        .map(|block| {
+            let line = match &block.kind {
+                BlockKind::Paragraph(spans) => text(spans),
+                BlockKind::Heading { spans, .. } => format!("# {}", text(spans)),
+                other => format!("{other:?}"),
+            };
+            format!("{}{line}", if block.joined { "+" } else { "" })
+        })
+        .collect()
+}
+
+#[test]
+fn lines_the_sender_set_without_room_follow_each_other() {
+    // A booking's date under its label, set with margins of none, however
+    // long the lines.
+    assert_eq!(
+        lines(
+            "<table><tr><th>\
+             <p style='margin:0'>Tuesday,</p>\
+             <p style='margin:0;margin-bottom:0px !important'>Oct 24, 2017</p>\
+             <p style='margin:0'>Check in anytime after 3PM, or ask the host to arrange \
+             a later arrival if your flight lands after dark</p>\
+             </th></tr></table>"
+        ),
+        [
+            "Tuesday,",
+            "+Oct 24, 2017",
+            "+Check in anytime after 3PM, or ask the host to arrange a later arrival \
+             if your flight lands after dark",
+        ]
+    );
+    // Paragraphs keep the room a browser gives them.
+    assert_eq!(
+        lines("<p>Hi Alex,</p><p>See you Thursday.</p>"),
+        ["Hi Alex,", "See you Thursday."]
+    );
+    // Lines written as bare blocks, as Gmail and Apple Mail write them,
+    // with a blank one between paragraphs.
+    assert_eq!(
+        lines(
+            "<div>Hi Alex,</div><div><br></div><div>Thanks for the notes.</div>\
+             <div>Best,</div><div>Ana</div>"
+        ),
+        ["Hi Alex,", "Thanks for the notes.", "+Best,", "+Ana"]
+    );
+    // A long one in a bare block keeps its room, unless a style says none.
+    let long = "word ".repeat(20);
+    let long = long.trim();
+    assert_eq!(
+        lines(&format!("<div>{long}</div><div>{long}</div>")),
+        [long, long]
+    );
+    assert_eq!(
+        lines(&format!(
+            "<div style='margin:0'>{long}</div><div style='margin:0'>{long}</div>"
+        )),
+        [long.to_owned(), format!("+{long}")]
+    );
+}
+
+#[test]
+fn room_stays_between_rows_headings_quotes_and_after_a_spacer() {
+    // A spacer's padding, and a blank line of `&nbsp;`, leave room.
+    assert_eq!(
+        lines(
+            "<p style='margin:0'>A</p><div style='padding-bottom:8px'></div>\
+             <p style='margin:0'>B</p>"
+        ),
+        ["A", "B"]
+    );
+    assert_eq!(
+        lines("<div>A</div><div>&nbsp;</div><div>B</div>"),
+        ["A", "B"]
+    );
+    // Rows and cells keep the room of paragraphs.
+    assert_eq!(
+        lines("<table><tr><td>One</td></tr><tr><td>Two</td></tr></table>"),
+        ["One", "Two"]
+    );
+    // Headings and quotes are never set tight.
+    assert_eq!(
+        lines("<div>Total</div><h2 style='margin:0'>$65</h2><div>Paid</div>"),
+        ["Total", "# $65", "Paid"]
+    );
+    assert_eq!(
+        lines("<p style='margin:0'>A</p><blockquote><p style='margin:0'>B</p></blockquote>"),
+        ["A", "B"]
+    );
+}
+
+#[test]
+fn lines_a_sender_draws_between_sections_show() {
+    assert_eq!(
+        outline(
+            "<p>Booked</p><table style='border-top:1px solid #ddd'><tr><td>Address</td>\
+             </tr></table><div style='border-bottom:1px solid'>Guests</div><p>After</p>"
+        ),
+        ["p Booked", "hr", "p Address", "p Guests", "hr", "p After"]
+    );
+    // None before anything, none that ends the body, never two in a row.
+    assert_eq!(
+        outline(
+            "<div style='border-top:1px solid'>First</div><hr>\
+             <div style='border-top:1px solid'>Second</div>\
+             <div style='border-bottom:1px solid'>Last</div>"
+        ),
+        ["p First", "hr", "p Second", "p Last"]
+    );
+    // A box, as a button is drawn, is no line; a table of data keeps its own,
+    // and the line above it.
+    assert_eq!(
+        outline(
+            "<p>A</p><div style='border:1px solid'>Boxed</div>\
+             <table style='border-top:1px solid'><tr><th>Item</th><th>Price</th></tr>\
+             <tr><td style='border-top:1px solid'>Tea</td>\
+             <td style='border-top:1px solid'>$3</td></tr></table>"
+        ),
+        ["p A", "p Boxed", "hr", "table Item|Price / Tea|$3"]
+    );
+    // A line inside a table of data goes with its grid, and takes nothing
+    // that follows the table with it.
+    assert_eq!(
+        outline(
+            "<table><tr><th>Item</th><th>Price</th></tr>\
+             <tr><td style='border-top:1px solid'>Tea</td><td>$3</td></tr></table><p>Last</p>"
+        ),
+        ["table Item|Price / Tea|$3", "p Last"]
+    );
+    // A row whose cells have lines under them has one, after the row.
+    assert_eq!(
+        outline(
+            "<table><tr><td style='border-bottom:1px solid'>Name</td>\
+             <td style='border-bottom:1px solid'>Ana</td></tr><tr><td>Total</td></tr></table>"
+        ),
+        ["p Name Ana", "hr", "p Total"]
+    );
+}
+
+#[test]
+fn short_cells_a_row_sets_side_by_side_read_as_columns() {
+    // A booking's check-in beside its checkout, a picture between them.
+    assert_eq!(
+        outline(
+            "<table><tr><th><p style='margin:0'>Tuesday,</p><p style='margin:0'>Oct 24</p></th>\
+             <th><img src='https://example.com/slash.png' alt=''></th>\
+             <th><p>Friday,</p><p>Oct 27</p></th></tr></table>"
+        ),
+        ["columns Tuesday,/Oct 24 | Friday,/Oct 27"]
+    );
+    // An address beside the link to it, with the line under the row.
+    assert_eq!(
+        outline(
+            "<p>Before</p><table><tr><td style='border-bottom:1px solid'><p>Address</p>\
+             <p>650 Street</p></td><td style='border-bottom:1px solid'>\
+             <p><a href='https://example.com/map'>Get directions</a></p></td></tr></table>\
+             <p>After</p>"
+        ),
+        [
+            "p Before",
+            "columns Address/650 Street | Get directions",
+            "hr",
+            "p After"
+        ]
+    );
+    // Their lines keep how closely they follow one another.
+    let body = parse(
+        "<table><tr><td><p style='margin:0'>A</p><p style='margin:0'>B</p></td>\
+         <td><p>C</p></td></tr></table>",
+    );
+    let [
+        RichBlock {
+            kind: BlockKind::Columns(columns),
+            ..
+        },
+    ] = &body.blocks[..]
+    else {
+        panic!("one row of columns: {:?}", body.blocks);
+    };
+    let joined: Vec<Vec<bool>> = columns
+        .iter()
+        .map(|cell| cell.iter().map(|block| block.joined).collect())
+        .collect();
+    assert_eq!(joined, [vec![false, true], vec![false]]);
+    assert_eq!(body.plain_text(), "A\nB\nC\n");
+}
+
+#[test]
+fn rows_that_are_not_a_few_short_cells_read_as_before() {
+    for (html, outlined) in [
+        // One cell with text, however many around it.
+        (
+            "<table><tr><td><p>Only</p></td><td></td></tr></table>",
+            vec!["p Only"],
+        ),
+        // Text running on from cell to cell reads on one line, as before.
+        (
+            "<table><tr><td>Name</td><td>Ana</td></tr></table>",
+            vec!["p Name Ana"],
+        ),
+        // Two rows.
+        (
+            "<table><tr><td><p>A</p></td><td><p>B</p></td></tr>\
+             <tr><td><p>C</p></td></tr></table>",
+            vec!["p A", "p B", "p C"],
+        ),
+        // A picture, a heading or a table within.
+        (
+            "<table><tr><td><p>A</p></td><td><img src='cid:logo' alt='Logo'></td></tr></table>",
+            vec!["p A", "img Logo"],
+        ),
+        (
+            "<table><tr><td><h2>A</h2></td><td><p>B</p></td></tr></table>",
+            vec!["h2 A", "p B"],
+        ),
+        (
+            "<table><tr><td><p>A</p></td><td><table><tr><td><p>B</p></td></tr></table>\
+             </td></tr></table>",
+            vec!["p A", "p B"],
+        ),
+    ] {
+        assert_eq!(outline(html), outlined, "{html}");
+    }
+    // A cell of more than a few short lines.
+    let long = "word ".repeat(30);
+    let long = long.trim();
+    assert_eq!(
+        outline(&format!(
+            "<table><tr><td><p>A</p></td><td><p>{long}</p></td></tr></table>"
+        )),
+        ["p A".to_owned(), format!("p {long}")]
+    );
+    // Five cells.
+    assert_eq!(
+        outline(
+            "<table><tr><td><p>1</p></td><td><p>2</p></td><td><p>3</p></td>\
+             <td><p>4</p></td><td><p>5</p></td></tr></table>"
+        ),
+        ["p 1", "p 2", "p 3", "p 4", "p 5"]
+    );
 }
 
 #[test]
@@ -484,6 +748,37 @@ fn images_keep_only_their_description() {
 }
 
 #[test]
+fn a_picture_inside_a_link_keeps_where_the_link_goes() {
+    let body = parse(
+        "<a href='https://example.com/profile'><img src='https://example.com/p.jpg' alt='Go to Marie'></a>\
+         <img src='https://example.com/q.jpg' alt='Not linked'>\
+         <a href='javascript:alert(1)'><img src='https://example.com/r.jpg' alt='Unsafe'></a>\
+         <a href='https://example.com/card'><img src='cid:card' alt=''></a>",
+    );
+    let pictures: Vec<(&str, Option<&str>)> = body
+        .blocks
+        .iter()
+        .filter_map(|block| match &block.kind {
+            BlockKind::Image {
+                description, link, ..
+            } => Some((description.as_str(), link.as_deref())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        pictures,
+        [
+            ("Go to Marie", Some("https://example.com/profile")),
+            ("Not linked", None),
+            // Only web and mail links stay, here as in text.
+            ("Unsafe", None),
+            // One the message carries, with no description, keeps it too.
+            ("", Some("https://example.com/card")),
+        ]
+    );
+}
+
+#[test]
 fn images_with_no_description_are_counted_but_pixels_and_hidden_ones_are_not() {
     let body = parse(
         "<p>Sale</p><img src='https://shop.example/banner.png'><img src='https://t.example/o.gif' width='1' height='1'>\
@@ -602,6 +897,7 @@ fn an_image_that_travels_in_the_message_names_its_part() {
             BlockKind::Image {
                 description,
                 content_id,
+                ..
             } => Some((description.as_str(), content_id.as_deref(), block.hidden)),
             _ => None,
         })
@@ -759,6 +1055,7 @@ fn block(kind: BlockKind, quote_depth: u8) -> RichBlock {
         quote_depth,
         hidden: false,
         centered: false,
+        joined: false,
     }
 }
 
@@ -786,6 +1083,7 @@ fn plain_text_keeps_structure_one_block_per_line() {
                 BlockKind::Image {
                     description: "Logo".to_owned(),
                     content_id: None,
+                    link: None,
                 },
                 0,
             ),

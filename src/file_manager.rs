@@ -4,48 +4,55 @@ use std::path::Path;
 #[cfg(not(target_os = "windows"))]
 use std::process::Command;
 
-/// Uses argument vectors or the shell's API rather than interpreting paths
-/// through a shell.
+/// Shows `path` selected in Finder. Like every system's version, it passes
+/// the path as an argument, never through a shell.
+#[cfg(target_os = "macos")]
 pub async fn reveal(path: &Path) -> std::io::Result<()> {
-    #[cfg(target_os = "linux")]
-    {
-        // Bound connection, service activation, and reply together. A desktop
-        // without FileManager1 should still open the containing folder promptly.
-        let selection = async {
-            let connection = zbus::Connection::session().await?;
-            show_items(&connection, path).await
-        };
-        if matches!(
-            tokio::time::timeout(std::time::Duration::from_secs(3), selection).await,
-            Ok(Ok(()))
-        ) {
-            return Ok(());
-        }
-    }
+    let mut command = Command::new("open");
+    command.arg("-R").arg(path);
+    crate::runtime::run_to_exit(command).await.map(drop)
+}
 
-    #[cfg(target_os = "windows")]
-    {
-        let path = path.to_owned();
-        tokio::task::spawn_blocking(move || select_in_explorer(&path))
-            .await
-            .map_err(std::io::Error::other)?
+/// Shows `path` selected in Explorer, through the shell's API.
+#[cfg(target_os = "windows")]
+pub async fn reveal(path: &Path) -> std::io::Result<()> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || select_in_explorer(&path))
+        .await
+        .map_err(std::io::Error::other)?
+}
+
+/// Shows `path` selected in the desktop's file manager, or opens its folder
+/// when no file manager answers over D-Bus.
+#[cfg(target_os = "linux")]
+pub async fn reveal(path: &Path) -> std::io::Result<()> {
+    // Bound connection, service activation, and reply together. A desktop
+    // without FileManager1 should still open the containing folder promptly.
+    let selection = async {
+        let connection = zbus::Connection::session().await?;
+        show_items(&connection, path).await
+    };
+    if matches!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), selection).await,
+        Ok(Ok(()))
+    ) {
+        return Ok(());
     }
-    #[cfg(not(target_os = "windows"))]
-    {
-        #[cfg(target_os = "macos")]
-        let command = {
-            let mut command = Command::new("open");
-            command.arg("-R").arg(path);
-            command
-        };
-        #[cfg(not(target_os = "macos"))]
-        let command = {
-            let mut command = Command::new("xdg-open");
-            command.arg(path.parent().unwrap_or(path));
-            command
-        };
-        crate::runtime::run_to_exit(command).await.map(drop)
-    }
+    open_folder(path).await
+}
+
+/// Opens the folder that holds `path`.
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+pub async fn reveal(path: &Path) -> std::io::Result<()> {
+    open_folder(path).await
+}
+
+/// Opens the folder that holds `path` with the desktop's default handler.
+#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+async fn open_folder(path: &Path) -> std::io::Result<()> {
+    let mut command = Command::new("xdg-open");
+    command.arg(path.parent().unwrap_or(path));
+    crate::runtime::run_to_exit(command).await.map(drop)
 }
 
 /// Opens the file's folder in Explorer with the file selected. The shell API

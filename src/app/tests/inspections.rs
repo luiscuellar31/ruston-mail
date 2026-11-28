@@ -139,17 +139,10 @@ fn an_inspection_asked_before_a_rename_still_frees_its_place() {
     let _ = app.update(Message::SelectFolder(invoices.clone()));
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
-            id: "thread-1".into(),
-            kind: crate::mail::SummaryKind::Conversation,
             subject: Some("Invoice".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(100),
-            unread: false,
-            starred: false,
             message_count: 2,
-            has_attachments: false,
+            ..summary("thread-1")
         }],
         total: 1,
         inspect_candidates: vec!["thread-1".into()],
@@ -200,24 +193,17 @@ fn returning_to_a_folder_does_not_accept_its_cancelled_inspection() {
 }
 
 #[test]
-fn conversations_loaded_with_candidates_starts_inspection_effects() {
+fn a_page_with_candidates_starts_inspecting_them() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::RefreshMailbox);
     let request = pending_list_request(&app);
 
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
-            id: "demo-cand-1".into(),
-            kind: crate::mail::SummaryKind::Conversation,
             subject: Some("Candidate 1".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(100),
-            unread: false,
-            starred: false,
             message_count: 2,
-            has_attachments: false,
+            ..summary("demo-cand-1")
         }],
         total: 1,
         inspect_candidates: vec!["demo-cand-1".into(), "demo-cand-2".into()],
@@ -285,12 +271,12 @@ fn inspection_before_a_confirmed_mutation_cannot_replace_rows_and_releases_its_s
         panic!("expected the next inspection");
     };
     assert!(
-        matches!(futures::executor::block_on(future), Message::ThreadInspected { revision, .. } if revision == current)
+        matches!(futures::executor::block_on(future), Message::ThreadInspected { revision: next_revision, .. } if next_revision == current)
     );
 }
 
 #[test]
-fn thread_inspected_splits_conversation_when_successful() {
+fn an_inspection_that_finds_separate_threads_splits_the_row() {
     let mut app = loaded_demo_app();
     let epoch = app.session_epoch;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
@@ -298,30 +284,16 @@ fn thread_inspected_splits_conversation_when_successful() {
 
     let split_rows = vec![
         ConversationSummary {
-            id: "split-1".into(),
             kind: crate::mail::SummaryKind::Message,
             subject: Some("Split 1".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(150),
-            unread: false,
-            starred: false,
-            message_count: 1,
-            has_attachments: false,
+            ..summary("split-1")
         },
         ConversationSummary {
-            id: "split-2".into(),
             kind: crate::mail::SummaryKind::Message,
             subject: Some("Split 2".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(140),
-            unread: false,
-            starred: false,
-            message_count: 1,
-            has_attachments: false,
+            ..summary("split-2")
         },
     ];
 
@@ -346,24 +318,17 @@ fn thread_inspected_splits_conversation_when_successful() {
 }
 
 #[test]
-fn thread_inspected_stale_epoch_or_folder_is_ignored() {
+fn an_inspection_from_another_session_or_folder_changes_nothing() {
     let mut app = loaded_demo_app();
     let stale_epoch = app.session_epoch + 99;
     let _ = app.inspect_candidates(vec!["demo-0".into()]);
     let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![ConversationSummary {
-        id: "split-ignored".into(),
         kind: crate::mail::SummaryKind::Message,
         subject: Some("Split Ignored".into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
         time: Some(150),
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
+        ..summary("split-ignored")
     }];
 
     // Wrong epoch

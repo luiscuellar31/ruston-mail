@@ -3,6 +3,10 @@ name: Release Artifacts (Main Preflight + Tag Publish)
 # Every push to main builds and checks the release artifacts without
 # publishing them, so packaging breaks show up early. A vX.Y.Z tag on a commit
 # of main builds them again and publishes a draft release to review.
+#
+# Outside Windows, a step runs with GitHub's `bash -e`. One that reads
+# variables or does more than list commands starts with `set -euo pipefail`
+# too, so an unset name or a failing command in a pipe stops it as well.
 on:
   push:
     branches:
@@ -161,6 +165,9 @@ jobs:
       APPIMAGE_UPDATE_INFORMATION: gh-releases-zsync|luiscuellar31|ruston-mail|latest|ruston-mail-*-${{ matrix.arch }}.AppImage.zsync
       # The name appimage.sh gives the AppImage; publish-assets names it again.
       APPIMAGE: ruston-mail-${{ needs.verify-source.outputs.version }}-${{ matrix.arch }}.AppImage
+      # The newest glibc symbols the AppImage may need, so the oldest glibc it
+      # runs on: packaging/release-notes.sh states it as MIN_GLIBC, so change
+      # both together.
       RUSTON_MAX_GLIBC_VERSION: "2.35"
     strategy:
       fail-fast: false
@@ -315,10 +322,14 @@ jobs:
         run: |
           # Pin the release and check its digest, so the tool that builds the
           # installer cannot change under us. Installed for this user only.
-          $installer = Join-Path $env:RUNNER_TEMP 'innosetup-6.7.3.exe'
-          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-6_7_3/innosetup-6.7.3.exe' -OutFile $installer
+          $version = '6.7.3'
+          $sha256 = '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732'
+          $file = "innosetup-$version.exe"
+          $tag = 'is-' + $version.Replace('.', '_')
+          $installer = Join-Path $env:RUNNER_TEMP $file
+          Invoke-WebRequest "https://github.com/jrsoftware/issrc/releases/download/$tag/$file" -OutFile $installer
           $digest = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
-          if ($digest -ne '9c73c3bae7ed48d44112a0f48e66742c00090bdb5bef71d9d3c056c66e97b732') {
+          if ($digest -ne $sha256) {
             throw "Unexpected Inno Setup digest: $digest"
           }
           $folder = Join-Path $env:RUNNER_TEMP 'inno-setup'
@@ -337,13 +348,7 @@ jobs:
       # aws-lc-sys builds its ARM64 code with clang-cl from LLVM.
       - name: Put clang-cl on the PATH
         if: matrix.arch == 'arm64'
-        run: |
-          if (-not (Get-Command clang-cl -ErrorAction SilentlyContinue)) {
-            $llvm = Join-Path $env:ProgramFiles 'LLVM\bin'
-            $env:PATH = "$llvm;$env:PATH"
-            $llvm >> $env:GITHUB_PATH
-          }
-          clang-cl --version
+        run: ./packaging/windows/add-clang-cl-to-path.ps1
 
       - name: Build the installer and the ZIP
         run: ./packaging/windows/package.ps1 -Architecture $env:ARCH -Dist dist -InnoSetup $env:INNO_SETUP
@@ -468,6 +473,7 @@ jobs:
             --version "$VERSION" \
             --repo "$REPOSITORY" \
             --output "$PWD/release-notes.md"
+          # The start of the notes, in the log; the whole file goes to the release.
           sed -n '1,120p' "$PWD/release-notes.md"
 
       - name: Upload artifacts to GitHub release

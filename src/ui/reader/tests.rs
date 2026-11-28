@@ -4,7 +4,8 @@ use jiff::civil::date;
 
 use super::*;
 use crate::mail::ConversationDetail;
-use crate::ui::test_support::{text_rect, visible_text_rect};
+use crate::test_support::{message, summary};
+use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 use ruston_core::html::rich::ListMarker;
 
 /// A message with no pictures fetched, nor parts to fetch them from.
@@ -121,23 +122,10 @@ fn the_move_menu_lists_the_inbox_and_the_accounts_folders() {
 
 /// One frame's input with a click at `position`.
 fn click_at(input: &egui::RawInput, position: egui::Pos2) -> egui::RawInput {
-    let mut click = input.clone();
-    click.events = vec![
-        egui::Event::PointerMoved(position),
-        egui::Event::PointerButton {
-            pos: position,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: position,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
-    click
+    egui::RawInput {
+        events: click_events(position, egui::PointerButton::Primary),
+        ..input.clone()
+    }
 }
 
 #[test]
@@ -245,7 +233,7 @@ fn a_rows_menu_acts_while_the_list_refreshes() {
     let frame = |input: egui::RawInput| {
         let mut messages = Vec::new();
         let output = context.run_ui(input, |ui| {
-            conversation_menu(ui, &mailbox, &row, &mut messages);
+            conversation_menu(ui, &mailbox, &row, &[], &mut messages);
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -342,17 +330,7 @@ fn a_long_link_scrolls_inside_its_prompt_and_leaves_the_buttons_in_view() {
     let open = open.expect("the prompt offers Open");
     assert!(screen.contains_rect(open), "Open is at {open:?}");
 
-    let press = |pressed| egui::Event::PointerButton {
-        pos: open.center(),
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    let (_, answer) = frame(vec![
-        egui::Event::PointerMoved(open.center()),
-        press(true),
-        press(false),
-    ]);
+    let (_, answer) = frame(click_events(open.center(), egui::PointerButton::Primary));
     assert!(matches!(answer, Some(Message::OpenLink)));
 }
 
@@ -416,6 +394,7 @@ fn the_senders_style_counts_unless_settings_leave_it_out() {
         quote_depth: 0,
         hidden: false,
         centered: true,
+        joined: false,
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -500,6 +479,163 @@ fn a_table_of_data_lines_its_columns_up_unless_settings_read_it_as_lines() {
         data_tables: false,
         ..Reading::default()
     }));
+}
+
+#[test]
+fn columns_sit_side_by_side_where_they_fit_and_stack_where_they_do_not() {
+    let body = ruston_core::html::rich::parse(
+        "<table><tr><td><p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p></td>\
+         <td><p style='margin:0'>Checkout</p><p style='margin:0'>Sun, Dec 7</p></td></tr></table>",
+    );
+    assert!(matches!(body.blocks[0].kind, BlockKind::Columns(_)));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let drawn = |width: f32| {
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(width);
+            blocks(
+                ui,
+                &body.blocks,
+                0,
+                no_pictures(),
+                Reading::default(),
+                &mut Vec::new(),
+            );
+        });
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (
+            text_rect(&shapes, "Check-in"),
+            text_rect(&shapes, "Thu, Dec 4"),
+            text_rect(&shapes, "Checkout"),
+        )
+    };
+
+    let (check_in, date, checkout) = drawn(600.0);
+    assert_eq!(checkout.top(), check_in.top(), "side by side");
+    assert!(
+        checkout.left() > check_in.right() + 100.0,
+        "{check_in:?} {checkout:?}"
+    );
+    assert!(
+        (date.top() - check_in.bottom()).abs() < 1.0,
+        "the date under its label"
+    );
+
+    let (check_in, date, checkout) = drawn(200.0);
+    assert_eq!(checkout.left(), check_in.left(), "one under the other");
+    assert!(
+        checkout.top() >= date.bottom() + 12.0,
+        "{date:?} {checkout:?}"
+    );
+}
+
+#[test]
+fn lines_the_sender_set_tight_are_drawn_as_next_lines() {
+    let body = ruston_core::html::rich::parse(
+        "<p style='margin:0'>Check-in</p><p style='margin:0'>Thu, Dec 4</p>\
+         <p>A paragraph of its own</p>",
+    );
+    let context = egui::Context::default();
+    theme::install(&context);
+    let output = context.run_ui(egui::RawInput::default(), |ui| {
+        ui.set_width(600.0);
+        blocks(
+            ui,
+            &body.blocks,
+            0,
+            no_pictures(),
+            Reading::default(),
+            &mut Vec::new(),
+        );
+    });
+    let shapes = output.shapes.clone();
+    output.drop_without_applying_deltas();
+
+    let label = text_rect(&shapes, "Check-in");
+    let date = text_rect(&shapes, "Thu, Dec 4");
+    let paragraph = text_rect(&shapes, "A paragraph of its own");
+    assert!(
+        (date.top() - label.bottom()).abs() < 1.0,
+        "the date sits right under its label: {label:?} {date:?}"
+    );
+    assert!(
+        paragraph.top() - date.bottom() >= 12.0,
+        "a paragraph keeps its room: {date:?} {paragraph:?}"
+    );
+}
+
+#[test]
+fn a_picture_inside_a_link_opens_it_through_the_prompt() {
+    let picture = |link: Option<&str>| RichBlock {
+        kind: BlockKind::Image {
+            description: "Go to Marie".into(),
+            content_id: None,
+            link: link.map(Into::into),
+        },
+        quote_depth: 0,
+        hidden: false,
+        centered: false,
+        joined: false,
+    };
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |picture: &RichBlock, events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                ui.set_width(600.0);
+                block(
+                    ui,
+                    picture,
+                    no_pictures(),
+                    Reading::default(),
+                    &mut messages,
+                );
+            },
+        );
+        let note = output
+            .shapes
+            .iter()
+            .find_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text)
+                    if text.galley.text() == "Image not loaded: Go to Marie" =>
+                {
+                    Some(egui::Rect::from_min_size(text.pos, text.galley.size()))
+                }
+                _ => None,
+            })
+            .expect("the description stands in for the picture");
+        output.drop_without_applying_deltas();
+        (note, messages)
+    };
+
+    for link in [Some("https://example.com/profile"), None] {
+        let picture = picture(link);
+        let (note, _) = frame(&picture, Vec::new());
+        let press = |pressed| egui::Event::PointerButton {
+            pos: note.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::default(),
+        };
+        let _ = frame(
+            &picture,
+            vec![egui::Event::PointerMoved(note.center()), press(true)],
+        );
+        let (_, messages) = frame(&picture, vec![press(false)]);
+        match link {
+            Some(link) => assert!(
+                matches!(&messages[..], [Message::LinkClicked(clicked)] if clicked == link),
+                "a click goes through the prompt that says where it leads"
+            ),
+            None => assert!(messages.is_empty(), "{} messages", messages.len()),
+        }
+    }
 }
 
 #[test]
@@ -646,19 +782,10 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
         output.drop_without_applying_deltas();
         (shapes, messages)
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
 
     let (shapes, _) = frame(Vec::new());
     let link = text_rect(&shapes, "the agenda");
-    let (_, asked) = frame(click(link.center(), egui::PointerButton::Secondary));
+    let (_, asked) = frame(click_events(link.center(), egui::PointerButton::Secondary));
     assert!(asked.is_empty(), "a right click follows nothing");
     let mut shapes = Vec::new();
     for _ in 0..3 {
@@ -666,7 +793,7 @@ fn a_links_menu_opens_it_through_the_prompt_or_copies_its_address() {
     }
     text_rect(&shapes, "Open link…");
     let copy = text_rect(&shapes, "Copy link");
-    let (_, asked) = frame(click(copy.center(), egui::PointerButton::Primary));
+    let (_, asked) = frame(click_events(copy.center(), egui::PointerButton::Primary));
 
     assert!(
         matches!(
@@ -715,26 +842,20 @@ fn a_headers_menu_copies_the_senders_or_the_recipients_addresses() {
         output.drop_without_applying_deltas();
         (shapes, messages)
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
     let choose = |item: &str| {
         let (shapes, _) = frame(Vec::new());
         let header = text_rect(&shapes, "Preview");
-        let (_, asked) = frame(click(header.center(), egui::PointerButton::Secondary));
+        let (_, asked) = frame(click_events(
+            header.center(),
+            egui::PointerButton::Secondary,
+        ));
         assert!(asked.is_empty(), "a right click leaves the card as it is");
         let mut shapes = Vec::new();
         for _ in 0..3 {
             shapes = frame(Vec::new()).0;
         }
         let item = text_rect(&shapes, item);
-        frame(click(item.center(), egui::PointerButton::Primary)).1
+        frame(click_events(item.center(), egui::PointerButton::Primary)).1
     };
 
     assert!(matches!(
@@ -844,8 +965,9 @@ fn a_narrow_reader_keeps_its_buttons_and_body_inside_the_pane() {
     let context = egui::Context::default();
     theme::install(&context);
     let mut state = UiState::default();
-    // The reader at its narrowest: a 200 pt pane without its padding.
-    let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(168.0, 900.0));
+    // The reader at its narrowest, without its padding.
+    let narrowest = crate::app::MIN_READER_WIDTH - 2.0 * f32::from(theme::PANEL_PADDING);
+    let pane = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(narrowest, 900.0));
     let input = egui::RawInput {
         screen_rect: Some(pane),
         ..Default::default()
@@ -879,6 +1001,19 @@ fn a_narrow_reader_keeps_its_buttons_and_body_inside_the_pane() {
         }
     }
     text_rect(&shapes, "Forward");
+    // Every action, the folder and label menus too, on the toolbar's one line.
+    let card = cards(&shapes)[0];
+    let toolbar: Vec<_> = buttons(&shapes)
+        .into_iter()
+        .filter(|button| button.bottom() < card.top())
+        .collect();
+    assert!(toolbar.len() >= 7, "{toolbar:?}");
+    assert!(
+        toolbar
+            .iter()
+            .all(|button| (button.center().y - toolbar[0].center().y).abs() < 1.0),
+        "the toolbar wrapped: {toolbar:?}"
+    );
 }
 
 #[test]
@@ -1037,17 +1172,9 @@ fn loading_reader(
     count: u32,
 ) -> (Mailbox, crate::app::ReaderRequest, ConversationDetail) {
     let summary = ConversationSummary {
-        id: "conversation".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some(subject.into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
-        unread: false,
-        starred: false,
         message_count: count,
-        has_attachments: false,
+        ..summary("conversation")
     };
     let (mut mailbox, page) = Mailbox::open(folder, 50, 1, 2);
     mailbox.finish_page(
@@ -1067,6 +1194,7 @@ fn loading_reader(
         labels: Vec::new(),
         messages: (0..count)
             .map(|index| MailMessage {
+                address_id: String::new(),
                 id: format!("message-{index}"),
                 verdict: Verdict::Unverified,
                 sender: address(Some("Alex Rivera"), "alex@example.com"),
@@ -1411,22 +1539,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
     let reply = text_rect(&shapes, "Reply").center();
     let controls = buttons(&shapes);
     for position in [controls[0].center(), labels_button(&shapes).center(), reply] {
-        let mut click = input.clone();
-        click.events = vec![
-            egui::Event::PointerMoved(position),
-            egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: position,
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ];
+        let click = click_at(&input, position);
         let (_, messages) = reader_frame(
             &context,
             &mailbox,
@@ -1446,22 +1559,7 @@ fn loading_controls_do_not_dispatch_actions_and_loaded_reply_still_works() {
         &mut state,
         input.clone(),
     );
-    let mut click = input;
-    click.events = vec![
-        egui::Event::PointerMoved(reply),
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
+    let click = click_at(&input, reply);
     let (_, messages) = reader_frame(
         &context,
         &mailbox,
@@ -1501,22 +1599,7 @@ fn an_unreadable_message_shows_a_notice_and_can_still_be_answered() {
     );
     text_rect(&shapes, UNREADABLE_NOTICE);
     let reply = text_rect(&shapes, "Reply").center();
-    let mut click = input;
-    click.events = vec![
-        egui::Event::PointerMoved(reply),
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: true,
-            modifiers: Default::default(),
-        },
-        egui::Event::PointerButton {
-            pos: reply,
-            button: egui::PointerButton::Primary,
-            pressed: false,
-            modifiers: Default::default(),
-        },
-    ];
+    let click = click_at(&input, reply);
     let (_, messages) = reader_frame(
         &context,
         &mailbox,
@@ -1533,19 +1616,10 @@ fn an_unreadable_message_shows_a_notice_and_can_still_be_answered() {
 #[test]
 fn a_collapsed_card_shows_the_real_address_beside_the_lock() {
     let message = MailMessage {
-        id: "message".into(),
         verdict: Verdict::Verified,
         sender: address(Some("PayPal <service@paypal.com>"), "phish@proton.me"),
-        to: Vec::new(),
-        cc: Vec::new(),
-        bcc: Vec::new(),
-        reply_to: Vec::new(),
-        reply_all_cc: Vec::new(),
-        reply_redirected: false,
-        time: None,
-        unread: false,
         body: MessageBody::PlainText("Preview".into()),
-        attachments: Vec::new(),
+        ..message("message")
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -1589,8 +1663,19 @@ fn header_shapes(
     expanded: bool,
     width: f32,
 ) -> (egui::Rect, Vec<egui::epaint::ClippedShape>) {
+    header_shapes_at(message, expanded, width, 1.0)
+}
+
+/// [`header_shapes`] with text drawn at `scale`.
+fn header_shapes_at(
+    message: &MailMessage,
+    expanded: bool,
+    width: f32,
+    scale: f32,
+) -> (egui::Rect, Vec<egui::epaint::ClippedShape>) {
     let context = egui::Context::default();
     theme::install(&context);
+    theme::set_text_scale(&context, scale);
     let mut rect = egui::Rect::NOTHING;
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         ui.set_width(width);
@@ -1603,19 +1688,11 @@ fn header_shapes(
 
 fn header_message(name: Option<&str>) -> MailMessage {
     MailMessage {
-        id: "message".into(),
-        verdict: Verdict::Unverified,
         sender: address(name, "alex@example.com"),
         to: vec![address(None, "team@example.org")],
-        cc: Vec::new(),
-        bcc: Vec::new(),
-        reply_to: Vec::new(),
-        reply_all_cc: Vec::new(),
-        reply_redirected: false,
         time: Some(1_791_327_600),
-        unread: false,
         body: MessageBody::PlainText("Preview".into()),
-        attachments: Vec::new(),
+        ..message("message")
     }
 }
 
@@ -1642,6 +1719,47 @@ fn a_message_header_keeps_the_arrow_pointer() {
     };
     render(hover());
     assert_eq!(render(hover()).1, egui::CursorIcon::Default);
+}
+
+#[test]
+fn a_header_grows_with_its_text_and_keeps_its_lines_apart() {
+    let mut message = header_message(Some("Alex Rivera"));
+    message.cc = vec![address(None, "copy@example.org")];
+    for scale in crate::settings::TEXT_SCALES {
+        for expanded in [false, true] {
+            let (usual, _) = header_shapes_at(&message, expanded, 420.0, 1.0);
+            let (header, shapes) = header_shapes_at(&message, expanded, 420.0, scale);
+            // egui keeps lengths on a grid of 1/32 pt.
+            assert!(
+                (header.height() - usual.height() * scale).abs() < 0.05,
+                "{scale}: {} pt tall, {} usually",
+                header.height(),
+                usual.height()
+            );
+            let labels: &[&str] = if expanded {
+                &[
+                    "Alex Rivera",
+                    "alex@example.com",
+                    "To: team@example.org",
+                    "Cc: copy@example.org",
+                ]
+            } else {
+                &["Alex Rivera", "Preview"]
+            };
+            let lines: Vec<egui::Rect> = labels
+                .iter()
+                .map(|label| text_rect(&shapes, label))
+                .collect();
+            assert!(header.top() <= lines[0].top(), "{scale}: {lines:?}");
+            assert!(
+                lines[lines.len() - 1].bottom() <= header.bottom(),
+                "{scale}: {lines:?} past {header:?}"
+            );
+            for pair in lines.windows(2) {
+                assert!(pair[0].bottom() <= pair[1].top(), "{scale}: {pair:?}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -1848,19 +1966,9 @@ fn each_sender_line_has_its_height_spoken_label_and_tooltips() {
         ),
     ] {
         let message = MailMessage {
-            id: "message".into(),
-            verdict: Verdict::Unverified,
             sender: sender.clone(),
-            to: Vec::new(),
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            reply_to: Vec::new(),
-            reply_all_cc: Vec::new(),
-            reply_redirected: false,
-            time: None,
-            unread: false,
             body: MessageBody::PlainText("Preview".into()),
-            attachments: Vec::new(),
+            ..message("message")
         };
         let status = message_status_text(&message);
 
@@ -1906,17 +2014,9 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
     );
 
     let row = ConversationSummary {
-        id: "conversation".into(),
-        kind: crate::mail::SummaryKind::Conversation,
-        subject: None,
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
         starred: true,
-        message_count: 1,
-        has_attachments: false,
+        ..summary("conversation")
     };
     let row_flags: Vec<(&str, bool, MailAction)> = flags(row.unread, row.starred)
         .into_iter()
@@ -1934,19 +2034,9 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
 #[test]
 fn message_header_is_one_full_width_click_target() {
     let message = MailMessage {
-        id: "message".into(),
-        verdict: Verdict::Unverified,
         sender: address(Some("Alex Rivera"), "alex@example.com"),
-        to: Vec::new(),
-        cc: Vec::new(),
-        bcc: Vec::new(),
-        reply_to: Vec::new(),
-        reply_all_cc: Vec::new(),
-        reply_redirected: false,
-        time: None,
-        unread: false,
         body: MessageBody::PlainText("Preview".into()),
-        attachments: Vec::new(),
+        ..message("message")
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -2027,19 +2117,10 @@ fn an_expanded_message_card_only_uses_its_content_height() {
         subject: Some("Short message".into()),
         labels: Vec::new(),
         messages: vec![MailMessage {
-            id: "message".into(),
-            verdict: Verdict::Unverified,
             sender: address(Some("Alex Rivera"), "alex@example.com"),
             to: vec![address(None, "team@example.org")],
-            cc: Vec::new(),
-            bcc: Vec::new(),
-            reply_to: Vec::new(),
-            reply_all_cc: Vec::new(),
-            reply_redirected: false,
-            time: None,
-            unread: false,
             body: MessageBody::PlainText("Hello.".into()),
-            attachments: Vec::new(),
+            ..message("message")
         }],
     };
     let reader = ConversationReader::new(detail);
@@ -2090,6 +2171,7 @@ fn a_deeply_nested_list_item_stays_in_its_column() {
             quote_depth: 0,
             hidden: false,
             centered: false,
+            joined: false,
         };
         let context = egui::Context::default();
         let mut height = 0.0;
@@ -2278,19 +2360,10 @@ fn body_verdict_is_visible_in_expanded_and_collapsed_message_cards() {
                         "sender@proton.me"
                     };
                     let message = MailMessage {
-                        id: "message".into(),
                         sender: address(name, sender),
-                        to: Vec::new(),
-                        cc: Vec::new(),
-                        bcc: Vec::new(),
-                        reply_to: Vec::new(),
-                        reply_all_cc: Vec::new(),
-                        reply_redirected: false,
-                        time: None,
-                        unread: false,
                         body: MessageBody::PlainText("Body".into()),
-                        attachments: Vec::new(),
                         verdict,
+                        ..message("message")
                     };
                     let mut reader = ConversationReader::new(ConversationDetail {
                         id: "conversation".into(),
@@ -2987,17 +3060,10 @@ fn a_long_table_lays_out_only_the_rows_near_sight_and_keeps_its_shape() {
 /// A row of the Inbox, starred, and unread or not.
 fn starred_row(id: &str, unread: bool) -> ConversationSummary {
     ConversationSummary {
-        id: id.into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some(id.into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread,
         starred: true,
-        message_count: 1,
-        has_attachments: false,
+        ..summary(id)
     }
 }
 
@@ -3107,7 +3173,7 @@ fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
     let frame = |input: egui::RawInput| {
         let mut messages = Vec::new();
         let output = context.run_ui(input, |ui| {
-            selection_menu(ui, &mailbox, &mut messages);
+            selection_menu(ui, &mailbox, &[], &mut messages);
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -3124,4 +3190,87 @@ fn the_menu_of_a_row_chosen_with_others_acts_on_all_of_them() {
         [Message::ApplyAction(MailAction::MoveTo(to))]
             if *to == Folder::System(MailFolder::Archive)
     ));
+}
+
+#[test]
+fn quoted_text_waits_behind_its_button_unless_the_message_is_all_quote() {
+    let paragraph = |text: &str, quote_depth: u8| RichBlock {
+        kind: BlockKind::Paragraph(vec![RichSpan {
+            text: text.into(),
+            ..RichSpan::default()
+        }]),
+        quote_depth,
+        hidden: false,
+        centered: false,
+        joined: false,
+    };
+    let reader = ConversationReader::new(ConversationDetail {
+        id: "conversation".into(),
+        subject: None,
+        labels: Vec::new(),
+        messages: Vec::new(),
+    });
+    let context = egui::Context::default();
+    theme::install(&context);
+    // The words drawn, in order.
+    let drawn = |blocks: Vec<RichBlock>, show_quoted_text: bool| -> Vec<String> {
+        let body = RichBody {
+            blocks,
+            ..RichBody::default()
+        };
+        let reading = Reading {
+            show_quoted_text,
+            ..Reading::default()
+        };
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(600.0);
+            rich_body(
+                ui,
+                &body,
+                "message",
+                &reader,
+                no_pictures(),
+                reading,
+                &mut Vec::new(),
+            );
+        });
+        let words = output
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::Shape::Text(text) => Some(text.galley.text().to_owned()),
+                _ => None,
+            })
+            .collect();
+        output.drop_without_applying_deltas();
+        words
+    };
+    let reply = || {
+        vec![
+            paragraph("Sounds good", 0),
+            paragraph("Shall we meet?", 1),
+            paragraph("Before that", 2),
+            paragraph("Thanks", 0),
+        ]
+    };
+
+    assert_eq!(
+        drawn(reply(), false),
+        ["Sounds good", "Show quoted text", "Thanks"]
+    );
+    assert_eq!(
+        drawn(reply(), true),
+        [
+            "Sounds good",
+            "Hide quoted text",
+            "Shall we meet?",
+            "Before that",
+            "Thanks"
+        ]
+    );
+    // A message that is all quote shows it, with no button before it.
+    assert_eq!(
+        drawn(vec![paragraph("Shall we meet?", 1)], false),
+        ["Shall we meet?"]
+    );
 }

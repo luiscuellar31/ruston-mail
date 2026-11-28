@@ -210,11 +210,13 @@ impl Client {
     }
 
     /// The address `parent` reached, so an answer without a chosen sender does
-    /// not reveal another of the account's addresses. `None` falls back to the
-    /// primary address, as for a new message.
+    /// not reveal another of the account's addresses. `None`, also when mail
+    /// can no longer go out from it, falls back to the primary address, as
+    /// for a new message.
     fn receiving_address(&self, parent: &Message) -> Option<String> {
         self.keys()
             .address(&parent.meta.address_id)
+            .filter(|address| address.can_send)
             .map(|address| address.email.clone())
     }
 
@@ -361,7 +363,7 @@ impl Client {
         attachment_keys: &[AttachmentKey],
         eo: Option<EncryptedOutside<'_>>,
     ) -> Result<Vec<(&'a str, Delivery<'a>)>> {
-        let mut modulus_cache: Option<(String, String)> = None;
+        let mut modulus_cache: Option<api::keys::SrpModulus> = None;
         let mut deliveries = Vec::with_capacity(recipients.len());
         for (email, keys) in recipients {
             let delivery = match (RecipientKey::pick(keys), eo) {

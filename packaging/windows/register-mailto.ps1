@@ -1,5 +1,7 @@
 # Register Ruston Mail as a selectable mailto handler for the current user.
 # This does not change the default app or write Windows' protected UserChoice.
+# The installer's [Registry] section (ruston-mail.iss) writes the same keys:
+# change both together.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]

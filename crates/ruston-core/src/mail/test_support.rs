@@ -3,7 +3,7 @@
 use super::{Client, SenderKeyCache};
 use crate::cache::CacheIdentity;
 use crate::crypto::{AddressKeys, KeyStore};
-use crate::session::{MemoryStore, Paths};
+use crate::session::{MemoryStore, Paths, ProfileStorage};
 use crate::transport::HttpClient;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -15,11 +15,13 @@ pub(crate) fn client(server: &MockServer, addresses: Vec<AddressKeys>) -> Client
     Client {
         http: HttpClient::new(server.uri(), "Other"),
         keys: KeyStore { addresses },
-        paths: Paths::with_base(std::env::temp_dir()),
-        profile: "test".into(),
+        storage: ProfileStorage::new(
+            Paths::with_base(std::env::temp_dir()),
+            "test",
+            Arc::new(MemoryStore::default()),
+        ),
         session_uid: "test".into(),
         cache_identity: CacheIdentity::new(&server.uri(), "test").unwrap(),
-        store: Arc::new(MemoryStore::default()),
         sender_cache: tokio::sync::Mutex::new(SenderKeyCache::default()),
     }
 }

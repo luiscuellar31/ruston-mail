@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::test_support::contrast;
+use crate::ui::widgets::text_field;
 
 #[test]
 fn bundled_ui_icons_render_and_can_be_tinted() {
@@ -18,6 +20,13 @@ fn bundled_ui_icons_render_and_can_be_tinted() {
         Icon::Mail,
         Icon::Lock,
         Icon::Unlock,
+        Icon::Back,
+        Icon::Reading,
+        Icon::Palette,
+        Icon::Toggles,
+        Icon::Sliders,
+        Icon::Keyboard,
+        Icon::About,
     ] {
         let egui::ImageSource::Bytes { bytes, .. } = icon.source() else {
             panic!("{icon:?} must be bundled");
@@ -25,9 +34,14 @@ fn bundled_ui_icons_render_and_can_be_tinted() {
         let image = egui_extras::image::load_svg_bytes(bytes.as_ref(), &Default::default())
             .expect("bundled icon must render");
         assert_eq!(image.size, [16, 16], "{icon:?}");
+        // White at whatever coverage: the colors are premultiplied, and the
+        // one-pixel stroke of an arrow covers no pixel whole at this size.
         assert!(
             image.pixels.iter().any(|pixel| {
-                pixel.a() > 0 && pixel.r() == 255 && pixel.g() == 255 && pixel.b() == 255
+                pixel.a() > 0
+                    && pixel.r() == pixel.a()
+                    && pixel.g() == pixel.a()
+                    && pixel.b() == pixel.a()
             }),
             "{icon:?} must have white pixels for tinting"
         );
@@ -39,23 +53,6 @@ fn bundled_ui_icons_render_and_can_be_tinted() {
             "{icon:?} must be ready to paint"
         );
     }
-}
-
-/// WCAG contrast ratio between two opaque colors.
-fn contrast(a: Color32, b: Color32) -> f64 {
-    let linear = |channel: u8| {
-        let value = f64::from(channel) / 255.0;
-        if value <= 0.04045 {
-            value / 12.92
-        } else {
-            ((value + 0.055) / 1.055).powf(2.4)
-        }
-    };
-    let luminance = |color: Color32| {
-        0.2126 * linear(color.r()) + 0.7152 * linear(color.g()) + 0.0722 * linear(color.b())
-    };
-    let (a, b) = (luminance(a), luminance(b));
-    (a.max(b) + 0.05) / (a.min(b) + 0.05)
 }
 
 /// The rectangles the focus ring marks in one frame of `content`.
@@ -122,117 +119,6 @@ fn the_widget_with_keyboard_focus_gets_a_ring() {
 }
 
 #[test]
-fn a_check_box_is_square_with_an_outline_or_the_accent() {
-    let context = egui::Context::default();
-    install(&context);
-    for checked in [false, true] {
-        let mut value = checked;
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.add(Checkbox::new(&mut value, "Ask before opening a link"));
-        });
-        let boxes: Vec<_> = output
-            .shapes
-            .iter()
-            .filter_map(|clipped| match &clipped.shape {
-                egui::Shape::Rect(rect)
-                    if rect.corner_radius == CornerRadius::same(CHECKBOX_RADIUS) =>
-                {
-                    Some(rect.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        output.drop_without_applying_deltas();
-
-        let [check_box] = boxes.as_slice() else {
-            panic!("expected one box, checked: {checked}");
-        };
-        assert_eq!(check_box.rect.width(), check_box.rect.height());
-        if checked {
-            assert_eq!(check_box.fill, ACCENT);
-        } else {
-            assert_eq!(check_box.stroke, Stroke::new(1.0, DARK.control_border));
-        }
-    }
-}
-
-#[test]
-fn clicking_a_check_box_toggles_it() {
-    let context = egui::Context::default();
-    install(&context);
-    let mut value = false;
-    let mut rect = egui::Rect::NOTHING;
-    context
-        .run_ui(egui::RawInput::default(), |ui| {
-            rect = ui.add(Checkbox::new(&mut value, "Ask")).rect;
-        })
-        .drop_without_applying_deltas();
-    let click = egui::RawInput {
-        events: vec![
-            egui::Event::PointerMoved(rect.center()),
-            egui::Event::PointerButton {
-                pos: rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: true,
-                modifiers: Default::default(),
-            },
-            egui::Event::PointerButton {
-                pos: rect.center(),
-                button: egui::PointerButton::Primary,
-                pressed: false,
-                modifiers: Default::default(),
-            },
-        ],
-        ..Default::default()
-    };
-    let mut changed = false;
-    context
-        .run_ui(click, |ui| {
-            changed = ui.add(Checkbox::new(&mut value, "Ask")).changed();
-        })
-        .drop_without_applying_deltas();
-
-    assert!(value);
-    assert!(changed);
-}
-
-#[test]
-fn buttons_come_in_three_weights() {
-    let context = egui::Context::default();
-    install(&context);
-    for emphasis in [Emphasis::Primary, Emphasis::Secondary, Emphasis::Danger] {
-        let mut neutral = Color32::PLACEHOLDER;
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            neutral = ui.visuals().widgets.inactive.weak_bg_fill;
-            ui.add(emphasized(egui::Button::new("Send"), emphasis));
-        });
-        let (frame, text) = output
-            .shapes
-            .iter()
-            .fold((None, None), |(frame, text), clipped| {
-                match &clipped.shape {
-                    egui::Shape::Rect(rect) => (Some((rect.fill, rect.stroke)), text),
-                    egui::Shape::Text(shape) => (frame, Some(shape.fallback_color)),
-                    _ => (frame, text),
-                }
-            });
-        output.drop_without_applying_deltas();
-
-        let (fill, stroke) = frame.expect("a button frame");
-        let danger = DARK.danger;
-        let expected = match emphasis {
-            Emphasis::Primary => (ACCENT, Stroke::NONE, ON_ACCENT),
-            Emphasis::Secondary => (neutral, Stroke::NONE, DARK.text),
-            Emphasis::Danger => (Color32::TRANSPARENT, Stroke::new(1.0, danger), danger),
-        };
-        assert_eq!(
-            (fill, stroke, text),
-            (expected.0, expected.1, Some(expected.2))
-        );
-    }
-}
-
-#[test]
 fn small_text_is_drawn_at_footnote_size() {
     let context = egui::Context::default();
     install(&context);
@@ -244,6 +130,47 @@ fn small_text_is_drawn_at_footnote_size() {
             "{mode:?}"
         );
     }
+}
+
+#[test]
+fn text_is_drawn_at_the_scale_settings_chose_and_back() {
+    let context = egui::Context::default();
+    install(&context);
+    let usual = context.style_of(egui::Theme::Dark).text_styles.clone();
+    let body = || {
+        let mut size = 0.0;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                size = text_size(ui, BODY_SIZE);
+            })
+            .drop_without_applying_deltas();
+        size
+    };
+    assert_eq!(text_scale(&context), 1.0);
+    assert_eq!(body(), BODY_SIZE);
+
+    set_text_scale(&context, 1.5);
+    assert_eq!(text_scale(&context), 1.5);
+    assert_eq!(body(), BODY_SIZE * 1.5);
+    for mode in [egui::Theme::Dark, egui::Theme::Light] {
+        let styles = &context.style_of(mode).text_styles;
+        for (style, font) in &usual {
+            assert_eq!(styles[style].size, font.size * 1.5, "{mode:?} {style:?}");
+        }
+    }
+
+    // Back to the usual size, every style is as before.
+    set_text_scale(&context, 1.0);
+    assert_eq!(body(), BODY_SIZE);
+    for mode in [egui::Theme::Dark, egui::Theme::Light] {
+        assert_eq!(context.style_of(mode).text_styles, usual, "{mode:?}");
+    }
+
+    // Installing the theme again starts from the usual size too.
+    set_text_scale(&context, 1.3);
+    install(&context);
+    assert_eq!(text_scale(&context), 1.0);
+    assert_eq!(context.style_of(egui::Theme::Light).text_styles, usual);
 }
 
 #[test]
@@ -276,44 +203,6 @@ fn normal_text_stands_above_secondary_text_in_both_themes() {
                 "{mode:?} on {surface:?}: text {normal:.2}:1, secondary {secondary:.2}:1"
             );
         }
-    }
-}
-
-#[test]
-fn text_fields_are_outlined_at_rest_with_a_readable_hint() {
-    for (mode, colors) in [(egui::Theme::Dark, DARK), (egui::Theme::Light, LIGHT)] {
-        let context = egui::Context::default();
-        install(&context);
-        context.set_theme(mode);
-        let mut text = String::new();
-        let output = context.run_ui(egui::RawInput::default(), |ui| {
-            ui.add(text_field(ui, &mut text).hint_text("Search mail…"));
-        });
-        let fill = context.style_of(mode).visuals.text_edit_bg_color();
-        let outlined = output.shapes.iter().any(|clipped| {
-            matches!(&clipped.shape, egui::epaint::Shape::Rect(rect)
-                if rect.fill == fill && rect.stroke.color == colors.control_border)
-        });
-        let hint = output
-            .shapes
-            .iter()
-            .find_map(|clipped| match &clipped.shape {
-                egui::epaint::Shape::Text(text) if text.galley.text() == "Search mail…" => {
-                    Some(text.galley.job.sections[0].format.color)
-                }
-                _ => None,
-            })
-            .expect("the hint should be drawn");
-        output.drop_without_applying_deltas();
-
-        assert!(outlined, "{mode:?}: a field at rest needs its outline");
-        assert_eq!(hint, colors.placeholder, "{mode:?}");
-        let ratio = contrast(hint, fill);
-        assert!(ratio >= 4.5, "{mode:?}: hint at {ratio:.2}:1");
-        assert!(
-            contrast(colors.control_border, colors.panel) >= 3.0,
-            "{mode:?}"
-        );
     }
 }
 
@@ -426,65 +315,6 @@ fn selection_is_limited_to_mail_content() {
             assert!(ui.style().interaction.selectable_labels);
         });
         assert!(!ui.style().interaction.selectable_labels);
-    });
-}
-
-#[test]
-fn compact_buttons_keep_a_comfortable_height() {
-    egui::__run_test_ui(|ui| {
-        let button = ui.add(compact_button("More options"));
-        assert!(button.rect.height() >= COMPACT_BUTTON_HEIGHT);
-    });
-}
-
-#[test]
-fn a_compact_button_keeps_its_size_on_hover() {
-    let context = egui::Context::default();
-    install(&context);
-    let render = |input| {
-        let mut rect = egui::Rect::NOTHING;
-        context
-            .run_ui(input, |ui| {
-                rect = ui
-                    .add(
-                        compact_button("Reply")
-                            .fill(DARK.accent_soft)
-                            .stroke(Stroke::new(1.0, ACCENT)),
-                    )
-                    .rect;
-            })
-            .drop_without_applying_deltas();
-        rect
-    };
-
-    let idle = render(egui::RawInput::default());
-    let hovered = render(egui::RawInput {
-        events: vec![egui::Event::PointerMoved(idle.center())],
-        ..Default::default()
-    });
-
-    assert_eq!(hovered.size(), idle.size());
-}
-
-#[test]
-fn vector_icon_buttons_are_consistent_click_targets() {
-    egui::__run_test_ui(|ui| {
-        for icon in [
-            Icon::Inbox,
-            Icon::Drafts,
-            Icon::Sent,
-            Icon::Star,
-            Icon::Archive,
-            Icon::Spam,
-            Icon::Trash,
-            Icon::Folder,
-            Icon::Label,
-            Icon::Mail,
-        ] {
-            let response = ui.add(IconButton::new(icon, "Action"));
-            assert!(response.rect.width() >= 32.0);
-            assert!(response.rect.height() >= 28.0);
-        }
     });
 }
 

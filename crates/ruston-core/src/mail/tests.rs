@@ -1,10 +1,11 @@
 use super::login::{LOGOUT_REVOCATION_TIMEOUT, account, mailbox_password};
 use super::*;
 use crate::crypto;
-use crate::session::{MemoryStore, Session, Tokens};
+use crate::session::{MemoryStore, Paths, SecretStore, Session, Tokens};
 use crate::transport::Doer;
 use secrecy::{ExposeSecret, SecretString};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
 use wiremock::matchers::{header, method, path};
@@ -57,43 +58,36 @@ async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Cl
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
-    let paths = Paths::with_base(&base);
+    let storage = ProfileStorage::new(Paths::with_base(&base), "test", store);
     let tokens = Tokens {
         uid: "logout-uid".into(),
         access: SecretString::from("logout-access"),
         refresh: SecretString::from("logout-refresh"),
     };
-    Session {
+    let session = Session {
         uid: tokens.uid.clone(),
         app_version: "Other".into(),
         base_url: base_url.into(),
         password_mode: 1,
         user_agent: None,
         user_id: "user-1".into(),
-    }
-    .save(
-        &paths,
-        "test",
-        store.as_ref(),
-        &tokens,
-        &SecretString::from("logout-skp"),
-    )
-    .unwrap();
+    };
+    storage
+        .save(&session, &tokens, &SecretString::from("logout-skp"))
+        .unwrap();
     let mut http = HttpClient::new(base_url, "Other");
     http.set_tokens(tokens.uid, tokens.access, tokens.refresh)
         .await;
-    Client::wire_refresh(&mut http, store.clone(), paths.clone(), "test");
+    Client::wire_refresh(&mut http, &storage);
     (
         Client {
             http,
             keys: KeyStore {
                 addresses: Vec::new(),
             },
-            paths,
-            profile: "test".into(),
+            storage,
             session_uid: "logout-uid".into(),
             cache_identity: CacheIdentity::new(base_url, "logout-account").unwrap(),
-            store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
         },
         base,
@@ -102,13 +96,16 @@ async fn saved_logout_client(base_url: &str, store: Arc<dyn SecretStore>) -> (Cl
 
 fn assert_session_cleared(client: &Client, base: &std::path::Path) {
     assert!(!base.join("sessions/test.json").exists());
-    assert!(client.store.get("auth_tokens_v1").unwrap().is_none());
-    assert!(client.store.get("skp").unwrap().is_none());
     assert!(
-        Session::load(&client.paths, "test", client.store.as_ref())
+        client
+            .storage
+            .store()
+            .get("auth_tokens_v1")
             .unwrap()
             .is_none()
     );
+    assert!(client.storage.store().get("skp").unwrap().is_none());
+    assert!(client.storage.load().unwrap().is_none());
 }
 
 async fn delayed_logout_server() -> (MockServer, Arc<Notify>) {
@@ -163,25 +160,11 @@ impl SecretStore for SlowStore {
 
 #[tokio::test]
 async fn a_saved_session_resumes_with_its_keys_unlocked() {
-    use proton_crypto::crypto::{
-        DataEncoding, KeyGenerator, KeyGeneratorAlgorithm, KeyGeneratorSync, PGPProviderSync,
-    };
-
     // Keys locked with the session's key passphrase, as Proton keeps them.
-    let provider = crypto::provider();
     let key = |id: &str, email: &str| {
-        let generated = provider
-            .new_key_generator()
-            .with_user_id("Test", email)
-            .with_algorithm(KeyGeneratorAlgorithm::ECC)
-            .generate()
-            .unwrap();
-        let armored = provider
-            .private_key_export(&generated, "logout-skp", DataEncoding::Armor)
-            .unwrap();
         serde_json::json!({
             "ID": id,
-            "PrivateKey": String::from_utf8(armored.as_ref().to_vec()).unwrap(),
+            "PrivateKey": crypto::test_support::test_key(email, "logout-skp").private,
             "Primary": 1,
         })
     };
@@ -210,9 +193,7 @@ async fn a_saved_session_resumes_with_its_keys_unlocked() {
     let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
     let (saved, base) = saved_logout_client(&server.uri(), store.clone()).await;
 
-    let resumed = Client::resume_from("test", saved.paths.clone(), store)
-        .await
-        .unwrap();
+    let resumed = Client::resume_from(saved.storage.clone()).await.unwrap();
 
     let address = &resumed.keys().addresses[0];
     assert_eq!(address.email, "me@proton.me");
@@ -233,7 +214,7 @@ async fn a_slow_credential_store_leaves_the_async_runtime_free() {
     let started = Instant::now();
     let resumed = tokio::time::timeout(
         Duration::from_millis(50),
-        Client::resume_from("test", client.paths.clone(), slow),
+        Client::resume_from(client.storage.with_store(slow)),
     )
     .await;
     assert!(resumed.is_err(), "the resume should still be waiting");
@@ -367,31 +348,29 @@ async fn old_logout_preserves_a_replacement_session_in_the_same_profile() {
         .mount(&server)
         .await;
     let (client, base) = saved_logout_client(&server.uri(), Arc::new(MemoryStore::new())).await;
-    Session {
+    let replacement = Session {
         uid: "replacement-uid".into(),
         app_version: "Other".into(),
         base_url: server.uri(),
         password_mode: 1,
         user_agent: None,
         user_id: "user-1".into(),
-    }
-    .save(
-        &client.paths,
-        "test",
-        client.store.as_ref(),
-        &Tokens {
-            uid: "replacement-uid".into(),
-            access: SecretString::from("replacement-access"),
-            refresh: SecretString::from("replacement-refresh"),
-        },
-        &SecretString::from("replacement-skp"),
-    )
-    .unwrap();
+    };
+    client
+        .storage
+        .save(
+            &replacement,
+            &Tokens {
+                uid: "replacement-uid".into(),
+                access: SecretString::from("replacement-access"),
+                refresh: SecretString::from("replacement-refresh"),
+            },
+            &SecretString::from("replacement-skp"),
+        )
+        .unwrap();
 
     assert!(client.logout().await.unwrap());
-    let saved = Session::load(&client.paths, "test", client.store.as_ref())
-        .unwrap()
-        .unwrap();
+    let saved = client.storage.load().unwrap().unwrap();
     assert_eq!(saved.session.uid, "replacement-uid");
     assert_eq!(saved.tokens.access.expose_secret(), "replacement-access");
     assert_eq!(saved.tokens.refresh.expose_secret(), "replacement-refresh");
@@ -438,8 +417,15 @@ async fn local_logout_failure_still_removes_other_secrets_and_attempts_revocatio
 
     assert!(matches!(client.logout().await, Err(Error::Session(_))));
     assert!(!base.join("sessions/test.json").exists());
-    assert!(client.store.get("auth_tokens_v1").unwrap().is_some());
-    assert!(client.store.get("skp").unwrap().is_none());
+    assert!(
+        client
+            .storage
+            .store()
+            .get("auth_tokens_v1")
+            .unwrap()
+            .is_some()
+    );
+    assert!(client.storage.store().get("skp").unwrap().is_none());
     server.verify().await;
     std::fs::remove_dir_all(base).unwrap();
 }

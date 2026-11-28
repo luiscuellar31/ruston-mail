@@ -11,27 +11,34 @@ use windows_sys::Win32::Graphics::Gdi::{
     ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS, CreateBitmap,
     CreateCompatibleDC, CreateDIBSection, CreateFontW, DEFAULT_CHARSET, DEFAULT_PITCH,
     DIB_RGB_COLORS, DT_CENTER, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteDC, DeleteObject,
-    DrawTextW, FW_BOLD, GdiFlush, HBITMAP, HDC, OUT_DEFAULT_PRECIS, SelectObject, SetBkMode,
-    SetTextColor, TRANSPARENT,
+    DrawTextW, FW_BOLD, GdiFlush, HBITMAP, HDC, HGDIOBJ, OUT_DEFAULT_PRECIS, SelectObject,
+    SetBkMode, SetTextColor, TRANSPARENT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{CreateIconIndirect, DestroyIcon, ICONINFO};
 use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+use super::BadgeUpdate;
 
 /// Windows shows the overlay at the small icon size, 16 pixels at 100 %;
 /// drawing twice that keeps it sharp at 200 %.
 const SIZE: usize = 32;
 
+/// The bytes of a SIZE by SIZE bitmap of 32-bit pixels: blue, green, red
+/// and alpha.
+const BGRA_BYTES: usize = SIZE * SIZE * 4;
+
 /// Windows' own red for alerts, as red, green, blue.
 const RED: [u8; 3] = [0xC4, 0x2B, 0x1C];
 
 /// Shows `count` on the window's taskbar button, or takes the badge away.
-/// Returns false only while the window has no taskbar button to badge yet.
-pub(super) fn show_unread(window: &winit::window::Window, count: Option<u32>) -> bool {
+/// Only a window with no taskbar button yet is tried again; a failure here
+/// would fail again.
+pub(super) fn show_unread(window: &winit::window::Window, count: Option<u32>) -> BadgeUpdate {
     if window.is_visible() == Some(false) {
-        return false;
+        return BadgeUpdate::RetryLater;
     }
     let Some(hwnd) = hwnd(window) else {
-        return true;
+        return BadgeUpdate::Settled;
     };
     // SAFETY: winit initialized COM for OLE on this UI thread, which owns the
     // window; the interface lives only for these calls.
@@ -39,10 +46,10 @@ pub(super) fn show_unread(window: &winit::window::Window, count: Option<u32>) ->
         let Ok(taskbar) =
             CoCreateInstance::<_, ITaskbarList3>(&TaskbarList, None, CLSCTX_INPROC_SERVER)
         else {
-            return true;
+            return BadgeUpdate::Settled;
         };
         if taskbar.HrInit().is_err() {
-            return true;
+            return BadgeUpdate::Settled;
         }
         match count {
             None => {
@@ -50,7 +57,7 @@ pub(super) fn show_unread(window: &winit::window::Window, count: Option<u32>) ->
             }
             Some(count) => {
                 let Some(icon) = icon(&badge_pixels(&text_mask(&label(count)))) else {
-                    return true;
+                    return BadgeUpdate::Settled;
                 };
                 let description = HSTRING::from(format!("{count} unread"));
                 // The taskbar keeps its own copy of the icon.
@@ -59,7 +66,7 @@ pub(super) fn show_unread(window: &winit::window::Window, count: Option<u32>) ->
             }
         }
     }
-    true
+    BadgeUpdate::Settled
 }
 
 fn hwnd(window: &winit::window::Window) -> Option<HWND> {
@@ -86,6 +93,8 @@ fn text_mask(text: &str) -> Vec<u8> {
     if text.is_empty() {
         return mask;
     }
+    // The tallest bold Segoe UI that fits the disc with one, two or three
+    // characters.
     let height = match text.chars().count() {
         1 => 22,
         2 => 19,
@@ -93,64 +102,68 @@ fn text_mask(text: &str) -> Vec<u8> {
     };
     let text: Vec<u16> = text.encode_utf16().collect();
     let face: Vec<u16> = "Segoe UI".encode_utf16().chain(Some(0)).collect();
-    // SAFETY: every GDI object created here is selected out and deleted
-    // before returning; the pixels are read after GdiFlush, within the
-    // bitmap's 32-bit, SIZE by SIZE buffer.
+    // The guards are let go in the reverse order they are made: the font is
+    // selected out, then deleted, then the bitmap, then the context.
+    let Some(dc) = MemoryDc::new() else {
+        return mask;
+    };
+    let mut bits = std::ptr::null_mut();
+    // SAFETY: `dc` is a live device context.
+    let Some(bitmap) = GdiObject::new(unsafe { bitmap(dc.0, &mut bits) }) else {
+        return mask;
+    };
+    if bits.is_null() {
+        return mask;
+    }
+    // SAFETY: `bits` points to the bitmap's BGRA_BYTES, alive as it is.
+    unsafe { std::ptr::write_bytes(bits.cast::<u8>(), 0, BGRA_BYTES) };
+    let _bitmap_in = Selected::new(&dc, &bitmap);
+    // SAFETY: `face` is NUL-terminated and outlives the call.
+    let font = GdiObject::new(unsafe {
+        CreateFontW(
+            -height,
+            0,
+            0,
+            0,
+            FW_BOLD as i32,
+            0,
+            0,
+            0,
+            DEFAULT_CHARSET.into(),
+            OUT_DEFAULT_PRECIS.into(),
+            CLIP_DEFAULT_PRECIS.into(),
+            ANTIALIASED_QUALITY.into(),
+            DEFAULT_PITCH.into(),
+            face.as_ptr(),
+        )
+    });
+    // Without its font, the label is drawn in the context's own.
+    let _font_in = font.as_ref().map(|font| Selected::new(&dc, font));
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: SIZE as i32,
+        bottom: SIZE as i32,
+    };
+    // SAFETY: `dc` is live with the bitmap selected, `text` and `rect`
+    // outlive the calls, and GdiFlush finishes the drawing before the
+    // pixels are read.
     unsafe {
-        let dc = CreateCompatibleDC(std::ptr::null_mut());
-        if dc.is_null() {
-            return mask;
-        }
-        let mut bits = std::ptr::null_mut();
-        let bitmap = bitmap(dc, &mut bits);
-        if !bitmap.is_null() && !bits.is_null() {
-            std::ptr::write_bytes(bits.cast::<u8>(), 0, SIZE * SIZE * 4);
-            let old_bitmap = SelectObject(dc, bitmap);
-            let font = CreateFontW(
-                -height,
-                0,
-                0,
-                0,
-                FW_BOLD as i32,
-                0,
-                0,
-                0,
-                DEFAULT_CHARSET.into(),
-                OUT_DEFAULT_PRECIS.into(),
-                CLIP_DEFAULT_PRECIS.into(),
-                ANTIALIASED_QUALITY.into(),
-                DEFAULT_PITCH.into(),
-                face.as_ptr(),
-            );
-            let old_font = SelectObject(dc, font);
-            SetTextColor(dc, 0x00FF_FFFF);
-            SetBkMode(dc, TRANSPARENT as i32);
-            let mut rect = RECT {
-                left: 0,
-                top: 0,
-                right: SIZE as i32,
-                bottom: SIZE as i32,
-            };
-            DrawTextW(
-                dc,
-                text.as_ptr(),
-                text.len() as i32,
-                &mut rect,
-                DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
-            );
-            GdiFlush();
-            let pixels = std::slice::from_raw_parts(bits.cast::<u8>(), SIZE * SIZE * 4);
-            for (coverage, pixel) in mask.iter_mut().zip(pixels.as_chunks::<4>().0) {
-                *coverage = pixel[0].max(pixel[1]).max(pixel[2]);
-            }
-            SelectObject(dc, old_font);
-            DeleteObject(font);
-            SelectObject(dc, old_bitmap);
-        }
-        if !bitmap.is_null() {
-            DeleteObject(bitmap);
-        }
-        DeleteDC(dc);
+        SetTextColor(dc.0, 0x00FF_FFFF);
+        SetBkMode(dc.0, TRANSPARENT as i32);
+        DrawTextW(
+            dc.0,
+            text.as_ptr(),
+            text.len() as i32,
+            &mut rect,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+        );
+        GdiFlush();
+    }
+    // SAFETY: the bitmap, still alive, holds BGRA_BYTES at `bits`.
+    let pixels = unsafe { std::slice::from_raw_parts(bits.cast::<u8>(), BGRA_BYTES) };
+    for (coverage, pixel) in mask.iter_mut().zip(pixels.as_chunks::<4>().0) {
+        *coverage = pixel[0].max(pixel[1]).max(pixel[2]);
     }
     mask
 }
@@ -159,7 +172,7 @@ fn text_mask(text: &str) -> Vec<u8> {
 /// red, alpha bytes, row by row, with straight alpha as icons take it.
 fn badge_pixels(text: &[u8]) -> Vec<u8> {
     let radius = SIZE as f32 / 2.0;
-    let mut pixels = Vec::with_capacity(SIZE * SIZE * 4);
+    let mut pixels = Vec::with_capacity(BGRA_BYTES);
     for y in 0..SIZE {
         for x in 0..SIZE {
             let distance = (x as f32 + 0.5 - radius).hypot(y as f32 + 0.5 - radius);
@@ -179,34 +192,98 @@ fn icon(pixels: &[u8]) -> Option<windows_sys::Win32::UI::WindowsAndMessaging::HI
     // Every row of a monochrome bitmap is a whole number of 16-bit words;
     // with 32-bit alpha in the colour, an all-clear mask lets alpha decide.
     let mask_bits = [0_u8; SIZE * SIZE / 8];
-    // SAFETY: the colour bitmap's buffer is SIZE by SIZE 32-bit pixels, as
-    // `pixels` is; both bitmaps are deleted once the icon has copied them.
-    unsafe {
-        let dc = CreateCompatibleDC(std::ptr::null_mut());
-        if dc.is_null() {
-            return None;
+    let mut bits = std::ptr::null_mut();
+    let colour = {
+        // Only to make the bitmap: it is filled through `bits`.
+        let dc = MemoryDc::new()?;
+        // SAFETY: `dc` is a live device context.
+        GdiObject::new(unsafe { bitmap(dc.0, &mut bits) })?
+    };
+    if bits.is_null() {
+        return None;
+    }
+    // SAFETY: the colour bitmap holds BGRA_BYTES at `bits`, as many as
+    // `pixels` has.
+    unsafe { std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), BGRA_BYTES) };
+    // SAFETY: `mask_bits` holds the SIZE by SIZE bits it is read for.
+    let mask = GdiObject::new(unsafe {
+        CreateBitmap(SIZE as i32, SIZE as i32, 1, 1, mask_bits.as_ptr().cast())
+    });
+    let info = ICONINFO {
+        fIcon: 1,
+        xHotspot: 0,
+        yHotspot: 0,
+        hbmMask: mask.as_ref().map_or(std::ptr::null_mut(), |mask| mask.0),
+        hbmColor: colour.0,
+    };
+    // SAFETY: `info` names live bitmaps, which the icon copies; both are
+    // deleted when this returns.
+    let icon = unsafe { CreateIconIndirect(&info) };
+    (!icon.is_null()).then_some(icon)
+}
+
+/// A memory device context, deleted when let go.
+struct MemoryDc(HDC);
+
+impl MemoryDc {
+    /// One like the screen's, if Windows can make one.
+    fn new() -> Option<Self> {
+        // SAFETY: a null handle asks for a context like the screen's.
+        let dc = unsafe { CreateCompatibleDC(std::ptr::null_mut()) };
+        (!dc.is_null()).then_some(Self(dc))
+    }
+}
+
+impl Drop for MemoryDc {
+    fn drop(&mut self) {
+        // SAFETY: this guard made the context and is the only one to delete
+        // it.
+        unsafe { DeleteDC(self.0) };
+    }
+}
+
+/// A bitmap or a font, deleted when let go, after whatever selected it.
+struct GdiObject(HGDIOBJ);
+
+impl GdiObject {
+    fn new(object: HGDIOBJ) -> Option<Self> {
+        (!object.is_null()).then_some(Self(object))
+    }
+}
+
+impl Drop for GdiObject {
+    fn drop(&mut self) {
+        // SAFETY: this guard owns the object, and a `Selected` borrowing it
+        // has already put the context's own back.
+        unsafe { DeleteObject(self.0) };
+    }
+}
+
+/// An object selected into a device context until let go, when the object
+/// it took the place of goes back.
+struct Selected<'a> {
+    dc: &'a MemoryDc,
+    previous: HGDIOBJ,
+    _object: std::marker::PhantomData<&'a GdiObject>,
+}
+
+impl<'a> Selected<'a> {
+    fn new(dc: &'a MemoryDc, object: &'a GdiObject) -> Self {
+        // SAFETY: the context and the object outlive this selection.
+        let previous = unsafe { SelectObject(dc.0, object.0) };
+        Self {
+            dc,
+            previous,
+            _object: std::marker::PhantomData,
         }
-        let mut bits = std::ptr::null_mut();
-        let colour = bitmap(dc, &mut bits);
-        DeleteDC(dc);
-        if colour.is_null() || bits.is_null() {
-            return None;
-        }
-        std::ptr::copy_nonoverlapping(pixels.as_ptr(), bits.cast::<u8>(), SIZE * SIZE * 4);
-        let mask = CreateBitmap(SIZE as i32, SIZE as i32, 1, 1, mask_bits.as_ptr().cast());
-        let info = ICONINFO {
-            fIcon: 1,
-            xHotspot: 0,
-            yHotspot: 0,
-            hbmMask: mask,
-            hbmColor: colour,
-        };
-        let icon = CreateIconIndirect(&info);
-        DeleteObject(colour);
-        if !mask.is_null() {
-            DeleteObject(mask);
-        }
-        (!icon.is_null()).then_some(icon)
+    }
+}
+
+impl Drop for Selected<'_> {
+    fn drop(&mut self) {
+        // SAFETY: the context is alive; putting back what was there lets go
+        // of the object, which can then be deleted.
+        unsafe { SelectObject(self.dc.0, self.previous) };
     }
 }
 

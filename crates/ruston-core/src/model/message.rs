@@ -105,7 +105,7 @@ pub struct MessageMetadata {
     /// Its subject.
     #[serde(default)]
     pub subject: String,
-    /// `1` while it is unread, `0` once read.
+    /// `1` while it is unread, `0` once read; [`Self::is_unread`] reads it.
     #[serde(default)]
     pub unread: i64,
     /// Who sent it.
@@ -147,6 +147,13 @@ pub struct MessageMetadata {
     pub expiration_time: Option<i64>,
 }
 
+impl MessageMetadata {
+    /// Whether the message is still unread.
+    pub fn is_unread(&self) -> bool {
+        self.unread != 0
+    }
+}
+
 /// A whole message: its metadata, its encrypted body, and what opening it
 /// takes.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -167,7 +174,8 @@ pub struct Message {
     /// Its attachments.
     #[serde(default)]
     pub attachments: Vec<Attachment>,
-    /// The address replies should go to, when it names one.
+    /// The first address replies should go to, as Proton also sends it. The
+    /// core reads [`Self::reply_tos`], which holds them all.
     #[serde(default)]
     pub reply_to: Option<Recipient>,
     /// Every address replies should go to.

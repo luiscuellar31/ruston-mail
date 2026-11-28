@@ -5,14 +5,15 @@ use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
-use crate::ui::test_support::{text_rect, visible_text_rect};
+use crate::settings::Settings;
+use crate::test_support::summary;
+use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 
 fn mailbox_frame(
     context: &egui::Context,
     app: &App,
     state: &mut UiState,
     size: egui::Vec2,
-    mut draft: Option<&mut Settings>,
     input: egui::RawInput,
 ) -> (Vec<Message>, Vec<egui::epaint::ClippedShape>) {
     let mut messages = Vec::new();
@@ -21,7 +22,7 @@ fn mailbox_frame(
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             ..input
         },
-        |root| show(root, app, draft.as_deref_mut(), state, &mut messages),
+        |root| show(root, app, state, &mut messages),
     );
     let shapes = output.shapes.clone();
     output.drop_without_applying_deltas();
@@ -43,9 +44,9 @@ fn screen_readers_hear_the_search_field_by_its_name() {
             )),
             ..Default::default()
         },
-        |root| show(root, &app, None, &mut state, &mut Vec::new()),
+        |root| show(root, &app, &mut state, &mut Vec::new()),
     );
-    let names = theme::text_field_names(&output);
+    let names = widgets::text_field_names(&output);
     output.drop_without_applying_deltas();
 
     assert!(
@@ -74,8 +75,7 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
             let mut state = UiState::default();
             let mut shapes = Vec::new();
             for _ in 0..3 {
-                (_, shapes) =
-                    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
             }
             let search = visible_text_rect(
                 &shapes,
@@ -86,7 +86,7 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
                 },
             )
             .expect("search must be visible");
-            let refresh = visible_text_rect(&shapes, "Refresh").unwrap();
+            let refresh = refresh_icon(&shapes);
             assert!(
                 search.top() - refresh.bottom() < ROW_HEIGHT,
                 "search consumed the pane height: {search:?} in {size:?}"
@@ -105,23 +105,8 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
                 &app,
                 &mut state,
                 size,
-                None,
                 egui::RawInput {
-                    events: vec![
-                        egui::Event::PointerMoved(position),
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: true,
-                            modifiers: Default::default(),
-                        },
-                        egui::Event::PointerButton {
-                            pos: position,
-                            button: egui::PointerButton::Primary,
-                            pressed: false,
-                            modifiers: Default::default(),
-                        },
-                    ],
+                    events: click_events(position, egui::PointerButton::Primary),
                     ..Default::default()
                 },
             );
@@ -154,8 +139,7 @@ fn typing_a_search_leaves_the_list_where_it_was() {
             let mut state = UiState::default();
             let mut shapes = Vec::new();
             for _ in 0..3 {
-                (_, shapes) =
-                    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
             }
             shapes
         };
@@ -198,7 +182,7 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
-            |root| show(root, &app, None, &mut state, &mut messages),
+            |root| show(root, &app, &mut state, &mut messages),
         );
         label = visible_text_rect(&output.shapes, "Signing out…");
         output.drop_without_applying_deltas();
@@ -208,24 +192,10 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
         .run_ui(
             egui::RawInput {
                 screen_rect: Some(screen),
-                events: vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: Default::default(),
-                    },
-                ],
+                events: click_events(position, egui::PointerButton::Primary),
                 ..Default::default()
             },
-            |root| show(root, &app, None, &mut state, &mut messages),
+            |root| show(root, &app, &mut state, &mut messages),
         )
         .drop_without_applying_deltas();
 
@@ -264,22 +234,13 @@ fn the_address_opens_the_accounts_to_switch_to_or_add() {
             &app,
             &mut state,
             egui::vec2(1100.0, 700.0),
-            None,
             egui::RawInput {
                 events,
                 ..Default::default()
             },
         )
     };
-    let click = |pos| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
+    let click = |pos| click_events(pos, egui::PointerButton::Primary);
 
     // The sidebar settles over a few frames, as the others' tests wait for.
     let _ = frame(Vec::new());
@@ -332,7 +293,13 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
                 },
                 |root| {
                     egui::CentralPanel::default().show(root, |ui| {
-                        let scroll = sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                        let scroll = sidebar(
+                            ui,
+                            &app,
+                            app.mailbox().unwrap(),
+                            SidebarPlace::Column,
+                            &mut messages,
+                        );
                         scroll_id = scroll.id;
                         assert!(scroll.content_size.y > scroll.inner_rect.height());
                         assert!(scroll.content_size.x <= scroll.inner_rect.width() + 1.0);
@@ -354,7 +321,13 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut messages,
+                    );
                 });
             },
         );
@@ -373,26 +346,18 @@ fn folders_scroll_independently_while_account_actions_remain_accessible() {
         .run_ui(
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
-                events: vec![
-                    egui::Event::PointerMoved(position),
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: true,
-                        modifiers: Default::default(),
-                    },
-                    egui::Event::PointerButton {
-                        pos: position,
-                        button: egui::PointerButton::Primary,
-                        pressed: false,
-                        modifiers: Default::default(),
-                    },
-                ],
+                events: click_events(position, egui::PointerButton::Primary),
                 ..Default::default()
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut messages);
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut messages,
+                    );
                 });
             },
         )
@@ -424,7 +389,13 @@ fn an_account_block_that_cannot_fit_stops_asking_for_frames() {
             },
             |root| {
                 egui::CentralPanel::default().show(root, |ui| {
-                    sidebar(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+                    sidebar(
+                        ui,
+                        &app,
+                        app.mailbox().unwrap(),
+                        SidebarPlace::Column,
+                        &mut Vec::new(),
+                    );
                 });
             },
         );
@@ -451,7 +422,13 @@ fn the_accounts_own_folders_and_labels_come_under_headings() {
         ));
         let output = context.run_ui(egui::RawInput::default(), |root| {
             egui::CentralPanel::default().show(root, |ui| {
-                sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+                sidebar_content(
+                    ui,
+                    &app,
+                    app.mailbox().unwrap(),
+                    SidebarPlace::Column,
+                    &mut Vec::new(),
+                );
             });
         });
         let shapes = output.shapes.clone();
@@ -511,7 +488,7 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                 state.compact_view = view;
                 for frame in 0..3 {
                     let (messages, shapes) =
-                        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                        mailbox_frame(&context, &app, &mut state, size, Default::default());
                     assert!(
                         !messages
                             .iter()
@@ -520,7 +497,7 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                     if frame < 2 {
                         continue; // Let egui settle the measured bottom panel height.
                     }
-                    for label in ["Folders", "Mail", "Reading"] {
+                    for label in ["Folders", "Mail", "Reader"] {
                         assert!(
                             window.contains_rect(
                                 visible_text_rect(&shapes, label).unwrap_or_else(|| panic!(
@@ -556,22 +533,14 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                     );
                 }
             }
-            let mut draft = app.settings().clone();
+            let _ = app.update(Message::ShowSettings(true));
             for _ in 0..3 {
-                let (_, shapes) = mailbox_frame(
-                    &context,
-                    &app,
-                    &mut state,
-                    size,
-                    Some(&mut draft),
-                    Default::default(),
+                let (_, shapes) =
+                    mailbox_frame(&context, &app, &mut state, size, Default::default());
+                assert!(
+                    window.contains_rect(visible_text_rect(&shapes, "Back to mail").unwrap()),
+                    "Back to mail clipped at zoom {zoom}"
                 );
-                for label in ["Back to mail", "Apply"] {
-                    assert!(
-                        window.contains_rect(visible_text_rect(&shapes, label).unwrap()),
-                        "{label} clipped at zoom {zoom}"
-                    );
-                }
             }
         }
     }
@@ -589,10 +558,10 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
     let mut state = UiState::default();
     let wide = egui::vec2(1100.0, 700.0);
     for _ in 0..3 {
-        mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+        mailbox_frame(&context, &app, &mut state, wide, Default::default());
     }
     set_list_offset(&context, &state, 500.0);
-    mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, wide, Default::default());
     let before = state.conversation_scroll.as_ref().unwrap();
     let (scroll_id, offset) = (before.scroll_id, before.offset);
     let ratios = app.panels();
@@ -603,7 +572,7 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
             .width();
     for size in [egui::vec2(410.0, 240.0), wide] {
         for _ in 0..3 {
-            mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+            mailbox_frame(&context, &app, &mut state, size, Default::default());
             let after = state.conversation_scroll.as_ref().unwrap();
             assert_eq!(after.scroll_id, scroll_id);
             assert_eq!(after.offset, offset);
@@ -616,6 +585,657 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
             .outer_rect
             .width();
     assert_eq!(sidebar_before, sidebar_after);
+}
+
+#[test]
+fn folding_the_sidebar_gives_its_room_to_the_reader_and_unfolding_takes_it_back() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let mut state = UiState::default();
+    let wide = egui::vec2(1100.0, 700.0);
+    // A few frames, with the resizes they ask for applied, as the window does.
+    let mut frames = |app: &mut App| {
+        for _ in 0..3 {
+            let (messages, _) = mailbox_frame(&context, app, &mut state, wide, Default::default());
+            for message in messages {
+                if matches!(message, Message::PanelsResized(_)) {
+                    let _ = app.update(message);
+                }
+            }
+        }
+    };
+    let width = |id: &str| {
+        egui::containers::panel::PanelState::load(&context, egui::Id::new(id))
+            .map(|panel| panel.outer_rect.width())
+    };
+
+    frames(&mut app);
+    let (sidebar, list, ratios) = (
+        width(SIDEBAR_PANEL_ID),
+        width(CONVERSATION_PANEL_ID),
+        app.panels(),
+    );
+
+    let _ = app.update(Message::FoldSidebar(true));
+    frames(&mut app);
+    assert_eq!(width(RAIL_PANEL_ID), Some(rail_width(1.0)));
+    assert_eq!(
+        width(CONVERSATION_PANEL_ID),
+        list,
+        "the list keeps its width"
+    );
+    assert_eq!(
+        app.panels().sidebar,
+        ratios.sidebar,
+        "the sidebar's share waits"
+    );
+
+    let _ = app.update(Message::FoldSidebar(false));
+    frames(&mut app);
+    assert_eq!(width(SIDEBAR_PANEL_ID), sidebar);
+    assert_eq!(width(CONVERSATION_PANEL_ID), list);
+    // The shares come back to within what a whole point of width rounds.
+    let back = app.panels();
+    assert!((back.sidebar - ratios.sidebar).abs() <= PANEL_RATIO_TOLERANCE);
+    assert!((back.conversations - ratios.conversations).abs() <= PANEL_RATIO_TOLERANCE);
+}
+
+/// What a frame of the mailbox in `size` asks for after a click at
+/// `click`, and the name, place and choice of everything a screen reader
+/// can press in it.
+fn accessible_frame(
+    context: &egui::Context,
+    app: &App,
+    state: &mut UiState,
+    size: egui::Vec2,
+    click: Option<egui::Pos2>,
+) -> (Vec<Message>, Vec<(String, egui::Rect, bool)>) {
+    let events = click.map_or_else(Vec::new, |pos| {
+        click_events(pos, egui::PointerButton::Primary)
+    });
+    let mut messages = Vec::new();
+    let output = context.run_ui(
+        egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+            events,
+            ..Default::default()
+        },
+        |root| show(root, app, state, &mut messages),
+    );
+    let buttons = output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| &update.nodes)
+        .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            let chosen = node.toggled() == Some(egui::accesskit::Toggled::True);
+            Some((node.label()?.to_owned(), rect, chosen))
+        })
+        .collect();
+    output.drop_without_applying_deltas();
+    (messages, buttons)
+}
+
+#[test]
+fn the_folded_sidebar_names_each_icon_and_goes_where_the_sidebar_does() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let _ = app.update(Message::CountsLoaded(
+        crate::test_support::OPENING_COUNTS,
+        Ok(crate::mail::demo::DemoMailbox::new().counts()),
+    ));
+    let mut state = UiState::default();
+    let wide = egui::vec2(1100.0, 700.0);
+    let mut frame = |app: &App, click| accessible_frame(&context, app, &mut state, wide, click);
+
+    // Unfolded, the sidebar offers to fold, once it has settled.
+    for _ in 0..2 {
+        let _ = frame(&app, None);
+    }
+    let (_, buttons) = frame(&app, None);
+    let hide = buttons
+        .iter()
+        .find(|(name, _, _)| name == "Hide sidebar")
+        .expect("the sidebar offers to fold")
+        .1;
+    let (asked, _) = frame(&app, Some(hide.center()));
+    assert!(matches!(asked.as_slice(), [Message::FoldSidebar(true)]));
+
+    let _ = app.update(Message::FoldSidebar(true));
+    for _ in 0..2 {
+        let _ = frame(&app, None);
+    }
+    let (_, buttons) = frame(&app, None);
+    let named = |wanted: &str| {
+        buttons
+            .iter()
+            .find(|(name, _, _)| name == wanted)
+            .unwrap_or_else(|| panic!("no {wanted} in {buttons:?}"))
+            .clone()
+    };
+    let unread = crate::mail::demo::DemoMailbox::new()
+        .counts()
+        .unread(&Folder::INBOX)
+        .unwrap();
+    let (_, inbox, chosen) = named(&format!("Inbox, {unread} unread"));
+    assert!(chosen, "the open folder shows as chosen");
+    assert!(inbox.width() < 60.0, "an icon, not a row: {inbox:?}");
+    for (name, expected) in [
+        ("Show sidebar", Message::FoldSidebar(false)),
+        ("New message", Message::OpenCompose),
+        (
+            "Drafts",
+            Message::SelectFolder(Folder::System(MailFolder::Drafts)),
+        ),
+        ("Settings", Message::ShowSettings(true)),
+    ] {
+        let (_, rect, _) = named(name);
+        let (asked, _) = frame(&app, Some(rect.center()));
+        // The list's new share, which this test does not apply, is asked for
+        // again on each frame.
+        let asked: Vec<Message> = asked
+            .into_iter()
+            .filter(|message| !matches!(message, Message::PanelsResized(_)))
+            .collect();
+        assert_eq!(asked.len(), 1, "{name}: {}", asked.len());
+        assert_eq!(
+            std::mem::discriminant(&asked[0]),
+            std::mem::discriminant(&expected),
+            "{name}"
+        );
+        if let (Message::SelectFolder(folder), Message::SelectFolder(wanted)) =
+            (&asked[0], &expected)
+        {
+            assert_eq!(folder, wanted);
+        }
+        if let (Message::FoldSidebar(folded), Message::FoldSidebar(wanted)) = (&asked[0], &expected)
+        {
+            assert_eq!(folded, wanted);
+        }
+    }
+    // The demo has no folders or labels of its own, so neither menu shows.
+    assert!(
+        buttons
+            .iter()
+            .all(|(name, _, _)| name != "Folders" && name != "Labels")
+    );
+}
+
+#[test]
+fn settings_list_their_sections_where_the_folders_were() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
+    let mut state = UiState::default();
+
+    // Beside the page, unfolded and folded, then above it in one column.
+    for (folded, size) in [
+        (false, egui::vec2(1100.0, 700.0)),
+        (true, egui::vec2(1100.0, 700.0)),
+        (false, egui::vec2(480.0, 700.0)),
+    ] {
+        let _ = app.update(Message::FoldSidebar(folded));
+        let mut frame = |click| accessible_frame(&context, &app, &mut state, size, click);
+        for _ in 0..2 {
+            let _ = frame(None);
+        }
+        let (_, buttons) = frame(None);
+        let at = format!("{size:?}, folded: {folded}");
+        let names: Vec<&str> = buttons.iter().map(|(name, _, _)| name.as_str()).collect();
+        assert!(
+            !names.iter().any(|name| name.starts_with("Inbox")) && !names.contains(&"New message"),
+            "the folders show beside Settings at {at}: {names:?}"
+        );
+        for section in SettingsSection::ALL {
+            let title = settings::title(section);
+            let chosen = buttons
+                .iter()
+                .filter(|(name, _, _)| name == title)
+                .map(|(_, _, chosen)| *chosen)
+                .collect::<Vec<_>>();
+            // One button each: one column's way to the reader has a name
+            // of its own.
+            assert_eq!(
+                chosen,
+                [section == SettingsSection::Reading],
+                "{title} at {at}: {names:?}"
+            );
+        }
+        let keyboard = buttons
+            .iter()
+            .find(|(name, _, _)| name == "Keyboard")
+            .unwrap()
+            .1;
+        let (asked, _) = frame(Some(keyboard.center()));
+        assert!(
+            asked.iter().any(|message| matches!(
+                message,
+                Message::ShowSettingsSection(SettingsSection::Keyboard)
+            )),
+            "{at}"
+        );
+        // The way back to the mailbox, where New message was, beside the
+        // one at the foot of the page.
+        let backs: Vec<egui::Rect> = buttons
+            .iter()
+            .filter(|(name, _, _)| name == "Back to mail")
+            .map(|(_, rect, _)| *rect)
+            .collect();
+        assert_eq!(backs.len(), if size.x > 1000.0 { 2 } else { 1 }, "{at}");
+        let (asked, _) = frame(Some(backs[0].center()));
+        assert!(
+            asked
+                .iter()
+                .any(|message| matches!(message, Message::ShowSettings(false))),
+            "{at}"
+        );
+    }
+}
+
+#[test]
+fn the_button_that_folds_the_sidebar_is_drawn_whole() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (app, _) = App::boot(true, Settings::default());
+    let mut state = UiState::default();
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        let mut frame = || {
+            context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1100.0, 700.0),
+                    )),
+                    ..Default::default()
+                },
+                |root| show(root, &app, &mut state, &mut Vec::new()),
+            )
+        };
+        frame().drop_without_applying_deltas();
+        let output = frame();
+        let button = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .find(|(_, node)| node.label() == Some("Hide sidebar"))
+            .and_then(|(_, node)| node.bounds())
+            .map(|bounds| {
+                egui::Rect::from_min_max(
+                    egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                    egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                )
+            })
+            .expect("the sidebar offers to fold");
+        // Its frame and its icon, each whole inside what it is clipped to.
+        let drawn: Vec<_> = output
+            .shapes
+            .iter()
+            .map(|clipped| (clipped.shape.visual_bounding_rect(), clipped.clip_rect))
+            .filter(|(rect, _)| rect.is_positive() && button.expand(2.0).contains_rect(*rect))
+            .collect();
+        output.drop_without_applying_deltas();
+        assert!(!drawn.is_empty(), "nothing drawn for {button:?}");
+        for (rect, clip) in drawn {
+            assert!(
+                clip.expand(0.01).contains_rect(rect),
+                "at {scale}: {rect:?} cut by {clip:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_filter_button_lines_up_with_the_search_field_and_refresh() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        // Three columns, and one column showing the list.
+        for size in [egui::vec2(1100.0, 700.0), egui::vec2(480.0, 700.0)] {
+            let mut state = UiState::default();
+            let mut frame = || {
+                context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                        ..Default::default()
+                    },
+                    |root| show(root, &app, &mut state, &mut Vec::new()),
+                )
+            };
+            frame().drop_without_applying_deltas();
+            let output = frame();
+            let bounds = |name: &str| {
+                output
+                    .platform_output
+                    .accesskit_update
+                    .iter()
+                    .flat_map(|update| &update.nodes)
+                    .find(|(_, node)| node.label() == Some(name))
+                    .and_then(|(_, node)| node.bounds())
+                    .map(|bounds| {
+                        egui::Rect::from_min_max(
+                            egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                            egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+                        )
+                    })
+                    .unwrap_or_else(|| panic!("no {name} at {size:?}"))
+            };
+            let (field, filter, refresh) =
+                (bounds("Search mail"), bounds("Filter"), bounds("Refresh"));
+            output.drop_without_applying_deltas();
+            let at = format!("{size:?} at {scale}");
+            let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+            // Edge to edge with the field, beside it.
+            assert!(
+                near(filter.top(), field.top()),
+                "{at}: {filter:?} {field:?}"
+            );
+            assert!(
+                near(filter.bottom(), field.bottom()),
+                "{at}: {filter:?} {field:?}"
+            );
+            // Under Refresh, ending where it ends, and the field keeps its
+            // room.
+            assert!(
+                near(filter.right(), refresh.right()),
+                "{at}: {filter:?} {refresh:?}"
+            );
+            assert!(refresh.bottom() <= filter.top(), "{at}: {refresh:?}");
+            assert!(field.width() >= MIN_SEARCH_WIDTH, "{at}: {field:?}");
+        }
+    }
+}
+
+#[test]
+fn the_folded_sidebar_keeps_each_icon_on_its_row_and_in_its_middle() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::CountsLoaded(
+        crate::test_support::OPENING_COUNTS,
+        Ok(crate::mail::demo::DemoMailbox::new().counts()),
+    ));
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        // The mailbox, then Settings, which list other places.
+        for settings in [false, true] {
+            let _ = app.update(Message::ShowSettings(settings));
+            let mut places = |folded: bool| {
+                let _ = app.update(Message::FoldSidebar(folded));
+                let mut buttons = Vec::new();
+                for _ in 0..3 {
+                    buttons = accessible_frame(&context, &app, &mut state, size, None).1;
+                }
+                // The sidebar's own places, above its foot.
+                buttons
+                    .into_iter()
+                    .filter(|(name, rect, _)| {
+                        rect.right() < 240.0 && !matches!(name.as_str(), "Settings" | "Exit demo")
+                    })
+                    .map(|(name, rect, _)| {
+                        let name = if name == "Hide sidebar" {
+                            "Show sidebar".into()
+                        } else {
+                            name
+                        };
+                        (name, rect)
+                    })
+                    .collect::<Vec<_>>()
+            };
+            let (unfolded, folded) = (places(false), places(true));
+            let at = format!("at {scale}, Settings: {settings}");
+            assert!(folded.len() >= 8, "{at}: {folded:?}");
+            let middle = rail_width(scale) / 2.0;
+            // Within half a point, which egui's rounding to whole points can
+            // take from an odd room to share.
+            let near = |a: f32, b: f32| (a - b).abs() <= 0.51;
+            for (name, rect) in &folded {
+                let row = unfolded
+                    .iter()
+                    .find(|(unfolded, _)| unfolded == name)
+                    .unwrap_or_else(|| panic!("{at}: no {name} unfolded"))
+                    .1;
+                assert!(
+                    near(rect.center().y, row.center().y),
+                    "{at}: {name} at {rect:?}, its row at {row:?}"
+                );
+                assert!(near(rect.width(), rect.height()), "{at}: {name} {rect:?}");
+                assert!(near(rect.center().x, middle), "{at}: {name} {rect:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn the_opening_skeleton_stands_where_the_mailbox_will() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let raw = |size: egui::Vec2| egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    let node_top = |output: &egui::FullOutput, wanted: &dyn Fn(&str) -> bool| {
+        output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .filter(|(_, node)| node.label().is_some_and(wanted))
+            .filter_map(|(_, node)| node.bounds())
+            .map(|bounds| bounds.y0 as f32)
+            .reduce(f32::min)
+    };
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        for size in [egui::vec2(1100.0, 700.0), egui::vec2(480.0, 700.0)] {
+            let at = format!("{size:?} at {scale}");
+            // Opening: where the skeleton's rows and the sidebar's bars are.
+            let mut opening = None;
+            let mut bars = Vec::new();
+            for _ in 0..3 {
+                let output = context.run_ui(raw(size), |root| show_opening(root, &app));
+                opening = node_top(&output, &|name| name == "Loading conversations");
+                bars = output
+                    .shapes
+                    .iter()
+                    .filter_map(|clipped| match &clipped.shape {
+                        egui::Shape::Rect(rect) if rect.rect.right() < 240.0 => Some(rect.rect),
+                        _ => None,
+                    })
+                    .collect();
+                output.drop_without_applying_deltas();
+            }
+            // Loaded: where the list's rows and the sidebar's places are.
+            let _ = app.update(Message::ConversationsLoaded(
+                1,
+                Ok(pagination_page(0, 50, 120)),
+            ));
+            let mut state = UiState::default();
+            let mut loaded = None;
+            let mut places = Vec::new();
+            for _ in 0..3 {
+                let output = context.run_ui(raw(size), |root| {
+                    show(root, &app, &mut state, &mut Vec::new())
+                });
+                loaded = node_top(&output, &|name| name.starts_with("Test sender, p0"));
+                places = accessible_frame_places(&output);
+                output.drop_without_applying_deltas();
+            }
+            let (opening, loaded) = (opening.expect(&at), loaded.expect(&at));
+            assert!(
+                (opening - loaded).abs() < 0.5,
+                "{at}: rows open at {opening}, the list's at {loaded}"
+            );
+            // Beside the list, the sidebar's bars where its places will be.
+            if size.x > 1000.0 {
+                let new_message = places
+                    .iter()
+                    .find(|(name, _)| name == "New message")
+                    .unwrap()
+                    .1;
+                assert!(
+                    bars.iter()
+                        .any(|bar| (bar.top() - new_message.top()).abs() < 0.5
+                            && (bar.height() - new_message.height()).abs() < 0.5),
+                    "{at}: no bar for {new_message:?} in {bars:?}"
+                );
+                let inbox = places
+                    .iter()
+                    .find(|(name, _)| name.starts_with("Inbox"))
+                    .unwrap()
+                    .1;
+                assert!(
+                    bars.iter()
+                        .any(|bar| (bar.center().y - inbox.center().y).abs() < 0.5),
+                    "{at}: no bar on {inbox:?} in {bars:?}"
+                );
+            }
+            app = App::boot(true, Settings::default()).0;
+        }
+    }
+}
+
+#[test]
+fn a_folded_sidebar_opens_with_skeletons_where_its_icons_will_be() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let size = egui::vec2(1100.0, 700.0);
+    let raw = || egui::RawInput {
+        screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+        ..Default::default()
+    };
+    for scale in [1.0, 1.5] {
+        theme::set_text_scale(&context, scale);
+        let (mut app, _) = App::boot(true, Settings::default());
+        let _ = app.update(Message::FoldSidebar(true));
+        let strip = rail_width(scale);
+        let mut marks = Vec::new();
+        for _ in 0..3 {
+            let output = context.run_ui(raw(), |root| show_opening(root, &app));
+            marks = output
+                .shapes
+                .iter()
+                .filter_map(|clipped| match &clipped.shape {
+                    // Not the strip's own background, as tall as the window.
+                    egui::Shape::Rect(rect)
+                        if rect.rect.right() < strip && rect.rect.height() < strip =>
+                    {
+                        Some(rect.rect)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            output.drop_without_applying_deltas();
+        }
+        let _ = app.update(Message::ConversationsLoaded(
+            1,
+            Ok(pagination_page(0, 5, 5)),
+        ));
+        let mut state = UiState::default();
+        let mut buttons = Vec::new();
+        for _ in 0..3 {
+            let output =
+                context.run_ui(raw(), |root| show(root, &app, &mut state, &mut Vec::new()));
+            buttons = accessible_frame_places(&output);
+            output.drop_without_applying_deltas();
+        }
+
+        // The way to unfold it, New message and Proton's folders; Settings,
+        // at the foot, is left out as the unfolded sidebar's foot is.
+        let icons: Vec<_> = buttons
+            .into_iter()
+            .filter(|(name, rect)| rect.right() <= strip && name != "Settings")
+            .collect();
+        assert_eq!(
+            icons.len(),
+            2 + MailFolder::ALL.len(),
+            "at {scale}: {icons:?}"
+        );
+        for (name, icon) in &icons {
+            assert!(
+                marks
+                    .iter()
+                    .any(|mark| (mark.center() - icon.center()).length() < 0.5),
+                "at {scale}: no skeleton on {name} {icon:?} in {marks:?}"
+            );
+        }
+        assert_eq!(marks.len(), icons.len(), "at {scale}: {marks:?}");
+    }
+}
+
+/// Every named button of a frame, with where it is.
+fn accessible_frame_places(output: &egui::FullOutput) -> Vec<(String, egui::Rect)> {
+    output
+        .platform_output
+        .accesskit_update
+        .iter()
+        .flat_map(|update| &update.nodes)
+        .filter(|(_, node)| node.role() == egui::accesskit::Role::Button)
+        .filter_map(|(_, node)| {
+            let bounds = node.bounds()?;
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(bounds.x0 as f32, bounds.y0 as f32),
+                egui::pos2(bounds.x1 as f32, bounds.y1 as f32),
+            );
+            Some((node.label()?.to_owned(), rect))
+        })
+        .collect()
+}
+
+#[test]
+fn one_column_never_offers_to_fold_the_sidebar() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::FoldSidebar(true));
+    let mut state = UiState {
+        compact_view: CompactView::Folders,
+        ..UiState::default()
+    };
+    let narrow = egui::vec2(480.0, 700.0);
+    let mut buttons = Vec::new();
+    for _ in 0..3 {
+        buttons = accessible_frame(&context, &app, &mut state, narrow, None).1;
+    }
+    // One column shows the whole sidebar, folded or not, with no way to fold it.
+    let names: Vec<&str> = buttons.iter().map(|(name, _, _)| name.as_str()).collect();
+    assert!(names.contains(&"New message"), "{names:?}");
+    assert!(!names.contains(&"Hide sidebar") && !names.contains(&"Show sidebar"));
 }
 
 #[test]
@@ -646,16 +1266,16 @@ fn enter_in_the_search_field_searches_all_mail() {
             .any(|message| matches!(message, Message::SearchSubmitted))
     };
 
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
-    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
+    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, enter());
     assert!(
         !submitted(&messages),
         "Enter outside the field is not a search"
     );
 
     context.memory_mut(|memory| memory.request_focus(egui::Id::new("mail-search")));
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
-    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
+    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, enter());
     assert!(submitted(&messages), "Enter in the field searches all mail");
 }
 
@@ -675,7 +1295,7 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
                     screen_rect: Some(window),
                     ..Default::default()
                 },
-                |root| show(root, &app, None, &mut state, &mut messages),
+                |root| show(root, &app, &mut state, &mut messages),
             )
             .drop_without_applying_deltas();
     }
@@ -711,7 +1331,6 @@ fn a_conversation_chosen_while_writing_shows_under_the_folded_draft() {
                 app,
                 &mut state,
                 egui::vec2(1100.0, 700.0),
-                None,
                 Default::default(),
             );
         }
@@ -792,7 +1411,6 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
             &app,
             &mut state,
             egui::vec2(1100.0, 700.0),
-            None,
             egui::RawInput::default(),
         );
         asked.extend(messages);
@@ -805,7 +1423,7 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
             .any(|message| matches!(message, Message::PanelsResized(_))),
         "the name must not widen the list"
     );
-    let refresh = visible_text_rect(&shapes, "Refresh").expect("Refresh stays in view");
+    let refresh = refresh_icon(&shapes);
     let title = text_rect(&shapes, name);
     assert!(
         title.right() <= refresh.left(),
@@ -815,17 +1433,10 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
 
 fn pagination_row(id: &str, time: i64) -> ConversationSummary {
     ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
         time: Some(time),
         subject: Some(id.to_owned()),
         correspondents: Some("Test sender".into()),
-        participants: Vec::new(),
-        preview: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
+        ..summary(id)
     }
 }
 
@@ -839,6 +1450,70 @@ fn pagination_page(start: i64, count: i64, total: u32) -> ConversationPage {
     }
 }
 
+/// The list's Refresh button, by its icon: the one that ends above Filter.
+fn refresh_icon(shapes: &[egui::epaint::ClippedShape]) -> egui::Rect {
+    let filter = visible_text_rect(shapes, "Filter").expect("the list's Filter");
+    shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+            _ => None,
+        })
+        .filter(|icon| {
+            icon.bottom() <= filter.top() && (icon.center().x - filter.center().x).abs() < 40.0
+        })
+        .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+        .expect("Refresh's icon above Filter")
+}
+
+#[test]
+fn refresh_is_an_icon_that_says_its_name_and_asks_for_the_list_again() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let named = |app: &App, state: &mut UiState, name: &str| {
+        let mut found = false;
+        for _ in 0..2 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |root| show(root, app, state, &mut Vec::new()),
+            );
+            let update = output.platform_output.accesskit_update.iter();
+            found = update
+                .flat_map(|update| &update.nodes)
+                .any(|(_, node)| node.label() == Some(name));
+            output.drop_without_applying_deltas();
+        }
+        found
+    };
+    // No words on it: an icon, named for a screen reader and on hover.
+    let (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
+    assert!(visible_text_rect(&shapes, "Refresh").is_none());
+    assert!(named(&app, &mut state, "Refresh"));
+
+    let icon = refresh_icon(&shapes);
+    let click = egui::RawInput {
+        events: click_events(icon.center(), egui::PointerButton::Primary),
+        ..Default::default()
+    };
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, click);
+    assert!(matches!(asked.as_slice(), [Message::RefreshMailbox]));
+
+    // Asked for, the refresh shows in its name until the list is back.
+    let _ = app.update(Message::RefreshMailbox);
+    assert!(named(&app, &mut state, "Refreshing…"));
+}
+
 /// Draws the list pane 320 pt wide, with a click at `click`, and answers
 /// with its texts and what it asked for.
 fn pane_frame(
@@ -847,13 +1522,7 @@ fn pane_frame(
     click: Option<egui::Pos2>,
 ) -> (Vec<(String, egui::Rect)>, Vec<Message>) {
     let events = click.map_or_else(Vec::new, |pos| {
-        let button = |pressed| egui::Event::PointerButton {
-            pos,
-            button: egui::PointerButton::Primary,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), button(true), button(false)]
+        click_events(pos, egui::PointerButton::Primary)
     });
     let mut messages = Vec::new();
     let (app, _) = App::boot(true, Settings::default());
@@ -909,6 +1578,69 @@ fn an_empty_list_centers_its_message_and_what_can_be_done() {
 
     let (_, asked) = pane_frame(&context, &mailbox, Some(action.center()));
     assert!(matches!(asked.as_slice(), [Message::RefreshMailbox]));
+}
+
+#[test]
+fn the_filter_menu_chooses_what_the_list_shows_and_its_order() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    let (mut mailbox, first) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    mailbox.finish_page(first.id, Ok(ConversationPage::default()));
+
+    let (texts, _) = pane_frame(&context, &mailbox, None);
+    let filter = rect_of(&texts, "Filter");
+    // Beside the search field, it leaves the title its room beside Refresh.
+    let search = rect_of(&texts, "Search mail…");
+    assert!((filter.center().y - search.center().y).abs() <= 2.0);
+    assert!(search.right() < filter.left());
+
+    // Opens the menu and clicks `choice` in it: what that asks for.
+    let choose = |choice: &str| {
+        let _ = pane_frame(&context, &mailbox, Some(filter.center()));
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        for offered in [
+            "All",
+            "Unread",
+            "Read",
+            "With attachments",
+            "Newest first",
+            "Oldest first",
+        ] {
+            rect_of(&texts, offered);
+        }
+        let (_, asked) = pane_frame(&context, &mailbox, Some(rect_of(&texts, choice).center()));
+        // Chosen, the menu is gone.
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        assert!(texts.iter().all(|(text, _)| text != "Oldest first"));
+        asked
+    };
+    assert!(matches!(
+        choose("Read").as_slice(),
+        [Message::ShowOnly(ListFilter::Read)]
+    ));
+    assert!(matches!(
+        choose("With attachments").as_slice(),
+        [Message::ShowOnly(ListFilter::WithFiles)]
+    ));
+    assert!(matches!(
+        choose("Oldest first").as_slice(),
+        [Message::SortBy(ListOrder::OldestFirst)]
+    ));
+
+    // An empty list says which mail the folder has none of.
+    for (shown, nothing) in [
+        (ListFilter::Unread, "No unread conversations in Inbox."),
+        (ListFilter::Read, "No read conversations in Inbox."),
+        (
+            ListFilter::WithFiles,
+            "No conversations with attachments in Inbox.",
+        ),
+    ] {
+        let request = mailbox.show_only(shown, 3).unwrap();
+        mailbox.finish_page(request.id, Ok(ConversationPage::default()));
+        let (texts, _) = pane_frame(&context, &mailbox, None);
+        rect_of(&texts, nothing);
+    }
 }
 
 #[test]
@@ -1005,7 +1737,7 @@ fn pagination_frame(
             )),
             ..input
         },
-        |ui| conversation_list(ui, mailbox, state, &mut messages),
+        |ui| conversation_list(ui, mailbox, &[], &[], state, &mut messages),
     );
     let mut button = None;
     let mut subjects = std::collections::HashMap::new();
@@ -1075,6 +1807,8 @@ fn load_more_keeps_reader_and_viewport_while_waiting_and_after_success_or_failur
             let reader = mailbox.reader_state().clone();
             let (context, mut state, before) = pagination_view(&mailbox);
             let button = before.button.unwrap();
+            // In the middle of the list, 320 pt wide here, under its rows.
+            assert!((button.x - 160.0).abs() <= 1.0, "Load more at {button:?}");
             for pressed in [true, false] {
                 let frame = pagination_frame(
                     &context,
@@ -1152,7 +1886,7 @@ fn interleaved_pages_and_refreshes_keep_the_first_visible_row_in_place() {
             .insert(0, pagination_row("overlap", 1001));
         mailbox.finish_page(request.id, Ok(page));
         let after = pagination_frame(&context, &mailbox, &mut state, Default::default());
-        assert_eq!(after.offset, before.offset + ROW_PITCH);
+        assert_eq!(after.offset, before.offset + row_pitch(1.0));
         assert_eq!(after.subjects["p44"], before.subjects["p44"]);
         assert_eq!(mailbox.selected_conversation(), Some("p40"));
     }
@@ -1297,7 +2031,7 @@ fn repeated_refresh_and_reinspection_keep_top_middle_and_bottom_without_duplicat
         let id = format!("p{parent}");
         mailbox.split_conversation(&Folder::INBOX, &id, inspected_page_members(parent));
         let (context, mut state, _) = pagination_view(&mailbox);
-        set_list_offset(&context, &state, parent as f32 * ROW_PITCH);
+        set_list_offset(&context, &state, parent as f32 * row_pitch(1.0));
         let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
         for request in 20..24 {
             let refresh = mailbox.refresh(request).unwrap();
@@ -1334,7 +2068,7 @@ fn changed_group_retains_the_original_message_anchor_until_reinspection() {
     let mut mailbox = pagination_mailbox(false);
     mailbox.split_conversation(&Folder::INBOX, "p20", inspected_page_members(20));
     let (context, mut state, _) = pagination_view(&mailbox);
-    set_list_offset(&context, &state, 21.0 * ROW_PITCH);
+    set_list_offset(&context, &state, 21.0 * row_pitch(1.0));
     let before = pagination_frame(&context, &mailbox, &mut state, Default::default());
     let refresh = mailbox.refresh(20).unwrap();
     let mut page = pagination_page(0, 50, 120);
@@ -1450,8 +2184,8 @@ fn settings_replaces_mail_panes_and_preserves_their_split() {
         }
     }
 
-    let (app, _) = App::boot(true, Settings::default());
-    let mut draft = app.settings().clone();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
     let mut state = UiState::default();
     let mut messages = Vec::new();
     let original_split = app.panels().conversations;
@@ -1466,7 +2200,7 @@ fn settings_replaces_mail_panes_and_preserves_their_split() {
             ..Default::default()
         },
         |root| {
-            show(root, &app, Some(&mut draft), &mut state, &mut messages);
+            show(root, &app, &mut state, &mut messages);
         },
     );
     assert!(
@@ -1505,22 +2239,13 @@ fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
             &app,
             &mut state,
             size,
-            None,
             egui::RawInput {
                 events,
                 ..Default::default()
             },
         )
     };
-    let click = |pos, button| {
-        let press = |pressed| egui::Event::PointerButton {
-            pos,
-            button,
-            pressed,
-            modifiers: egui::Modifiers::default(),
-        };
-        vec![egui::Event::PointerMoved(pos), press(true), press(false)]
-    };
+    let click = click_events;
 
     let (_, shapes) = frame(Vec::new());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
@@ -1585,12 +2310,12 @@ fn the_compact_reader_opens_only_with_a_conversation_to_read() {
         ..Default::default()
     };
 
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
     assert_eq!(state.compact_view, CompactView::Mail, "nothing to read");
 
     let _ = app.update(Message::SelectConversation("demo-3".into()));
     state.compact_view = CompactView::Reader;
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
     assert_eq!(state.compact_view, CompactView::Reader);
 }
 
@@ -1618,11 +2343,11 @@ fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     let notice = visible_text_rect(&shapes, "Moved to Archive.").expect("an offer to undo");
-    let list = visible_text_rect(&shapes, "Refresh").expect("the list's header");
+    let list = refresh_icon(&shapes);
     let search = visible_text_rect(&shapes, "Search mail…").expect("the list's search");
     // Between the list's left edge, near its search text, and its Refresh.
     assert!(
@@ -1657,23 +2382,17 @@ fn undo_answers_while_the_list_refreshes() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
     let undo = visible_text_rect(&shapes, "Undo")
         .expect("the offer's Undo")
         .center();
 
-    let press = |pressed| egui::Event::PointerButton {
-        pos: undo,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
     let click = egui::RawInput {
-        events: vec![egui::Event::PointerMoved(undo), press(true), press(false)],
+        events: click_events(undo, egui::PointerButton::Primary),
         ..Default::default()
     };
-    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, click);
     assert!(
         asked
             .iter()
@@ -1699,7 +2418,7 @@ fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
         Folder::System(MailFolder::Archive),
     )));
     assert!(app.mailbox().unwrap().undo().is_some());
-    let mut draft = app.settings().clone();
+    let _ = app.update(Message::ShowSettings(true));
 
     // Wide and compact windows. A new area shows from its second frame.
     for size in [egui::vec2(1100.0, 700.0), egui::vec2(469.0, 700.0)] {
@@ -1708,14 +2427,7 @@ fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
         let mut state = UiState::default();
         let mut shapes = Vec::new();
         for _ in 0..3 {
-            (_, shapes) = mailbox_frame(
-                &context,
-                &app,
-                &mut state,
-                size,
-                Some(&mut draft),
-                Default::default(),
-            );
+            (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
         }
         assert!(
             visible_text_rect(&shapes, "Moved to Archive.").is_some(),
@@ -1952,7 +2664,13 @@ fn a_bottom_notice_expires_and_a_new_one_gets_its_own_time() {
     let undo = BottomNotice::Undo(Box::new(offer.clone()));
     let mut state = UiState::default();
     let remaining = |state: &mut UiState, notice: &BottomNotice, now| {
-        notice_remaining(state, notice, now, Pointer::Away)
+        notice_remaining(
+            state,
+            notice,
+            now,
+            Pointer::Away,
+            std::time::Duration::from_secs(6),
+        )
     };
 
     assert_eq!(
@@ -2004,22 +2722,41 @@ fn a_saved_file_is_confirmed_with_a_way_to_show_it() {
     let (shapes, _) = frame(Vec::new());
     text_rect(&shapes, "Saved report.pdf.");
     let reveal = text_rect(&shapes, REVEAL_LABEL).center();
-    let press = |pressed| egui::Event::PointerButton {
-        pos: reveal,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::default(),
-    };
-    let (_, asked) = frame(vec![
-        egui::Event::PointerMoved(reveal),
-        press(true),
-        press(false),
-    ]);
+    let (_, asked) = frame(click_events(reveal, egui::PointerButton::Primary));
 
     assert!(matches!(
         asked.as_slice(),
         [Message::RevealAttachment(shown)] if *shown == path
     ));
+}
+
+#[test]
+fn a_newer_release_is_announced_with_a_way_to_its_page() {
+    let version = crate::releases::Version::parse("999.0.0").unwrap();
+    let notice = BottomNotice::Confirmation(Notice::UpdateAvailable(version));
+    let (mailbox, _) = Mailbox::open(Folder::INBOX, 50, 1, 2);
+    let context = egui::Context::default();
+    theme::install(&context);
+    let frame = |events: Vec<egui::Event>| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
+            egui::RawInput {
+                events,
+                ..Default::default()
+            },
+            |ui| notice_content(ui, &notice, &mailbox, &mut messages),
+        );
+        let shapes = output.shapes.clone();
+        output.drop_without_applying_deltas();
+        (shapes, messages)
+    };
+
+    let (shapes, _) = frame(Vec::new());
+    text_rect(&shapes, "Ruston Mail 999.0.0 is available.");
+    let download = text_rect(&shapes, "Download").center();
+    let (_, asked) = frame(click_events(download, egui::PointerButton::Primary));
+
+    assert!(matches!(asked.as_slice(), [Message::OpenReleasePage]));
 }
 
 #[tokio::test]
@@ -2052,13 +2789,13 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
     };
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(1.0, Vec::new()));
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, at(1.0, Vec::new()));
     }
     let notice = visible_text_rect(&shapes, "Message sent.").expect("a confirmation");
 
     // Past its own time, the pointer on it keeps it.
     let rest = vec![egui::Event::PointerMoved(notice.center())];
-    let (asked, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(9.0, rest));
+    let (asked, shapes) = mailbox_frame(&context, &app, &mut state, size, at(9.0, rest));
     assert!(
         !asked
             .iter()
@@ -2067,7 +2804,7 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
     assert!(visible_text_rect(&shapes, "Message sent.").is_some());
 
     let away = vec![egui::Event::PointerGone];
-    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, at(16.0, away));
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, at(16.0, away));
     assert!(
         asked
             .iter()
@@ -2076,24 +2813,213 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
 }
 
 #[test]
+fn a_bottom_notice_keeps_within_its_list_or_the_window_however_narrow() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    // A newer release with a long number: the widest notice whose words are
+    // the app's own.
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let words = "Ruston Mail 10.20.300 is available.";
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Three narrow columns, one column, and the smallest window at the
+    // largest zoom.
+    for size in [
+        egui::vec2(700.0, 600.0),
+        egui::vec2(560.0, 600.0),
+        egui::vec2(240.0, 210.0),
+    ] {
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
+        }
+        let notice = context
+            .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
+            .expect("the notice is drawn");
+        let room = if compact_layout(size.x, MIN_PANEL_WIDTH) {
+            egui::Rect::from_min_size(egui::Pos2::ZERO, size)
+        } else {
+            egui::containers::panel::PanelState::load(
+                &context,
+                egui::Id::new(CONVERSATION_PANEL_ID),
+            )
+            .expect("the list is drawn")
+            .outer_rect
+        };
+        assert!(
+            notice.left() >= room.left() && notice.right() <= room.right(),
+            "at {size:?} the notice spans {:?}, past {:?}",
+            notice.x_range(),
+            room.x_range()
+        );
+        assert!(
+            visible_text_rect(&shapes, words).is_some(),
+            "at {size:?} its words are cut off"
+        );
+    }
+}
+
+#[test]
+fn a_bottom_notice_over_settings_leaves_its_buttons_uncovered() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let _ = app.update(Message::ShowSettings(true));
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Wide, three narrow columns, one column, the smallest window, and that
+    // at the largest zoom.
+    for size in [
+        egui::vec2(1100.0, 700.0),
+        egui::vec2(700.0, 600.0),
+        egui::vec2(560.0, 600.0),
+        egui::vec2(480.0, 420.0),
+        egui::vec2(240.0, 210.0),
+    ] {
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
+        }
+        let notice = context
+            .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
+            .expect("the notice is drawn");
+        assert!(
+            notice.left() >= 0.0 && notice.right() <= size.x,
+            "at {size:?} the notice spans {:?}",
+            notice.x_range()
+        );
+        let button = visible_text_rect(&shapes, "Back to mail")
+            .unwrap_or_else(|| panic!("at {size:?} Back to mail is not drawn"));
+        assert!(
+            !button.intersects(notice),
+            "at {size:?} the notice {notice:?} covers {button:?}"
+        );
+    }
+}
+
+#[test]
 fn a_bottom_notice_stays_while_the_pointer_rests_on_it() {
     let sent = BottomNotice::Confirmation(Notice::Sent);
     let mut state = UiState::default();
-    notice_remaining(&mut state, &sent, 1.0, Pointer::Away);
+    let lasts = std::time::Duration::from_secs(6);
+    notice_remaining(&mut state, &sent, 1.0, Pointer::Away, lasts);
 
     // Past its own time, it is still there to be read.
     assert_eq!(
-        notice_remaining(&mut state, &sent, 9.0, Pointer::OnNotice),
-        Some(std::time::Duration::from_secs(6))
+        notice_remaining(&mut state, &sent, 9.0, Pointer::OnNotice, lasts),
+        Some(lasts)
     );
     // Once the pointer leaves, its time runs again from then.
     assert_eq!(
-        notice_remaining(&mut state, &sent, 14.0, Pointer::Away),
+        notice_remaining(&mut state, &sent, 14.0, Pointer::Away, lasts),
         Some(std::time::Duration::from_secs(1))
     );
     assert_eq!(
-        notice_remaining(&mut state, &sent, 15.0, Pointer::Away),
+        notice_remaining(&mut state, &sent, 15.0, Pointer::Away, lasts),
         None
+    );
+}
+
+#[test]
+fn a_bottom_notice_stays_as_long_as_settings_say() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    // Whether the notice is still there `after` seconds from when it showed.
+    let stays = |app: &App, after: f64| {
+        let context = egui::Context::default();
+        theme::install(&context);
+        let mut state = UiState::default();
+        let size = egui::vec2(1100.0, 700.0);
+        let at = |time| egui::RawInput {
+            time: Some(time),
+            ..Default::default()
+        };
+        let _ = mailbox_frame(&context, app, &mut state, size, at(1.0));
+        let (asked, _) = mailbox_frame(&context, app, &mut state, size, at(1.0 + after));
+        !asked
+            .iter()
+            .any(|message| matches!(message, Message::DismissNotice(_)))
+    };
+
+    // Five seconds, unless Settings say otherwise.
+    assert!(stays(&app, 4.9));
+    assert!(!stays(&app, 5.0));
+    let _ = app.update(Message::SetNoticeSeconds(8));
+    assert!(stays(&app, 7.9));
+    assert!(!stays(&app, 8.0));
+}
+
+#[test]
+fn a_notice_centers_its_words_on_its_button_or_puts_the_button_below_them() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::SetCheckForUpdates(true));
+    let _ = app.update(Message::UpdatesChecked(crate::releases::Version::parse(
+        "10.20.300",
+    )));
+    let words = "Ruston Mail 10.20.300 is available.";
+    let context = egui::Context::default();
+    theme::install(&context);
+    // Room for the words and the button on one line, and the smallest window
+    // at the largest zoom, where the words wrap.
+    for (size, one_line) in [
+        (egui::vec2(1100.0, 700.0), true),
+        (egui::vec2(240.0, 210.0), false),
+    ] {
+        let mut state = UiState::default();
+        let mut shapes = Vec::new();
+        for _ in 0..3 {
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
+        }
+        let text = visible_text_rect(&shapes, words).expect("the words are drawn");
+        let button = visible_text_rect(&shapes, "Download").expect("the button is drawn");
+        if one_line {
+            assert!(
+                (text.center().y - button.center().y).abs() <= 0.5,
+                "at {size:?} the words {text:?} sit off the button's {button:?}"
+            );
+        } else {
+            assert!(
+                button.top() > text.bottom(),
+                "at {size:?} the button {button:?} sits beside the words' last line {text:?}"
+            );
+        }
+    }
+
+    // The offer to undo, with the same line.
+    let mut app = two_demo_rows();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let _ = app.update(Message::ApplyAction(crate::mail::MailAction::MoveTo(
+        Folder::System(MailFolder::Trash),
+    )));
+    let mut state = UiState::default();
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        (_, shapes) = mailbox_frame(
+            &context,
+            &app,
+            &mut state,
+            egui::vec2(1100.0, 700.0),
+            Default::default(),
+        );
+    }
+    let text = visible_text_rect(&shapes, "Moved 2 conversations to Trash.").expect("the offer");
+    let button = visible_text_rect(&shapes, "Undo").expect("its button");
+    assert!(
+        (text.center().y - button.center().y).abs() <= 0.5,
+        "the offer {text:?} sits off its button {button:?}"
     );
 }
 
@@ -2135,31 +3061,34 @@ fn a_long_folder_name_stays_on_one_row() {
 fn a_row_is_exactly_the_height_the_list_places_it_at() {
     // Rendered and virtualized row heights must match.
     let conversation = ConversationSummary {
-        id: "row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("A subject".into()),
         correspondents: Some("Alex Rivera".into()),
-        participants: Vec::new(),
-        preview: None,
         time: Some(1_700_000_000),
         unread: true,
         starred: true,
         message_count: 3,
         has_attachments: true,
+        ..summary("row")
     };
-    let context = egui::Context::default();
     let now = ZonedDateTime::now();
-    let mut height = 0.0;
-    context
-        .run_ui(egui::RawInput::default(), |ui| {
-            ui.set_width(320.0);
-            height = conversation_row(ui, &conversation, true, &now)
-                .rect
-                .height();
-        })
-        .drop_without_applying_deltas();
+    // At every text size, since the row grows with its text.
+    for scale in crate::settings::TEXT_SCALES {
+        let context = egui::Context::default();
+        theme::install(&context);
+        theme::set_text_scale(&context, scale);
+        let mut height = 0.0;
+        context
+            .run_ui(egui::RawInput::default(), |ui| {
+                ui.set_width(320.0);
+                height = conversation_row(ui, &conversation, &[], true, &now)
+                    .rect
+                    .height();
+            })
+            .drop_without_applying_deltas();
 
-    assert_eq!(height, ROW_HEIGHT);
+        assert_eq!(height, row_height(scale), "{scale}");
+    }
+    assert_eq!(row_height(1.0), ROW_HEIGHT);
 }
 
 #[test]
@@ -2168,13 +3097,20 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
     let now = ZonedDateTime::now();
     // A full date, and the longest word the time column shows.
     let yesterday = now.timestamp().as_second() - 86_400;
-    for timestamp in [1_700_000_000, yesterday] {
+    // At every text size, the lines keep apart and inside the row.
+    for (timestamp, scale) in [1_700_000_000, yesterday]
+        .into_iter()
+        .flat_map(|timestamp| crate::settings::TEXT_SCALES.map(|scale| (timestamp, scale)))
+    {
         let mut conversation = pagination_row("A subject", timestamp);
         conversation.correspondents = Some(name.into());
         let context = egui::Context::default();
+        theme::install(&context);
+        theme::set_text_scale(&context, scale);
+        let mut row = egui::Rect::NOTHING;
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             ui.set_width(320.0);
-            conversation_row(ui, &conversation, false, &now);
+            row = conversation_row(ui, &conversation, &[], false, &now).rect;
         });
         let shapes = output.shapes.clone();
         output.drop_without_applying_deltas();
@@ -2183,13 +3119,17 @@ fn a_row_keeps_its_sender_above_its_subject_and_clear_of_its_time() {
         let subject = visible_text_rect(&shapes, "A subject").expect("the subject line");
         let time = visible_text_rect(&shapes, &format_time(timestamp, &now)).expect("the time");
         assert!(
-            sender.center().y < subject.center().y,
-            "{sender:?} {subject:?}"
+            sender.bottom() <= subject.top(),
+            "{scale}: {sender:?} {subject:?}"
+        );
+        assert!(
+            row.top() <= sender.top() && subject.bottom() <= row.bottom(),
+            "{scale}: {sender:?} {subject:?} outside {row:?}"
         );
         assert_eq!(sender.left(), subject.left());
         assert!(
             sender.right() <= time.left(),
-            "{sender:?} runs into {time:?}"
+            "{scale}: {sender:?} runs into {time:?}"
         );
     }
 }
@@ -2206,17 +3146,10 @@ fn unread_rows_are_brighter_than_rows_already_read() {
         theme::apply(&context, appearance);
         let render = |unread: bool| {
             let conversation = ConversationSummary {
-                id: "row".into(),
-                kind: crate::mail::SummaryKind::Conversation,
                 subject: Some("Lunch on Friday".into()),
                 correspondents: Some("Alex Rivera".into()),
-                participants: Vec::new(),
-                preview: None,
-                time: None,
                 unread,
-                starred: false,
-                message_count: 1,
-                has_attachments: false,
+                ..summary("row")
             };
             let mut palette = (
                 Color32::TRANSPARENT,
@@ -2225,7 +3158,7 @@ fn unread_rows_are_brighter_than_rows_already_read() {
             );
             let output = context.run_ui(egui::RawInput::default(), |ui| {
                 ui.set_width(320.0);
-                conversation_row(ui, &conversation, false, &now);
+                conversation_row(ui, &conversation, &[], false, &now);
                 palette = (
                     ui.visuals().strong_text_color(),
                     ui.visuals().text_color(),
@@ -2262,19 +3195,118 @@ fn unread_rows_are_brighter_than_rows_already_read() {
 }
 
 #[test]
+fn a_row_marks_the_account_labels_it_carries_in_their_colors() {
+    let colors = [
+        Color32::from_rgb(0x3b, 0x82, 0xf6),
+        Color32::from_rgb(0x22, 0xc5, 0x5e),
+        Color32::from_rgb(0xf5, 0x9e, 0x0b),
+        Color32::from_rgb(0xef, 0x44, 0x44),
+        Color32::from_rgb(0x8b, 0x5c, 0xf6),
+    ];
+    let names = ["Work", "Family", "Travel", "Urgent", "Later"];
+    let labels: Vec<RowLabel> = names
+        .iter()
+        .zip(colors)
+        .map(|(name, color)| RowLabel {
+            id: name,
+            name,
+            color,
+        })
+        .collect();
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let now = ZonedDateTime::now();
+    // The dots a row with `carried` draws, left to right, what the list
+    // shows of its subject, the row's height, and what a screen reader hears.
+    let render = |carried: &[&str]| {
+        let conversation = ConversationSummary {
+            subject: Some("Minutes of the planning meeting and the next steps".into()),
+            starred: true,
+            message_count: 7,
+            labels: carried.iter().map(|id| (*id).to_owned()).collect(),
+            ..pagination_row("row", 0)
+        };
+        let mut height = 0.0;
+        let output = context.run_ui(egui::RawInput::default(), |ui| {
+            ui.set_width(320.0);
+            height = conversation_row(ui, &conversation, &labels, false, &now)
+                .rect
+                .height();
+        });
+        let mut dots: Vec<(f32, Color32)> = Vec::new();
+        let mut subject = egui::Rect::NOTHING;
+        let mut more = None;
+        for clipped in &output.shapes {
+            match &clipped.shape {
+                egui::epaint::Shape::Circle(circle) if colors.contains(&circle.fill) => {
+                    dots.push((circle.center.x, circle.fill));
+                }
+                egui::epaint::Shape::Text(text) => {
+                    let rect = text.galley.rect.translate(text.pos.to_vec2());
+                    let shown = text.galley.text();
+                    if shown.starts_with("Minutes") {
+                        subject = rect;
+                    } else if shown.starts_with('+') {
+                        more = Some((shown.to_owned(), rect));
+                    }
+                }
+                _ => {}
+            }
+        }
+        dots.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let heard = output
+            .platform_output
+            .accesskit_update
+            .iter()
+            .flat_map(|update| &update.nodes)
+            .find_map(|(_, node)| {
+                node.label()
+                    .filter(|label| label.contains("Test sender"))
+                    .map(str::to_owned)
+            })
+            .unwrap_or_default();
+        output.drop_without_applying_deltas();
+        (dots, subject, more, height, heard)
+    };
+
+    // Proton's own labels and folders get no dot; the account's come in the
+    // sidebar's order, whatever order Proton gave them in.
+    let (dots, subject, more, height, heard) = render(&["Travel", "0", "Work"]);
+    let drawn: Vec<Color32> = dots.iter().map(|(_, color)| *color).collect();
+    assert_eq!(drawn, [colors[0], colors[2]]);
+    assert!(more.is_none());
+    assert!(
+        subject.right() < dots[0].0 - LABEL_DOT_RADIUS,
+        "{subject:?} runs under {dots:?}"
+    );
+    assert_eq!(height, row_height(1.0), "the row keeps its height");
+    assert!(heard.ends_with("labeled Work, Travel"), "{heard}");
+
+    // Past three, the rest are counted.
+    let (dots, _, more, _, _) = render(&names);
+    assert_eq!(dots.len(), ROW_LABEL_DOTS);
+    let (count, count_rect) = more.expect("the labels past three are counted");
+    assert_eq!(count, "+2");
+    assert!(dots[ROW_LABEL_DOTS - 1].0 < count_rect.left());
+
+    // Without the account's labels the row is drawn as before.
+    let (dots, subject, _, _, _) = render(&["0", "10"]);
+    let (_, plain, _, _, _) = render(&[]);
+    assert!(dots.is_empty());
+    assert_eq!(subject, plain);
+}
+
+#[test]
 fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
     let conversation = ConversationSummary {
-        id: "row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("Lunch on Friday".into()),
         correspondents: Some("Alex Rivera".into()),
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
         starred: true,
         message_count: 3,
         has_attachments: true,
+        ..summary("row")
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -2284,7 +3316,7 @@ fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
         let mut rect = egui::Rect::NOTHING;
         let output = context.run_ui(input, |ui| {
             ui.set_width(320.0);
-            rect = conversation_row(ui, &conversation, true, &now).rect;
+            rect = conversation_row(ui, &conversation, &[], true, &now).rect;
         });
         let node = output
             .platform_output
@@ -2332,17 +3364,10 @@ fn a_skeleton_row_matches_the_real_row_height() {
 #[test]
 fn long_correspondents_cannot_widen_the_conversation_pane() {
     let conversation = ConversationSummary {
-        id: "long-row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("A subject that also needs to stay bounded".into()),
         correspondents: Some("A very long correspondent name that must be truncated".into()),
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
+        ..summary("long-row")
     };
     let context = egui::Context::default();
     let now = ZonedDateTime::now();
@@ -2351,7 +3376,7 @@ fn long_correspondents_cannot_widen_the_conversation_pane() {
         context
             .run_ui(input, |ui| {
                 ui.set_width(280.0);
-                let response = conversation_row(ui, &conversation, false, &now);
+                let response = conversation_row(ui, &conversation, &[], false, &now);
                 result = (response.rect, response.clicked());
             })
             .drop_without_applying_deltas();
@@ -2419,7 +3444,13 @@ fn subfolders_sit_under_their_parent_and_labels_wear_their_color() {
 
     let output = context.run_ui(egui::RawInput::default(), |root| {
         egui::CentralPanel::default().show(root, |ui| {
-            sidebar_content(ui, &app, app.mailbox().unwrap(), &mut Vec::new());
+            sidebar_content(
+                ui,
+                &app,
+                app.mailbox().unwrap(),
+                SidebarPlace::Column,
+                &mut Vec::new(),
+            );
         });
     });
     let shapes = output.shapes.clone();
@@ -2496,7 +3527,7 @@ fn command_and_shift_clicks_choose_a_row_together_with_others() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
 
@@ -2537,7 +3568,7 @@ fn rows_chosen_together_are_highlighted_and_their_menu_acts_on_all() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
 
     for id in ["demo-3", "demo-4"] {
@@ -2585,6 +3616,160 @@ fn rows_chosen_together_are_highlighted_and_their_menu_acts_on_all() {
     );
 }
 
+/// The demo listing "demo-3", and "demo-4" with the label Work, in an
+/// account that made a folder, Receipts, and two labels, Work and Travel.
+fn rows_beside_the_accounts_places() -> App {
+    let mut settings = Settings::default();
+    settings.mark_read_on_open = false;
+    let (mut app, _) = App::boot(true, settings);
+    let mut labelled = pagination_row("demo-4", 900);
+    labelled.labels = vec!["work".into()];
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(ConversationPage {
+            conversations: vec![pagination_row("demo-3", 1000), labelled],
+            total: 2,
+            inspect_candidates: Vec::new(),
+        }),
+    ));
+    let _ = app.update(Message::FoldersLoaded(
+        1,
+        Ok(crate::mail::OwnPlaces {
+            folders: vec![
+                Folder::custom("receipts", "Receipts"),
+                Folder::label("work", "Work"),
+                Folder::label("travel", "Travel"),
+            ],
+            ..Default::default()
+        }),
+    ));
+    app
+}
+
+/// Where the last shape showing `text` was drawn: a menu's, drawn above the
+/// sidebar and the reader, which may show the same words.
+fn last_text_rect(shapes: &[egui::epaint::ClippedShape], text: &str) -> Option<egui::Rect> {
+    shapes
+        .iter()
+        .rev()
+        .find_map(|clipped| crate::ui::test_support::shape_text_rect(&clipped.shape, text))
+}
+
+/// A plain click of `button` at `pos`, then the frames a menu it opens takes
+/// to show: measured on the first, drawn on the next. What the last one drew.
+fn click_and_settle(
+    frame: &mut impl FnMut(egui::RawInput) -> (Vec<Message>, Vec<egui::epaint::ClippedShape>),
+    pos: egui::Pos2,
+    button: egui::PointerButton,
+) -> Vec<egui::epaint::ClippedShape> {
+    frame(click_with(pos, button, egui::Modifiers::NONE));
+    let mut shapes = Vec::new();
+    for _ in 0..3 {
+        shapes = frame(Default::default()).1;
+    }
+    shapes
+}
+
+#[test]
+fn a_rows_menu_moves_it_into_a_folder_and_switches_its_labels() {
+    let app = rows_beside_the_accounts_places();
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
+    let primary = egui::PointerButton::Primary;
+    let secondary = egui::PointerButton::Secondary;
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
+
+    let shapes = click_and_settle(&mut frame, row.center(), secondary);
+    let move_to = last_text_rect(&shapes, "Move to…").expect("the menu offers Move to…");
+    let shapes = click_and_settle(&mut frame, move_to.center(), primary);
+    let receipts = last_text_rect(&shapes, "Receipts").expect("Move to… lists the folders");
+    assert!(
+        receipts.left() > move_to.right(),
+        "it opens beside the menu"
+    );
+    let (asked, _) = frame(click_with(
+        receipts.center(),
+        primary,
+        egui::Modifiers::NONE,
+    ));
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyRowAction(id, crate::mail::MailAction::MoveTo(to))]
+                if id == "demo-4" && *to == Folder::custom("receipts", "Receipts")
+        ),
+        "the row moves without being opened"
+    );
+    // The menu closes behind the click.
+    frame(Default::default());
+
+    let shapes = click_and_settle(&mut frame, row.center(), secondary);
+    let labels = last_text_rect(&shapes, "Labels").expect("the menu offers the labels");
+    let shapes = click_and_settle(&mut frame, labels.center(), primary);
+    assert!(last_text_rect(&shapes, "Travel").is_some());
+    // The row carries Work, so its box is checked and a click takes it off.
+    let work = last_text_rect(&shapes, "Work").expect("Labels lists the labels");
+    let (asked, _) = frame(click_with(work.center(), primary, egui::Modifiers::NONE));
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyRowAction(id, crate::mail::MailAction::SetLabel { label, on: false })]
+                if id == "demo-4" && *label == Folder::label("work", "Work")
+        ),
+        "the label comes off that row"
+    );
+}
+
+#[test]
+fn the_menu_of_rows_chosen_together_moves_all_into_a_folder_and_labels_none() {
+    let mut app = rows_beside_the_accounts_places();
+    let _ = app.update(Message::SelectThrough("demo-3".into()));
+    let _ = app.update(Message::SelectThrough("demo-4".into()));
+    let context = egui::Context::default();
+    theme::install(&context);
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
+    let primary = egui::PointerButton::Primary;
+    let named = |shapes: &[egui::epaint::ClippedShape], text| {
+        shapes
+            .iter()
+            .filter(|clipped| {
+                crate::ui::test_support::shape_text_rect(&clipped.shape, text).is_some()
+            })
+            .count()
+    };
+    let (_, shapes) = frame(Default::default());
+    let row = visible_text_rect(&shapes, "demo-4").expect("a row chosen");
+    let headings = named(&shapes, "Labels");
+
+    let shapes = click_and_settle(&mut frame, row.center(), egui::PointerButton::Secondary);
+    // Labels are applied one conversation at a time, as in the reader: the
+    // sidebar's heading is the only one.
+    assert_eq!(named(&shapes, "Labels"), headings);
+    let move_to = last_text_rect(&shapes, "Move to…").expect("the menu offers Move to…");
+    let shapes = click_and_settle(&mut frame, move_to.center(), primary);
+    let receipts = last_text_rect(&shapes, "Receipts").expect("Move to… lists the folders");
+    let (asked, _) = frame(click_with(
+        receipts.center(),
+        primary,
+        egui::Modifiers::NONE,
+    ));
+
+    assert!(
+        matches!(
+            asked.as_slice(),
+            [Message::ApplyAction(crate::mail::MailAction::MoveTo(to))]
+                if *to == Folder::custom("receipts", "Receipts")
+        ),
+        "all the rows chosen move"
+    );
+}
+
 #[test]
 fn an_offer_to_undo_a_move_of_several_rows_says_how_many() {
     let mut app = two_demo_rows();
@@ -2599,7 +3784,7 @@ fn an_offer_to_undo_a_move_of_several_rows_says_how_many() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     assert!(
@@ -2622,7 +3807,7 @@ fn one_column_can_show_the_rows_chosen_together() {
     let size = egui::vec2(480.0, 640.0);
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     assert_eq!(
@@ -2640,7 +3825,7 @@ fn a_key_let_go_with_the_button_still_counts_for_the_click() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
 

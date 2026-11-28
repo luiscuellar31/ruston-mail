@@ -1,10 +1,11 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 use jiff::tz::TimeZone;
 
-use super::mailbox::{detail, folder_icon};
+use super::mailbox::folder_icon;
+use super::widgets::{self, detail};
 use super::{UiState, theme};
 use crate::app::{
     AnswerKind, ConversationReader, InlineImage, Mailbox, Message, PendingLink, ReaderState,
@@ -26,7 +27,6 @@ const MAX_QUOTE_DEPTH: u8 = 4;
 /// nested list cannot push its text out of the column.
 const MAX_LIST_DEPTH: u8 = 8;
 const READING_WIDTH: f32 = 680.0;
-const REPLY_TOOLBAR_HEIGHT: f32 = 24.0;
 const MARKER_WIDTH: f32 = 12.0;
 const SIGNATURE_ICON_SIZE: f32 = 13.0;
 const SIGNATURE_ICON_INSET: f32 = SIGNATURE_ICON_SIZE + 4.0;
@@ -102,7 +102,7 @@ pub(super) fn show(
 /// window's question, so it shows wherever the reader is, and the address
 /// scrolls inside it, so a long one cannot push the buttons away.
 pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option<Message> {
-    theme::confirmation_with(
+    widgets::confirmation_with(
         context,
         "link-prompt",
         &format!("Open a link to {}?", link.target),
@@ -114,9 +114,9 @@ pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option
                 .show(ui, |ui| ui.add(egui::Label::new(link.url.as_str()).wrap()));
         },
         &[
-            ("Cancel", theme::Emphasis::Secondary, Message::DismissLink),
-            ("Copy link", theme::Emphasis::Secondary, Message::CopyLink),
-            ("Open", theme::Emphasis::Primary, Message::OpenLink),
+            ("Cancel", widgets::Emphasis::Secondary, Message::DismissLink),
+            ("Copy link", widgets::Emphasis::Secondary, Message::CopyLink),
+            ("Open", widgets::Emphasis::Primary, Message::OpenLink),
         ],
         Message::DismissLink,
     )
@@ -136,7 +136,7 @@ fn rows_chosen(
         ui.add(
             egui::Label::new(
                 egui::RichText::new(format!("{} conversations selected", rows.len()))
-                    .size(SUBJECT_SIZE)
+                    .size(theme::text_size(ui, SUBJECT_SIZE))
                     .strong(),
             )
             .wrap(),
@@ -235,7 +235,7 @@ fn conversation_skeleton(ui: &mut egui::Ui, view: &ReaderView<'_>, state: &mut U
                     skeleton_label(
                         ui,
                         egui::RichText::new("Loading conversation")
-                            .size(SUBJECT_SIZE)
+                            .size(theme::text_size(ui, SUBJECT_SIZE))
                             .strong(),
                         fill,
                     );
@@ -276,29 +276,28 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             ui.set_min_width(width);
             // A loading card does not know the sender yet, so it keeps room
             // for a name and an address of its own.
+            let scale = theme::text_scale(ui.ctx());
             let (header, _) = ui.allocate_exact_size(
                 egui::vec2(
                     width,
-                    message_header_height(expanded, SenderLine::NameOverAddress, 1),
+                    message_header_height(expanded, SenderLine::NameOverAddress, 1, scale),
                 ),
                 Sense::hover(),
             );
             paint_message_chevron(ui, header, expanded, None);
-            let date_width = SKELETON_DATE_WIDTH.min(header.width() * SKELETON_DATE_SHARE);
+            let date_width =
+                (SKELETON_DATE_WIDTH * scale).min(header.width() * SKELETON_DATE_SHARE);
             let copy = header_copy_rect(header, date_width);
-            let sender_height =
-                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::ROW_TEXT_SIZE)));
-            let detail_height =
-                ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::FOOTNOTE_SIZE)));
+            let sender_font = FontId::proportional(theme::ROW_TEXT_SIZE * scale);
+            let sender_height = ui.fonts_mut(|fonts| fonts.row_height(&sender_font));
+            let detail_font = FontId::proportional(theme::FOOTNOTE_SIZE * scale);
+            let detail_height = ui.fonts_mut(|fonts| fonts.row_height(&detail_font));
+            let icon_inset = SIGNATURE_ICON_INSET * scale;
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    copy.left_top()
-                        + egui::vec2(if expanded { 0.0 } else { SIGNATURE_ICON_INSET }, 0.0),
-                    egui::vec2(
-                        (copy.width() - SIGNATURE_ICON_INSET).max(0.0) * 0.55,
-                        sender_height,
-                    ),
+                    copy.left_top() + egui::vec2(if expanded { 0.0 } else { icon_inset }, 0.0),
+                    egui::vec2((copy.width() - icon_inset).max(0.0) * 0.55, sender_height),
                 ),
                 fill,
             );
@@ -306,20 +305,20 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
                 // The address, right of the signature icon, as `paint_sender`
                 // lays it out.
                 SkeletonLine {
-                    top: SECOND_LINE_TOP,
-                    inset: SIGNATURE_ICON_INSET,
+                    top: SECOND_LINE_TOP * scale,
+                    inset: icon_inset,
                     share: 0.85,
                     height: detail_height,
                 },
                 SkeletonLine {
-                    top: recipients_top(SenderLine::NameOverAddress),
+                    top: recipients_top(SenderLine::NameOverAddress, scale),
                     inset: 0.0,
                     share: 0.65,
                     height: detail_height,
                 },
             ];
             let collapsed_lines = [SkeletonLine {
-                top: PREVIEW_LINE_TOP,
+                top: PREVIEW_LINE_TOP * scale,
                 inset: 0.0,
                 share: 0.85,
                 height: sender_height,
@@ -345,7 +344,7 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             theme::paint_skeleton(
                 ui.painter(),
                 egui::Rect::from_min_size(
-                    egui::pos2(header.right() - date_width, header.top() + 2.0),
+                    egui::pos2(header.right() - date_width, header.top() + 2.0 * scale),
                     egui::vec2(date_width, detail_height),
                 ),
                 fill,
@@ -353,8 +352,8 @@ fn skeleton_message_card(ui: &mut egui::Ui, fill: Color32, expanded: bool) -> eg
             if expanded {
                 reply_toolbar(ui, None, &mut Vec::new());
                 ui.separator();
-                let line_height =
-                    ui.fonts_mut(|fonts| fonts.row_height(&FontId::proportional(theme::BODY_SIZE)));
+                let body_font = FontId::proportional(theme::BODY_SIZE * scale);
+                let line_height = ui.fonts_mut(|fonts| fonts.row_height(&body_font));
                 for fraction in [0.92, 0.76, 0.84, 0.48] {
                     skeleton_bar(ui, width * fraction, line_height, fill);
                 }
@@ -451,7 +450,7 @@ fn conversation_heading(ui: &mut egui::Ui, subject: Option<&str>, count: usize) 
     ui.add(
         egui::Label::new(
             egui::RichText::new(subject.unwrap_or("(No subject)"))
-                .size(SUBJECT_SIZE)
+                .size(theme::text_size(ui, SUBJECT_SIZE))
                 .strong(),
         )
         .selectable(true)
@@ -513,7 +512,7 @@ fn move_and_flag_buttons(
         risky,
     } in moves(location)
     {
-        let mut button = theme::IconButton::new(icon, label);
+        let mut button = widgets::IconButton::new(icon, label);
         if risky {
             button = button.danger();
         }
@@ -538,7 +537,7 @@ fn move_and_flag_buttons(
     } in flags
     {
         if ui
-            .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
+            .add_enabled(enabled, widgets::IconButton::new(icon, label).selected(on))
             .clicked()
         {
             messages.push(Message::ApplyAction(action));
@@ -633,43 +632,66 @@ fn group_flags(rows: &[&ConversationSummary]) -> [FlagButton; 2] {
     )
 }
 
-/// The menu a right click opens on a conversation in the list: the moves and
-/// flags the reader offers, for that conversation, without opening it.
+/// The menu a right click opens on a conversation in the list: the moves,
+/// flags and labels the reader offers, for that conversation, without
+/// opening it.
 pub(super) fn conversation_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     row: &ConversationSummary,
+    places: &[Folder],
+    messages: &mut Vec<Message>,
+) {
+    let act = |action| Message::ApplyRowAction(row.id.clone(), action);
+    action_menu(
+        ui,
+        mailbox,
+        mailbox.location_of(&row.id),
+        places,
+        flags(row.unread, row.starred),
+        act,
+        messages,
+    );
+    let labels = labels_carried(places, &row.labels);
+    if labels.is_empty() {
+        return;
+    }
+    ui.separator();
+    let enabled = mailbox.takes_actions();
+    icon_submenu(ui, enabled, theme::Icon::Label, "Labels", |ui| {
+        if let Some(action) = label_list(ui, &labels) {
+            messages.push(act(action));
+            ui.close();
+        }
+    });
+}
+
+/// The menu a right click opens on a row chosen with others: what the reader
+/// offers for all of them.
+pub(super) fn selection_menu(
+    ui: &mut egui::Ui,
+    mailbox: &Mailbox,
+    places: &[Folder],
     messages: &mut Vec<Message>,
 ) {
     action_menu(
         ui,
         mailbox,
-        mailbox.location_of(&row.id),
-        flags(row.unread, row.starred),
-        |action| Message::ApplyRowAction(row.id.clone(), action),
-        messages,
-    );
-}
-
-/// The menu a right click opens on a row chosen with others: what the reader
-/// offers for all of them.
-pub(super) fn selection_menu(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) {
-    action_menu(
-        ui,
-        mailbox,
         mailbox.selection_location(),
+        places,
         group_flags(&mailbox.selected_rows()),
         Message::ApplyAction,
         messages,
     );
 }
 
-/// A list menu of the moves out of `location` and of `flags`, each asking
-/// for the message `act` makes of its action.
+/// A list menu of the moves out of `location`, Move to among them, and of
+/// `flags`, each asking for the message `act` makes of its action.
 fn action_menu(
     ui: &mut egui::Ui,
     mailbox: &Mailbox,
     location: Option<&Folder>,
+    places: &[Folder],
     flags: [FlagButton; 2],
     act: impl Fn(MailAction) -> Message,
     messages: &mut Vec<Message>,
@@ -677,7 +699,7 @@ fn action_menu(
     ui.set_min_width(200.0);
     // An action asked for while the rows on screen take none would not start.
     let enabled = mailbox.takes_actions();
-    let mut item = |ui: &mut egui::Ui, icon, label, action| {
+    let item = |ui: &mut egui::Ui, messages: &mut Vec<Message>, icon, label, action| {
         if ui
             .add_enabled_ui(enabled, |ui| icon_item(ui, icon, label))
             .inner
@@ -694,7 +716,16 @@ fn action_menu(
         ..
     } in moves(location)
     {
-        item(ui, icon, label, MailAction::MoveTo(destination));
+        item(ui, messages, icon, label, MailAction::MoveTo(destination));
+    }
+    let destinations = move_destinations(location, mailbox.folder(), places);
+    if !destinations.is_empty() {
+        icon_submenu(ui, enabled, theme::Icon::Folder, "Move to…", |ui| {
+            if let Some(action) = destination_list(ui, &destinations) {
+                messages.push(act(action));
+                ui.close();
+            }
+        });
     }
     ui.separator();
     for FlagButton {
@@ -704,7 +735,7 @@ fn action_menu(
         ..
     } in flags
     {
-        item(ui, icon, label, action);
+        item(ui, messages, icon, label, action);
     }
 }
 
@@ -751,26 +782,30 @@ fn move_menu(
     wrap_for(ui, button_width(ui, title));
     ui.add_enabled_ui(enabled, |ui| {
         egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-            ui.set_min_width(MENU_MIN_WIDTH);
-            egui::ScrollArea::vertical()
-                .max_height(MENU_MAX_HEIGHT)
-                .show(ui, |ui| {
-                    for destination in destinations {
-                        if destination_item(ui, destination).clicked() {
-                            messages.push(Message::ApplyAction(MailAction::MoveTo(
-                                (*destination).clone(),
-                            )));
-                            ui.close();
-                        }
-                    }
-                });
+            if let Some(action) = destination_list(ui, destinations) {
+                messages.push(Message::ApplyAction(action));
+                ui.close();
+            }
         });
     });
 }
 
-/// One place in the Move to menu, with the icon the sidebar gives it.
-fn destination_item(ui: &mut egui::Ui, folder: &Folder) -> egui::Response {
-    icon_item(ui, folder_icon(folder), folder.name())
+/// The places of a Move to menu, each with the icon the sidebar gives it:
+/// the move to the one clicked, if any.
+fn destination_list(ui: &mut egui::Ui, destinations: &[&Folder]) -> Option<MailAction> {
+    ui.set_min_width(MENU_MIN_WIDTH);
+    egui::ScrollArea::vertical()
+        .max_height(MENU_MAX_HEIGHT)
+        .show(ui, |ui| {
+            let mut chosen = None;
+            for destination in destinations {
+                if icon_item(ui, folder_icon(destination), destination.name()).clicked() {
+                    chosen = Some(MailAction::MoveTo((*destination).clone()));
+                }
+            }
+            chosen
+        })
+        .inner
 }
 
 /// A menu entry led by its icon.
@@ -779,6 +814,38 @@ fn icon_item(ui: &mut egui::Ui, icon: theme::Icon, label: &str) -> egui::Respons
     let color = ui.style().interact(&layout.response).fg_stroke.color;
     theme::paint_atom_icon(ui, &layout, icon, color);
     layout.response
+}
+
+/// A menu entry led by its icon that opens `content` beside the menu, as
+/// egui's `SubMenuButton` does: when the pointer rests on it, or on a click.
+fn icon_submenu(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    icon: theme::Icon,
+    label: &str,
+    content: impl FnOnce(&mut egui::Ui),
+) {
+    use egui::containers::menu::{MenuState, SubMenu, SubMenuButton};
+    ui.add_enabled_ui(enabled, |ui| {
+        // Drawn as open while its menu is, so the way to it stays marked.
+        let id = SubMenu::id_from_widget_id(ui.next_auto_id());
+        let open = MenuState::from_ui(ui, |state, _| state.open_item == Some(id));
+        let resting = ui.style().visuals.widgets.inactive;
+        if open {
+            ui.style_mut().visuals.widgets.inactive = ui.style().visuals.widgets.open;
+        }
+        let layout = egui::Button::new((theme::icon_atom(), label))
+            .right_text(SubMenuButton::RIGHT_ARROW)
+            .atom_ui(ui);
+        let color = ui.style().interact(&layout.response).fg_stroke.color;
+        theme::paint_atom_icon(ui, &layout, icon, color);
+        ui.style_mut().visuals.widgets.inactive = resting;
+        // Named by its words alone, not by the arrow drawn after them.
+        layout.response.widget_info(|| {
+            egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+        });
+        SubMenu::new().show(ui, &layout.response, content);
+    });
 }
 
 /// The width of a text button showing `title` on one line.
@@ -809,18 +876,11 @@ fn label_menu(
     enabled: bool,
     messages: &mut Vec<Message>,
 ) {
-    let labels: Vec<_> = places
-        .iter()
-        .filter(|place| place.kind() == Some(CustomKind::Label))
-        .collect();
+    let labels = labels_carried(places, carried_labels);
     if labels.is_empty() {
         return;
     }
-    let carried_ids: HashSet<_> = carried_labels.iter().map(String::as_str).collect();
-    let applied = labels
-        .iter()
-        .filter(|label| label.custom_id().is_some_and(|id| carried_ids.contains(id)))
-        .count();
+    let applied = labels.iter().filter(|&&(_, carried)| carried).count();
     let title = if applied == 0 {
         "Labels".to_owned()
     } else {
@@ -829,33 +889,58 @@ fn label_menu(
     // The tag, as the sidebar marks labels; filled, like the star, while the
     // conversation carries any. Its size never changes, so a count arriving
     // with the detail cannot move the card.
-    let mut button = theme::IconButton::new(theme::Icon::Label, &title);
+    let mut button = widgets::IconButton::new(theme::Icon::Label, &title);
     if applied > 0 {
         button = button.selected(true);
     }
 
     ui.separator();
-    theme::icon_menu(ui, enabled, button, |ui| {
-        ui.set_min_width(MENU_MIN_WIDTH);
-        egui::ScrollArea::vertical()
-            .max_height(MENU_MAX_HEIGHT)
-            .show(ui, |ui| {
-                for label in labels {
-                    let carried = label.custom_id().is_some_and(|id| carried_ids.contains(id));
-                    let mut on = carried;
-                    if ui
-                        .add(theme::Checkbox::new(&mut on, label.name()))
-                        .changed()
-                    {
-                        messages.push(Message::ApplyAction(MailAction::SetLabel {
-                            label: label.clone(),
-                            on: !carried,
-                        }));
-                        ui.close();
-                    }
-                }
-            });
+    widgets::icon_menu(ui, enabled, button, |ui| {
+        if let Some(action) = label_list(ui, &labels) {
+            messages.push(Message::ApplyAction(action));
+            ui.close();
+        }
     });
+}
+
+/// The account's labels among `places`, each with whether `carried`, a
+/// conversation's labels, names it.
+fn labels_carried<'a>(places: &'a [Folder], carried: &[String]) -> Vec<(&'a Folder, bool)> {
+    places
+        .iter()
+        .filter(|place| place.kind() == Some(CustomKind::Label))
+        .map(|label| {
+            let on = label
+                .custom_id()
+                .is_some_and(|id| carried.iter().any(|known| known == id));
+            (label, on)
+        })
+        .collect()
+}
+
+/// The labels of a label menu as boxes, checked while the conversation
+/// carries them: the switch of the one clicked, if any.
+fn label_list(ui: &mut egui::Ui, labels: &[(&Folder, bool)]) -> Option<MailAction> {
+    ui.set_min_width(MENU_MIN_WIDTH);
+    egui::ScrollArea::vertical()
+        .max_height(MENU_MAX_HEIGHT)
+        .show(ui, |ui| {
+            let mut switched = None;
+            for &(label, carried) in labels {
+                let mut on = carried;
+                if ui
+                    .add(widgets::Checkbox::new(&mut on, label.name()))
+                    .changed()
+                {
+                    switched = Some(MailAction::SetLabel {
+                        label: label.clone(),
+                        on,
+                    });
+                }
+            }
+            switched
+        })
+        .inner
 }
 
 fn message_card(
@@ -922,7 +1007,7 @@ fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Mes
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), REPLY_TOOLBAR_HEIGHT),
+        egui::vec2(ui.available_width(), widgets::compact_button_height(ui)),
         // A narrow reader moves a button to the next row rather than letting
         // the row widen the card past the pane, which would cut off the body.
         Layout::left_to_right(Align::Center)
@@ -936,7 +1021,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 ("Forward", AnswerKind::Forward),
             ] {
                 if ui
-                    .add_enabled(message_id.is_some(), theme::compact_button(label))
+                    .add_enabled(message_id.is_some(), widgets::compact_button(ui, label))
                     .clicked()
                     && let Some(message_id) = message_id
                 {
@@ -1029,10 +1114,11 @@ fn message_header(
     } else {
         Vec::new()
     };
+    let scale = theme::text_scale(ui.ctx());
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(
             ui.available_width(),
-            message_header_height(expanded, line, recipients.len()),
+            message_header_height(expanded, line, recipients.len(), scale),
         ),
         Sense::click(),
     );
@@ -1048,7 +1134,7 @@ fn message_header(
     let date = theme::truncated_galley(
         &painter,
         &time,
-        FontId::proportional(theme::FOOTNOTE_SIZE),
+        FontId::proportional(theme::FOOTNOTE_SIZE * scale),
         theme::colors(ui).muted,
         (rect.width() - HEADER_TEXT_INSET) * 0.5,
     );
@@ -1056,7 +1142,7 @@ fn message_header(
     let (icon_rect, status) = paint_sender(ui, &painter, message, line, copy_rect);
     paint_header_details(ui, &painter, &recipients, preview, line, copy_rect);
     painter.galley(
-        egui::pos2(rect.right() - date.size().x, rect.top() + 2.0),
+        egui::pos2(rect.right() - date.size().x, rect.top() + 2.0 * scale),
         date,
         theme::colors(ui).muted,
     );
@@ -1082,16 +1168,19 @@ fn paint_sender(
     copy_rect: egui::Rect,
 ) -> (egui::Rect, &'static str) {
     let sender = message.sender.display_name().unwrap_or("(Unknown sender)");
+    let scale = theme::text_scale(ui.ctx());
     let identity_top = copy_rect.left_top()
         + egui::vec2(
             0.0,
             if line.separate_address() {
-                SECOND_LINE_TOP
+                SECOND_LINE_TOP * scale
             } else {
                 0.0
             },
         );
-    let icon_rect = egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE));
+    let icon_inset = SIGNATURE_ICON_INSET * scale;
+    let icon_rect =
+        egui::Rect::from_min_size(identity_top, egui::Vec2::splat(SIGNATURE_ICON_SIZE * scale));
     let (icon, status, color) = message_status(ui, message);
     egui::Image::new(icon.source())
         .tint(color)
@@ -1099,7 +1188,7 @@ fn paint_sender(
     let sender_inset = if line.separate_address() {
         0.0
     } else {
-        SIGNATURE_ICON_INSET
+        icon_inset
     };
     let sender_origin = copy_rect.left_top() + egui::vec2(sender_inset, 0.0);
     let sender_width = (copy_rect.width() - sender_inset).max(0.0);
@@ -1118,7 +1207,7 @@ fn paint_sender(
             painter,
             sender_origin,
             sender,
-            FontId::proportional(theme::ROW_TEXT_SIZE),
+            FontId::proportional(theme::ROW_TEXT_SIZE * scale),
             ui.visuals().strong_text_color(),
             sender_width,
         ),
@@ -1126,10 +1215,11 @@ fn paint_sender(
     if line.separate_address() {
         header_detail(
             painter,
-            identity_top + egui::vec2(SIGNATURE_ICON_INSET, 0.0),
+            identity_top + egui::vec2(icon_inset, 0.0),
             &message.sender.address,
             theme::colors(ui).muted,
-            (copy_rect.width() - SIGNATURE_ICON_INSET).max(0.0),
+            (copy_rect.width() - icon_inset).max(0.0),
+            scale,
         );
     }
     (icon_rect, status)
@@ -1145,23 +1235,26 @@ fn paint_header_details(
     line: SenderLine,
     copy_rect: egui::Rect,
 ) {
+    let scale = theme::text_scale(ui.ctx());
     if !recipients.is_empty() {
-        let top = recipients_top(line);
+        let top = recipients_top(line, scale);
+        let pitch = RECIPIENT_LINE_PITCH * scale;
         for (index, recipient_line) in recipients.iter().enumerate() {
             header_detail(
                 painter,
-                copy_rect.left_top() + egui::vec2(0.0, top + index as f32 * RECIPIENT_LINE_PITCH),
+                copy_rect.left_top() + egui::vec2(0.0, top + index as f32 * pitch),
                 recipient_line,
                 theme::colors(ui).muted,
                 copy_rect.width(),
+                scale,
             );
         }
     } else {
         theme::paint_truncated_text(
             painter,
-            copy_rect.left_top() + egui::vec2(0.0, PREVIEW_LINE_TOP),
+            copy_rect.left_top() + egui::vec2(0.0, PREVIEW_LINE_TOP * scale),
             preview,
-            FontId::proportional(theme::ROW_TEXT_SIZE),
+            FontId::proportional(theme::ROW_TEXT_SIZE * scale),
             theme::colors(ui).muted,
             copy_rect.width(),
         );
@@ -1191,7 +1284,7 @@ fn header_hover(
 ) -> egui::Response {
     if ui.rect_contains_pointer(icon_rect) {
         response.on_hover_text(status)
-    } else if ui.rect_contains_pointer(chevron_area(response.rect)) {
+    } else if ui.rect_contains_pointer(chevron_area(response.rect, theme::text_scale(ui.ctx()))) {
         response.on_hover_text(if expanded { "Collapse" } else { "Expand" })
     } else {
         response
@@ -1208,42 +1301,48 @@ fn paint_name_and_address(
     address: &str,
     width: f32,
 ) {
-    const GAP: f32 = 6.0;
+    let scale = theme::text_scale(ui.ctx());
+    let gap = 6.0 * scale;
     let muted = theme::colors(ui).muted;
     let strong = ui.visuals().strong_text_color();
     let address = theme::truncated_galley(
         painter,
         &format!("<{address}>"),
-        FontId::proportional(ADDRESS_SIZE),
+        FontId::proportional(ADDRESS_SIZE * scale),
         muted,
         width * 2.0 / 3.0,
     );
     let name = theme::truncated_galley(
         painter,
         name,
-        FontId::proportional(theme::ROW_TEXT_SIZE),
+        FontId::proportional(theme::ROW_TEXT_SIZE * scale),
         strong,
-        (width - address.size().x - GAP).max(0.0),
+        (width - address.size().x - gap).max(0.0),
     );
     // Share the name's baseline rather than its top edge.
     let address_origin = origin
         + egui::vec2(
-            name.size().x + GAP,
+            name.size().x + gap,
             (name.size().y - address.size().y).max(0.0),
         );
     painter.galley(origin, name, strong);
     painter.galley(address_origin, address, muted);
 }
 
-/// A header's height: an open card lists its recipients under the sender,
-/// and under the sender's address when `line` gives that a line of its own,
-/// in `recipient_lines` lines.
-fn message_header_height(expanded: bool, line: SenderLine, recipient_lines: usize) -> f32 {
+/// A header's height with text drawn at `scale`: an open card lists its
+/// recipients under the sender, and under the sender's address when `line`
+/// gives that a line of its own, in `recipient_lines` lines.
+fn message_header_height(
+    expanded: bool,
+    line: SenderLine,
+    recipient_lines: usize,
+    scale: f32,
+) -> f32 {
     if expanded {
         let more = recipient_lines.saturating_sub(1) as f32;
-        recipients_top(line) + 27.0 + more * RECIPIENT_LINE_PITCH
+        recipients_top(line, scale) + (27.0 + more * RECIPIENT_LINE_PITCH) * scale
     } else {
-        44.0
+        44.0 * scale
     }
 }
 
@@ -1263,13 +1362,14 @@ fn recipient_lines(message: &MailMessage) -> Vec<String> {
     lines
 }
 
-/// How far below an open header's top its "To:" line starts: one line under
-/// the sender's address when that has a line of its own.
-fn recipients_top(line: SenderLine) -> f32 {
+/// How far below an open header's top its "To:" line starts, with text drawn
+/// at `scale`: one line under the sender's address when that has a line of
+/// its own.
+fn recipients_top(line: SenderLine, scale: f32) -> f32 {
     if line.separate_address() {
-        SECOND_LINE_TOP + RECIPIENT_LINE_PITCH
+        (SECOND_LINE_TOP + RECIPIENT_LINE_PITCH) * scale
     } else {
-        SECOND_LINE_TOP
+        SECOND_LINE_TOP * scale
     }
 }
 
@@ -1281,7 +1381,11 @@ fn paint_message_chevron(
     expanded: bool,
     response: Option<&egui::Response>,
 ) {
-    let icon_center = egui::pos2(rect.left() + 8.0, rect.top() + 11.0);
+    // On the sender's line, wherever text puts it.
+    let icon_center = egui::pos2(
+        rect.left() + 8.0,
+        rect.top() + 11.0 * theme::text_scale(ui.ctx()),
+    );
     let points = chevron_points(icon_center, expanded);
     let color = if response.is_some_and(egui::Response::hovered) {
         ui.visuals().strong_text_color()
@@ -1294,11 +1398,12 @@ fn paint_message_chevron(
         .line_segment([points[1], points[2]], Stroke::new(1.5, color));
 }
 
-/// The column left of the header's text, where the chevron sits.
-fn chevron_area(rect: egui::Rect) -> egui::Rect {
+/// The column left of the header's text, where the chevron sits, with text
+/// drawn at `scale`.
+fn chevron_area(rect: egui::Rect, scale: f32) -> egui::Rect {
     egui::Rect::from_min_max(
         rect.left_top(),
-        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top() + 22.0),
+        egui::pos2(rect.left() + HEADER_TEXT_INSET, rect.top() + 22.0 * scale),
     )
 }
 
@@ -1316,12 +1421,13 @@ fn header_detail(
     text: &str,
     color: Color32,
     width: f32,
+    scale: f32,
 ) {
     theme::paint_truncated_text(
         painter,
         position,
         text,
-        FontId::proportional(theme::FOOTNOTE_SIZE),
+        FontId::proportional(theme::FOOTNOTE_SIZE * scale),
         color,
         width,
     );
@@ -1365,7 +1471,7 @@ fn attachment_row(
         if ui
             .add_enabled(
                 !saving,
-                theme::compact_button(if this_one { "Saving…" } else { "Save" }),
+                widgets::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
             )
             .clicked()
         {
@@ -1375,7 +1481,7 @@ fn attachment_row(
             });
         }
         if ui
-            .add_enabled(!saving, theme::compact_button("Save as…"))
+            .add_enabled(!saving, widgets::compact_button(ui, "Save as…"))
             .clicked()
         {
             messages.push(Message::SaveAttachmentAs {
@@ -1403,9 +1509,11 @@ fn message_body(
     match &message.body {
         MessageBody::PlainText(content) => {
             ui.add(
-                egui::Label::new(egui::RichText::new(content).size(theme::BODY_SIZE))
-                    .selectable(true)
-                    .wrap(),
+                egui::Label::new(
+                    egui::RichText::new(content).size(theme::text_size(ui, theme::BODY_SIZE)),
+                )
+                .selectable(true)
+                .wrap(),
             );
         }
         MessageBody::Rich(body) => {
@@ -1414,7 +1522,7 @@ fn message_body(
         MessageBody::Unreadable => {
             ui.label(
                 egui::RichText::new(UNREADABLE_NOTICE)
-                    .size(theme::BODY_SIZE)
+                    .size(theme::text_size(ui, theme::BODY_SIZE))
                     .color(theme::colors(ui).danger),
             );
         }
@@ -1454,6 +1562,8 @@ fn rich_body(
         }
         return;
     }
+    // A message that is all quote shows it at once: behind a button, the
+    // button would be all there is to read.
     if body.blocks.iter().all(|block| block.quote_depth > 0) {
         blocks(ui, &body.blocks, 0, pictures, reading, messages);
         return;
@@ -1461,30 +1571,33 @@ fn rich_body(
 
     let sight = Sight::new(ui, reading);
     let mut rest = &body.blocks[..];
-    let mut quote = 0;
+    let mut quote_index = 0;
     while let Some(first) = rest.first() {
         if first.quote_depth > 0 {
-            let run = rest
-                .iter()
-                .take_while(|block| block.quote_depth > 0)
-                .count();
-            let expanded = reader.is_quote_expanded(message_id, quote, reading);
+            let run = quoted_run(rest, 0);
+            let expanded = reader.is_quote_expanded(message_id, quote_index, reading);
             if ui
-                .add(theme::compact_button(if expanded {
-                    "Hide quoted text"
-                } else {
-                    "Show quoted text"
-                }))
+                .add(widgets::compact_button(
+                    ui,
+                    if expanded {
+                        "Hide quoted text"
+                    } else {
+                        "Show quoted text"
+                    },
+                ))
                 .clicked()
             {
-                messages.push(Message::ToggleQuoteExpanded(message_id.to_owned(), quote));
+                messages.push(Message::ToggleQuoteExpanded(
+                    message_id.to_owned(),
+                    quote_index,
+                ));
             }
             if expanded {
                 quote_box(ui, |ui| {
                     blocks(ui, &rest[..run], 1, pictures, reading, messages);
                 });
             }
-            quote += 1;
+            quote_index += 1;
             rest = &rest[run..];
         } else {
             rest = &rest[1..];
@@ -1493,6 +1606,20 @@ fn rich_body(
             }
             block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
+        room_after(ui, rest, pictures, reading);
+    }
+}
+
+/// The room after a block of a body, before the next one `rest` shows: none
+/// before a line the sender set tight against it, as a date under its label,
+/// so it reads as the next line of a paragraph would; a gap before anything
+/// else.
+fn room_after(ui: &mut egui::Ui, rest: &[RichBlock], pictures: Pictures<'_>, reading: Reading) {
+    let next = rest.iter().find(|block| shown(block, pictures, reading));
+    if next.is_some_and(|block| block.joined) {
+        // egui puts its item spacing after every block: this takes it back.
+        ui.add_space(-ui.spacing().item_spacing.y);
+    } else {
         ui.add_space(8.0);
     }
 }
@@ -1516,6 +1643,7 @@ fn shown(block: &RichBlock, pictures: Pictures<'_>, reading: Reading) -> bool {
         BlockKind::Image {
             description,
             content_id,
+            ..
         } if description.is_empty() => !matches!(
             pictures.find(content_id.as_deref(), reading),
             Found::Nothing
@@ -1616,6 +1744,15 @@ fn texture(
     texture
 }
 
+/// How many of `blocks`, from the first, are quoted deeper than `depth`: the
+/// quote that starts there.
+fn quoted_run(blocks: &[RichBlock], depth: u8) -> usize {
+    blocks
+        .iter()
+        .take_while(|block| block.quote_depth > depth)
+        .count()
+}
+
 fn blocks(
     ui: &mut egui::Ui,
     rich_blocks: &[RichBlock],
@@ -1628,10 +1765,7 @@ fn blocks(
     let mut rest = rich_blocks;
     while let Some(first) = rest.first() {
         if first.quote_depth > depth && depth < MAX_QUOTE_DEPTH {
-            let run = rest
-                .iter()
-                .take_while(|block| block.quote_depth > depth)
-                .count();
+            let run = quoted_run(rest, depth);
             let quoted = &rest[..run];
             rest = &rest[run..];
             if !quoted.iter().any(|block| shown(block, pictures, reading)) {
@@ -1647,7 +1781,7 @@ fn blocks(
             }
             block_in_sight(ui, first, &sight, pictures, reading, messages);
         }
-        ui.add_space(8.0);
+        room_after(ui, rest, pictures, reading);
     }
 }
 
@@ -1766,6 +1900,14 @@ fn text_stamp(block: &RichBlock) -> u64 {
         BlockKind::Image { description, .. } => (0, description.len()),
         BlockKind::Rule => (0, 0),
         BlockKind::Table(rows) => return rows_stamp(rows),
+        BlockKind::Columns(columns) => {
+            return columns
+                .iter()
+                .flatten()
+                .fold(columns.len() as u64, |stamp, block| {
+                    stamp.rotate_left(7) ^ text_stamp(block)
+                });
+        }
     };
     (runs as u64).rotate_left(40) ^ bytes as u64
 }
@@ -1865,7 +2007,8 @@ fn block(
                     |ui| {
                         ui.add(
                             egui::Label::new(
-                                egui::RichText::new(marker.label()).size(theme::BODY_SIZE),
+                                egui::RichText::new(marker.label())
+                                    .size(theme::text_size(ui, theme::BODY_SIZE)),
                             )
                             .selectable(true),
                         );
@@ -1884,7 +2027,7 @@ fn block(
                         egui::Label::new(
                             egui::RichText::new(content)
                                 .monospace()
-                                .size(theme::BODY_SIZE),
+                                .size(theme::text_size(ui, theme::BODY_SIZE)),
                         )
                         .selectable(true)
                         .wrap(),
@@ -1894,6 +2037,7 @@ fn block(
         BlockKind::Image {
             description,
             content_id,
+            link,
         } => {
             let note = match pictures.find(content_id.as_deref(), reading) {
                 // A picture the message carries, no wider than the pane.
@@ -1904,10 +2048,24 @@ fn block(
                     let shown = ui.add(
                         egui::Image::new(&texture)
                             .fit_to_exact_size(egui::vec2(width, size.y * width / size.x))
-                            .corner_radius(theme::PICTURE_CORNER_RADIUS),
+                            .corner_radius(theme::PICTURE_CORNER_RADIUS)
+                            .sense(if link.is_some() {
+                                Sense::click()
+                            } else {
+                                Sense::hover()
+                            }),
                     );
-                    if !description.is_empty() {
-                        shown.on_hover_text(description);
+                    // A picture inside a link is that link.
+                    match link {
+                        Some(link) => follow_link(
+                            shown.on_hover_cursor(egui::CursorIcon::PointingHand),
+                            link,
+                            messages,
+                        ),
+                        None if !description.is_empty() => {
+                            shown.on_hover_text(description);
+                        }
+                        None => {}
                     }
                     return;
                 }
@@ -1933,21 +2091,84 @@ fn block(
                 .corner_radius(theme::BLOCK_CORNER_RADIUS)
                 .inner_margin(10)
                 .show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(note)
-                                .size(theme::BODY_SIZE - 2.0)
-                                .color(theme::colors(ui).muted),
-                        )
-                        .selectable(true)
-                        .wrap(),
-                    );
+                    let note = egui::RichText::new(note)
+                        .size(theme::text_size(ui, theme::BODY_SIZE - 2.0));
+                    match link {
+                        // It stands in for its link too, underlined at rest
+                        // as text links are.
+                        Some(link) => {
+                            let response = ui.add(egui::Link::new(note.underline()));
+                            follow_link(response, link, messages);
+                        }
+                        None => {
+                            ui.add(
+                                egui::Label::new(note.color(theme::colors(ui).muted))
+                                    .selectable(true)
+                                    .wrap(),
+                            );
+                        }
+                    }
                 });
         }
         BlockKind::Rule => {
             ui.separator();
         }
         BlockKind::Table(rows) => table(ui, rows, reading, messages),
+        BlockKind::Columns(cells) => columns(ui, cells, pictures, reading, messages),
+    }
+}
+
+/// The least width a column takes beside others; with less, cells stack.
+const COLUMN_MIN_WIDTH: f32 = 150.0;
+/// The room between columns.
+const COLUMN_GAP: f32 = 24.0;
+
+/// Cells a sender set side by side: beside one another, each as wide as the
+/// others, where the pane gives each [`COLUMN_MIN_WIDTH`]; otherwise one
+/// under the other, as a narrow screen sets them.
+fn columns(
+    ui: &mut egui::Ui,
+    cells: &[Vec<RichBlock>],
+    pictures: Pictures<'_>,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
+    let count = cells.len() as f32;
+    if ui.available_width() >= count * COLUMN_MIN_WIDTH + (count - 1.0) * COLUMN_GAP {
+        ui.scope(|ui| {
+            ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+            ui.columns(cells.len(), |columns| {
+                for (column, cell) in columns.iter_mut().zip(cells) {
+                    cell_blocks(column, cell, pictures, reading, messages);
+                }
+            });
+        });
+    } else {
+        for (index, cell) in cells.iter().enumerate() {
+            if index > 0 {
+                ui.add_space(8.0);
+            }
+            cell_blocks(ui, cell, pictures, reading, messages);
+        }
+    }
+}
+
+/// The blocks of one cell of a row of columns, spaced as a body's are.
+fn cell_blocks(
+    ui: &mut egui::Ui,
+    cell: &[RichBlock],
+    pictures: Pictures<'_>,
+    reading: Reading,
+    messages: &mut Vec<Message>,
+) {
+    for (index, rich_block) in cell.iter().enumerate() {
+        if !shown(rich_block, pictures, reading) {
+            continue;
+        }
+        block(ui, rich_block, pictures, reading, messages);
+        if index + 1 < cell.len() {
+            room_after(ui, &cell[index + 1..], pictures, reading);
+        }
     }
 }
 
@@ -2128,23 +2349,11 @@ fn rich_spans(
                 job.append(&more.text, 0.0, more.sections[0].format.clone());
                 rest = after;
             }
-            let response = ui
-                .add(egui::Button::new(job))
-                .on_hover_text(link_hover_text(link));
-            if response.clicked() {
-                messages.push(Message::LinkClicked(link.to_string()));
-            }
-            response.context_menu(|ui| link_menu(ui, link, messages));
+            let response = ui.add(egui::Button::new(job));
+            follow_link(response, link, messages);
         } else if let Some(link) = &span.link {
-            // Where it goes shows before a click, as a browser shows it, also
-            // when Settings open links without asking.
-            let response = ui
-                .add(egui::Link::new(job))
-                .on_hover_text(link_hover_text(link));
-            if response.clicked() {
-                messages.push(Message::LinkClicked(link.to_string()));
-            }
-            response.context_menu(|ui| link_menu(ui, link, messages));
+            let response = ui.add(egui::Link::new(job));
+            follow_link(response, link, messages);
         } else {
             ui.add(egui::Label::new(job).selectable(true).wrap());
         }
@@ -2178,6 +2387,18 @@ fn link_hover_text(link: &str) -> String {
     shown
 }
 
+/// What a link does wherever the reader draws one, as text, a button or a
+/// picture. Where it goes shows before a click, as a browser shows it, also
+/// when Settings open links without asking; a click asks first when they
+/// say so; and its menu opens or copies it.
+fn follow_link(response: egui::Response, link: &str, messages: &mut Vec<Message>) {
+    let response = response.on_hover_text(link_hover_text(link));
+    if response.clicked() {
+        messages.push(Message::LinkClicked(link.to_owned()));
+    }
+    response.context_menu(|ui| link_menu(ui, link, messages));
+}
+
 /// A link's right-click menu. Opening it still asks first, when Settings say
 /// so; copying its address takes the reader nowhere.
 fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
@@ -2194,6 +2415,7 @@ fn link_menu(ui: &mut egui::Ui, link: &str, messages: &mut Vec<Message>) {
 /// Builds span styling; `TextFormat` allows padded code backgrounds.
 fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Reading) -> LayoutJob {
     let size = heading.map(heading_size).unwrap_or(theme::BODY_SIZE);
+    let scale = theme::text_scale(ui.ctx());
     // What the sender's style makes a run counts as its tags do, unless
     // Settings say to leave it out.
     let styled = if reading.sender_text_styles {
@@ -2218,9 +2440,9 @@ fn span_layout(ui: &egui::Ui, span: &RichSpan, heading: Option<u8>, reading: Rea
     let mut format = egui::TextFormat {
         font_id: if span.code {
             // Slightly smaller monospace aligns with surrounding text.
-            FontId::monospace(size - 1.5)
+            FontId::monospace((size - 1.5) * scale)
         } else {
-            FontId::proportional(size)
+            FontId::proportional(size * scale)
         },
         // A link's colour is left to `Link`, which fills in the placeholder
         // with the hyperlink colour.

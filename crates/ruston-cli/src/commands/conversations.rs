@@ -3,7 +3,7 @@
 
 use crate::cli::{ConversationsCmd, Ctx, ReadState, unix_now};
 use crate::render;
-use ruston_core::{Client, Result};
+use ruston_core::{Client, ListOptions, Result};
 
 /// Lists, searches or reads conversations, or changes the ones named.
 pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
@@ -18,8 +18,12 @@ pub async fn run(ctx: &Ctx, cmd: ConversationsCmd) -> Result<()> {
             unread,
         } => {
             let folder = client.folder_id(&folder).await?;
+            let options = ListOptions {
+                unread: unread.then_some(true),
+                ..ListOptions::default()
+            };
             let (total, convs) = client
-                .list_conversations(&folder, page, page_size, unread)
+                .list_conversations(&folder, page, page_size, options)
                 .await?;
             render::conversations_list(ctx.json, total, &convs);
             return Ok(());

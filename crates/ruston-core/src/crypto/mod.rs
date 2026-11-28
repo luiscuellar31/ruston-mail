@@ -6,6 +6,8 @@ pub(crate) mod clock;
 pub mod kdf;
 pub mod keys;
 pub mod message;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub use keys::{Address, AddressKeys, ApiKey, KeySalt, KeyStore, StoredKey, User};
 pub use message::{

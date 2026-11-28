@@ -526,6 +526,7 @@ mod tests {
         let keys = AddressKeys {
             address_id: email.into(),
             email: email.into(),
+            can_send: true,
             keys: vec![owned],
         };
         (keys, text(public.unwrap().as_ref()))

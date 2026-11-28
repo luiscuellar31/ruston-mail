@@ -44,14 +44,16 @@ pub(super) fn unsaved(error: MailboxError) -> SaveError {
 impl App {
     /// The attachment now being fetched, so its row can say so.
     pub fn saving_attachment(&self) -> Option<&str> {
-        self.saving_attachment
+        self.session
+            .saving_attachment
             .as_ref()
             .map(|save| save.request.attachment_id.as_str())
     }
 
     /// The attachment whose last save failed, by ID, and why.
     pub fn failed_save(&self) -> Option<(&str, SaveError)> {
-        self.failed_save
+        self.session
+            .failed_save
             .as_ref()
             .map(|(attachment_id, error)| (attachment_id.as_str(), *error))
     }
@@ -63,7 +65,7 @@ impl App {
         attachment_id: String,
         suggested_name: Option<String>,
     ) -> Effects {
-        if !self.mailbox_actions_available() || self.saving_attachment.is_some() {
+        if !self.mailbox_actions_available() || self.session.saving_attachment.is_some() {
             return Effects::none();
         }
         let request = AttachmentSaveRequest {
@@ -72,8 +74,8 @@ impl App {
             message_id,
             attachment_id,
         };
-        self.failed_save = None;
-        self.saving_attachment = Some(AttachmentSave {
+        self.session.failed_save = None;
+        self.session.saving_attachment = Some(AttachmentSave {
             request: request.clone(),
             stage: if suggested_name.is_some() {
                 SaveStage::ChoosingDestination
@@ -100,7 +102,7 @@ impl App {
             return Effects::none();
         };
         let Some(path) = destination else {
-            self.saving_attachment = None;
+            self.session.saving_attachment = None;
             return Effects::none();
         };
         save.stage = SaveStage::Downloading;
@@ -117,7 +119,8 @@ impl App {
         if !self.is_current_session(request.session) {
             return None;
         }
-        self.saving_attachment
+        self.session
+            .saving_attachment
             .as_mut()
             .filter(|save| save.request == *request && save.stage == stage)
     }
@@ -168,7 +171,7 @@ impl App {
         {
             return;
         }
-        self.saving_attachment = None;
+        self.session.saving_attachment = None;
         // An expired session ends here as it does for any request.
         if matches!(outcome, Err(SaveError::SessionExpired)) {
             self.close_mailbox(Some(AuthError::SessionExpired));
@@ -178,8 +181,8 @@ impl App {
         // and its news must not surface in the next one.
         if self.mailbox.is_some() {
             match outcome {
-                Ok(path) => self.notice = Some(Notice::Saved(path)),
-                Err(error) => self.failed_save = Some((request.attachment_id, error)),
+                Ok(path) => self.session.notice = Some(Notice::Saved(path)),
+                Err(error) => self.session.failed_save = Some((request.attachment_id, error)),
             }
         }
     }

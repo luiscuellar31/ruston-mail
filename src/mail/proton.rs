@@ -9,17 +9,17 @@ use ruston_core::model::conversations_of;
 use ruston_core::model::enums::{label_ids, message_flag};
 use ruston_core::model::message::Attachment;
 use ruston_core::{
-    Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, Label, LabelCount,
-    MessageMetadata, Recipient, RecipientProtection, SearchOpts, SendOptions, UnreadableMessage,
-    Verdict,
+    AddressInfo, Client, Conversation, ConversationMessage, Error, FullMessage, HvChallenge, Label,
+    LabelCount, ListOptions, MessageMetadata, Recipient, RecipientProtection, SearchOpts,
+    SendOptions, UnreadableMessage, Verdict,
 };
 
 use super::outgoing::{Outgoing, OutgoingKind, Protection, ProtectionCheck, SendError};
 use super::threading::{self, MessageFacts, OwnAddresses};
 use super::{
     AuthError, ConversationDetail, ConversationPage, ConversationSummary, Folder, IncomingMail,
-    MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts, MailboxError, MessageBody,
-    OwnPlaces, PlaceLook, SummaryKind,
+    ListFilter, ListOrder, MailAddress, MailAttachment, MailFolder, MailMessage, MailboxCounts,
+    MailboxError, MessageBody, OwnPlaces, PlaceLook, SummaryKind,
 };
 use super::{INSPECTION_CONCURRENCY, MailAction};
 
@@ -57,6 +57,8 @@ const MAX_LISTED_CORRESPONDENTS: usize = 3;
 pub struct ProtonMailService {
     client: Client,
     email: Option<String>,
+    /// The addresses mail can go out from, in Proton's order.
+    addresses: Vec<AddressInfo>,
     own_addresses: OwnAddresses,
     inspection_limiter: Arc<Semaphore>,
     listed: ListedAttachments,
@@ -106,6 +108,12 @@ impl ProtonMailService {
         self.email.as_deref()
     }
 
+    /// The addresses mail can go out from, in Proton's order: new mail goes
+    /// from the first unless another is chosen.
+    pub fn addresses(&self) -> &[AddressInfo] {
+        &self.addresses
+    }
+
     /// The Proton account signed in, the same from one session to the next.
     pub fn user_id(&self) -> &str {
         self.client.user_id()
@@ -123,9 +131,9 @@ impl ProtonMailService {
         Ok(messages
             .into_iter()
             .map(|message| IncomingMail {
+                unread: message.is_unread(),
                 id: message.id,
                 time: message.time,
-                unread: message.unread != 0,
                 sender: if message.sender.name.trim().is_empty() {
                     message.sender.address
                 } else {
@@ -140,14 +148,16 @@ impl ProtonMailService {
     pub async fn list_conversations(
         &self,
         folder: &Folder,
+        filter: ListFilter,
+        order: ListOrder,
         page: u32,
         page_size: u32,
     ) -> Result<ConversationPage, MailboxError> {
-        let unread_only = false;
+        let options = list_options(filter, order);
         let (total, conversations) =
             timed(
                 self.client
-                    .list_conversations(label_id(folder), page, page_size, unread_only),
+                    .list_conversations(label_id(folder), page, page_size, options),
             )
             .await?;
 
@@ -205,21 +215,7 @@ impl ProtonMailService {
     /// Sends a message. Proton answers with the sent message's ID, which
     /// nothing here uses yet.
     pub async fn send(&self, outgoing: &Outgoing) -> Result<(), SendError> {
-        let options = SendOptions {
-            to: outgoing.to.clone(),
-            cc: outgoing.cc.clone(),
-            bcc: outgoing.bcc.clone(),
-            subject: outgoing.subject.clone(),
-            body: outgoing.wire_body(),
-            html: outgoing.is_html(),
-            attachments: outgoing.attachments.clone(),
-            quote: outgoing.kind.quote(),
-            leave_out: outgoing.kind.leave_out().to_vec(),
-            // ruston-core picks the sender: the primary address, or for an
-            // answer the address the original reached.
-            // Scheduling and self-destruct are not offered yet.
-            ..SendOptions::default()
-        };
+        let options = send_options(outgoing);
 
         // Core writes the subjects of answers and keys forwarded attachments
         // for the draft, and Proton threads them; a reply goes to the
@@ -451,10 +447,10 @@ impl ProtonMailService {
                     client.unlabel_conversations(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::AddLabel(label)) => {
-                    client.apply_label(ids, label).await
+                    client.label_messages(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::RemoveLabel(label)) => {
-                    client.remove_label(ids, label).await
+                    client.unlabel_messages(ids, label).await
                 }
             }
         };
@@ -464,15 +460,22 @@ impl ProtonMailService {
 
     pub(super) fn from_client(client: Client) -> Self {
         let email = client.primary_email().map(str::to_owned);
-        let own_addresses = client
-            .addresses()
+        let addresses = client.addresses();
+        // Mail that went out from an address that can no longer send is
+        // still the account's own.
+        let own_addresses = addresses
             .iter()
             .map(|address| threading::normalize_address(&address.email))
+            .collect();
+        let addresses = addresses
+            .into_iter()
+            .filter(|address| address.can_send)
             .collect();
 
         Self {
             client,
             email,
+            addresses,
             own_addresses,
             inspection_limiter: Arc::new(Semaphore::new(INSPECTION_CONCURRENCY)),
             listed: ListedAttachments::default(),
@@ -614,6 +617,19 @@ fn context_label(context: Option<&Folder>) -> &str {
     context.map_or(label_ids::ALL_MAIL, label_id)
 }
 
+/// What core asks Proton for, to list what `filter` shows in `order`.
+fn list_options(filter: ListFilter, order: ListOrder) -> ListOptions {
+    ListOptions {
+        unread: match filter {
+            ListFilter::Unread => Some(true),
+            ListFilter::Read => Some(false),
+            ListFilter::All | ListFilter::WithFiles => None,
+        },
+        attachments: filter == ListFilter::WithFiles,
+        oldest_first: order == ListOrder::OldestFirst,
+    }
+}
+
 /// Maps folders to Proton wire identifiers.
 fn label_id(folder: &Folder) -> &str {
     match folder {
@@ -661,6 +677,11 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         .chain(&conversation.recipients)
         .map(mail_address)
         .collect();
+    let labels = conversation
+        .labels
+        .iter()
+        .map(|label| label.id.clone())
+        .collect();
 
     ConversationSummary {
         subject: non_blank(&conversation.subject),
@@ -672,6 +693,7 @@ fn summarize(conversation: Conversation, folder: &Folder) -> ConversationSummary
         starred,
         message_count: u32::try_from(conversation.num_messages).unwrap_or(0),
         has_attachments: conversation.num_attachments > 0,
+        labels,
         id: conversation.id,
         kind: SummaryKind::Conversation,
     }
@@ -745,10 +767,11 @@ fn message_summary(message: MessageMetadata) -> ConversationSummary {
         participants,
         preview: None,
         time: known_time(message.time),
-        unread: message.unread != 0,
+        unread: message.is_unread(),
         starred: message.label_ids.iter().any(|id| id == label_ids::STARRED),
         message_count: 1,
         has_attachments: message.num_attachments > 0,
+        labels: message.label_ids,
         id: message.id,
         kind: SummaryKind::Message,
     }
@@ -775,6 +798,26 @@ fn non_blank(text: &str) -> Option<String> {
 /// unknown.
 fn known_time(seconds: i64) -> Option<i64> {
     (seconds > 0).then_some(seconds)
+}
+
+/// What core is asked to send for `outgoing`.
+fn send_options(outgoing: &Outgoing) -> SendOptions {
+    SendOptions {
+        to: outgoing.to.clone(),
+        cc: outgoing.cc.clone(),
+        bcc: outgoing.bcc.clone(),
+        subject: outgoing.subject.clone(),
+        body: outgoing.wire_body(),
+        html: outgoing.is_html(),
+        attachments: outgoing.attachments.clone(),
+        quote: outgoing.kind.quote(),
+        leave_out: outgoing.kind.leave_out().to_vec(),
+        // Without a chosen sender, ruston-core picks one: the primary
+        // address, or for an answer the address the original reached.
+        from: outgoing.from.clone(),
+        // Scheduling and self-destruct are not offered yet.
+        ..SendOptions::default()
+    }
 }
 
 fn mail_address(person: &Recipient) -> MailAddress {
@@ -865,9 +908,10 @@ fn message_without_body(
         reply_all_cc: reply.cc,
         reply_redirected,
         time: known_time(meta.time),
-        unread: meta.unread != 0,
+        unread: meta.is_unread(),
         body: MessageBody::Unreadable,
         verdict: Verdict::Unverified,
+        address_id: meta.address_id,
         id: meta.id,
     }
 }

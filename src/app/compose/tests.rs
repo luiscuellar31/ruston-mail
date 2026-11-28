@@ -1,5 +1,6 @@
 use super::*;
 use crate::mail::MailboxError;
+use crate::test_support::message;
 
 fn written(to: &str) -> Compose {
     let mut compose = Compose::default();
@@ -291,22 +292,15 @@ fn every_change_to_a_recipient_field_is_read_again() {
 
 fn answered_message(reply_to: &str) -> MailMessage {
     MailMessage {
-        id: "message".into(),
         sender: crate::mail::MailAddress {
             name: Some("Alex Rivera".into()),
             address: "alex@corp.example".into(),
         },
-        to: Vec::new(),
-        cc: Vec::new(),
-        bcc: Vec::new(),
         reply_to: vec![reply_to.into()],
         reply_all_cc: vec!["bob@corp.example".into()],
         reply_redirected: !reply_to.eq_ignore_ascii_case("alex@corp.example"),
-        time: None,
-        unread: false,
         body: crate::mail::MessageBody::PlainText("Invoice attached".into()),
-        verdict: crate::mail::Verdict::Unverified,
-        attachments: Vec::new(),
+        ..message("message")
     }
 }
 
@@ -690,4 +684,96 @@ fn ready_carries_attachments_without_blocking_io() {
 
     let outgoing = compose.ready(BodyFormat::PlainText).unwrap();
     assert_eq!(outgoing.attachments, vec![non_existent]);
+}
+
+/// The address `app`'s draft goes out from, as the composer shows it, and
+/// the one it hands core.
+fn senders(app: &App) -> (Option<&str>, Option<String>) {
+    let compose = app.compose().unwrap();
+    let ready = compose.ready(BodyFormat::PlainText).unwrap();
+    (compose.sender(), ready.from)
+}
+
+#[test]
+fn a_new_message_goes_from_the_first_address_unless_another_is_chosen() {
+    let mut app = composing("ana@example.org");
+    assert_eq!(
+        app.compose().unwrap().sender_choices(),
+        ["demo@example.com", "demo@example.org"]
+    );
+    // Left as it opened, core picks the sender: the same first address.
+    assert_eq!(senders(&app), (Some("demo@example.com"), None));
+
+    let _ = app.update(Message::ComposeSender("demo@example.org".into()));
+    let chosen = Some("demo@example.org".to_owned());
+    assert_eq!(senders(&app), (chosen.as_deref(), chosen.clone()));
+
+    // Only the account's own addresses send it, and not once it is on its way.
+    let _ = app.update(Message::ComposeSender("someone@elsewhere.example".into()));
+    assert_eq!(senders(&app), (chosen.as_deref(), chosen.clone()));
+    app.compose.as_mut().unwrap().state = Sending::InFlight;
+    let _ = app.update(Message::ComposeSender("demo@example.com".into()));
+    assert_eq!(app.compose().unwrap().sender(), chosen.as_deref());
+}
+
+#[test]
+fn an_account_with_one_address_offers_no_choice_of_sender() {
+    let compose = Compose {
+        senders: vec!["alex@proton.me".into()],
+        ..Compose::default()
+    };
+    assert!(compose.sender_choices().is_empty());
+    assert_eq!(compose.sender(), Some("alex@proton.me"));
+}
+
+/// Opens the demo's first conversation in `app`, as if its mail belonged to
+/// the account's address `address_id`, and replies to its newest message.
+fn reply_to_mail_that_reached(app: &mut App, address_id: &str) {
+    use crate::mail::demo;
+
+    let mailbox = demo::DemoMailbox::new();
+    let page =
+        mailbox.list_conversations(&crate::mail::Folder::INBOX, 0, demo::PAGE_SIZE, demo::now());
+    let _ = app.update(Message::ConversationsLoaded(1, page));
+    let _ = app.update(Message::SelectConversation("demo-0".into()));
+    let ReaderState::Loading {
+        conversation_id,
+        request,
+    } = app.mailbox().unwrap().reader_state()
+    else {
+        panic!("the conversation is loading");
+    };
+    let request = crate::app::ReaderRequest {
+        id: *request,
+        conversation_id: conversation_id.clone(),
+        kind: crate::mail::SummaryKind::Conversation,
+        messages: 1,
+    };
+    let detail = mailbox
+        .conversation_detail(&request.conversation_id, demo::now())
+        .map(|mut detail| {
+            for message in &mut detail.messages {
+                message.address_id = address_id.to_owned();
+            }
+            detail
+        });
+    let _ = app.update(Message::ConversationLoaded(request, detail));
+    let _ = app.update(Message::Answer {
+        message_id: "demo-0-2".into(),
+        kind: AnswerKind::Reply,
+    });
+}
+
+#[test]
+fn an_answer_goes_from_the_address_its_original_reached() {
+    let (mut app, _) = App::boot(true, crate::settings::Settings::default());
+    reply_to_mail_that_reached(&mut app, "demo-address-2");
+    let reached = Some("demo@example.org".to_owned());
+    assert_eq!(senders(&app), (reached.as_deref(), reached.clone()));
+
+    // An address mail can no longer go out from is left to core, which
+    // sends from the first.
+    let (mut app, _) = App::boot(true, crate::settings::Settings::default());
+    reply_to_mail_that_reached(&mut app, "an-address-since-removed");
+    assert_eq!(senders(&app), (Some("demo@example.com"), None));
 }

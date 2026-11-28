@@ -115,7 +115,9 @@ pub use crypto::Verdict;
 pub use error::{ApiError, Error, HvChallenge, Result};
 pub use mail::contacts::AddressInfo;
 pub use mail::export::ExportReport;
-pub use mail::read::{ConversationMessage, FullMessage, SearchOpts, UnreadableMessage};
+pub use mail::read::{
+    ConversationMessage, FullMessage, ListOptions, SearchOpts, UnreadableMessage,
+};
 pub use mail::send::{
     Quote, RecipientProtection, ReplyRecipients, SendOptions, reply_recipients, reply_redirected,
 };

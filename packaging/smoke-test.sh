@@ -22,6 +22,7 @@ ALIVE_SECONDS=10
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --seconds)
+            (($# >= 2)) || { echo "Missing value for $1" >&2; exit 2; }
             ALIVE_SECONDS="$2"
             shift 2
             ;;

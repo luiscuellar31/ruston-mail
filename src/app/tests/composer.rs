@@ -86,7 +86,7 @@ fn asking_for_another_message_brings_the_open_one_forward_and_says_why() {
 }
 
 #[test]
-fn picking_compose_attachments_emits_ui_effect() {
+fn attachments_are_picked_only_for_an_open_draft() {
     let mut app = loaded_demo_app();
     // When compose is closed, picking does nothing
     let effects = app.update(Message::PickComposeAttachments);
@@ -197,6 +197,20 @@ fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
     ));
     let compose = app.compose().unwrap();
     assert_eq!(compose.attachments(), &[file]);
+}
+
+#[test]
+fn a_message_with_no_mailbox_to_go_through_stays_as_written() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+    app.backend = None;
+
+    let task = app.update(Message::Send);
+
+    // Nothing is sent, and the message can still be edited, sent or closed:
+    // marked as on its way, it would wait for an answer that never comes.
+    assert_eq!(task.units(), 0);
+    assert_eq!(app.compose().map(Compose::sending), Some(Sending::Writing));
 }
 
 #[test]
@@ -500,7 +514,7 @@ fn answering_a_message_that_is_not_there_opens_nothing() {
 }
 
 #[tokio::test]
-async fn sending_with_missing_attachment_fails_gracefully_in_background() {
+async fn a_missing_attachment_fails_the_send_and_keeps_the_draft() {
     let mut app = loaded_demo_app();
     let _ = app.update(Message::OpenCompose);
     let _ = app.update(Message::ComposeChanged(
@@ -521,12 +535,10 @@ async fn sending_with_missing_attachment_fails_gracefully_in_background() {
     // In-memory UI readiness must be immediate and non-blocking
     assert!(app.compose().unwrap().not_ready().is_none());
 
-    // User triggers Send
     let effects = app.update(Message::Send);
     assert_eq!(effects.units(), 1);
     assert!(app.compose().unwrap().in_flight());
 
-    // Execute background effect
     let effect = effects.into_iter().next().unwrap();
     let Effect::Future(future) = effect else {
         panic!("expected future effect");

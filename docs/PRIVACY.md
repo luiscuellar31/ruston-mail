@@ -109,7 +109,12 @@ carry no other kind. Of styles it keeps only what hides text, `display` and
 in a quoted reply too, and what makes text bold, italic, struck through or
 centered: `font-weight`, `font-style`, `text-decoration` and `text-align`;
 and the color behind a link drawn as a button, `background-color` and a
-table's or a cell's `bgcolor`. None of these can load anything. An image keeps
+table's or a cell's `bgcolor`. Margins, padding and borders come through only
+as whether a block has room or a line above or below it: `margin-top` and
+`margin-bottom` of `0` or `1em`, and `border-top` and `border-bottom` of `1px
+solid`, written in place of whatever the sender wrote, so a negative margin
+cannot pull a quoted message over the reply around it. None of these can load
+anything. An image keeps
 its address only when it is on the web or names a part of its own message
 (`cid:`). The desktop shows those parts, unless **Show pictures a message
 carries within it** is off: it downloads the part from Proton as it does an
@@ -447,6 +452,17 @@ environment variables, which take precedence. Automatic proxy configuration
 (PAC) is not read. A proxy sees which Proton servers Ruston Mail contacts and
 when; the HTTPS traffic itself stays encrypted end to end between Ruston Mail
 and Proton.
+
+The desktop app contacts one other server, GitHub's API at `api.github.com`,
+and only while **Check for updates** is on under Settings → About, which it is
+not by default. It then asks, as the app starts and once a day while it runs,
+for the number of the latest published Ruston Mail release, through the same
+proxies. The request carries no account, mail or settings data, no cookies,
+and neither the version running nor the system: it names itself `ruston-mail`
+and nothing else. GitHub, and a proxy on the way, see your IP address and when
+you check, as with any visit to a website. Only the release number is read
+from the reply, and no more than 1 MiB of it. Nothing is downloaded or
+installed: **Download** opens the release page in your browser.
 
 ## HTTP diagnostics
 

@@ -12,27 +12,11 @@ mod selection;
 mod splits;
 
 use super::*;
-use crate::mail::{MailAddress, MailMessage, MessageBody};
+use crate::mail::{MailAddress, MailMessage};
 use crate::settings::Reading;
-use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, message, summary, sys};
 
 const PAGE_SIZE: u32 = 50;
-fn summary(id: &str) -> ConversationSummary {
-    ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
-        subject: None,
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
-    }
-}
-
 fn searchable_summary(
     id: &str,
     name: &str,
@@ -41,8 +25,6 @@ fn searchable_summary(
     preview: &str,
 ) -> ConversationSummary {
     ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
         subject: Some(subject.to_owned()),
         correspondents: Some(name.to_owned()),
         participants: vec![MailAddress {
@@ -50,11 +32,7 @@ fn searchable_summary(
             address: address.to_owned(),
         }],
         preview: Some(preview.to_owned()),
-        time: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
+        ..summary(id)
     }
 }
 
@@ -83,19 +61,8 @@ fn detail(id: &str, message_ids: &[&str]) -> ConversationDetail {
             .iter()
             .enumerate()
             .map(|(time, message_id)| MailMessage {
-                id: (*message_id).to_owned(),
-                verdict: crate::mail::Verdict::Unverified,
-                sender: MailAddress::default(),
-                to: Vec::new(),
-                cc: Vec::new(),
-                bcc: Vec::new(),
-                reply_to: Vec::new(),
-                reply_all_cc: Vec::new(),
-                reply_redirected: false,
                 time: Some(time as i64),
-                unread: false,
-                body: MessageBody::PlainText(String::new()),
-                attachments: Vec::new(),
+                ..message(message_id)
             })
             .collect(),
     }

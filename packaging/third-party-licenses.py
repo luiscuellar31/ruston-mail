@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Write THIRD_PARTY_LICENSES.txt: the notices of the software Ruston Mail
+"""Write THIRD_PARTY_NOTICES.txt: the notices of the software Ruston Mail
 ships beside its own, which the apps and their packages carry.
 
     python3 packaging/third-party-licenses.py          # write the file
@@ -23,7 +23,7 @@ import subprocess
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-OUT = ROOT / "THIRD_PARTY_LICENSES.txt"
+OUT = ROOT / "THIRD_PARTY_NOTICES.txt"
 # The names a crate gives its license files, at its root.
 LICENSE_PREFIXES = ("LICENSE", "LICENCE", "COPYING", "COPYRIGHT", "NOTICE", "UNLICENSE")
 # Licenses that ask nothing of a binary, Zlib's and BSL-1.0's notice being

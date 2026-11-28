@@ -32,6 +32,13 @@ const MAX_BUTTON_CHARS: usize = 60;
 /// The longest a cell of a table of data may be. A longer one is a page laid
 /// out in columns, which reads better as paragraphs.
 const MAX_CELL_CHARS: usize = 120;
+/// The most cells a row may set side by side as columns.
+const MAX_COLUMNS: usize = 4;
+/// The most lines a cell of a row of columns may hold.
+const MAX_COLUMN_LINES: usize = 4;
+/// The most characters a line may have to be set tight against the one
+/// before it only because a bare block, as a `div` is, leaves no room.
+const SHORT_LINE_CHARS: usize = 80;
 /// What a block takes besides its text. Text always leaves room for one, so
 /// a body cut short still ends with the block it was reading.
 const BLOCK_SIZE: usize = std::mem::size_of::<RichBlock>();
@@ -84,6 +91,16 @@ impl RichBody {
                     BlockKind::Image { description, .. } if description.is_empty() => String::new(),
                     BlockKind::Image { description, .. } => format!("[Image: {description}]"),
                     BlockKind::Rule => "---".to_owned(),
+                    // One cell after the other, a paragraph to a line.
+                    BlockKind::Columns(columns) => columns
+                        .iter()
+                        .flatten()
+                        .filter_map(|block| match &block.kind {
+                            BlockKind::Paragraph(spans) if !block.hidden => Some(join(spans)),
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n"),
                     // A row to a line, its cells apart as words are.
                     BlockKind::Table(rows) => rows
                         .iter()
@@ -126,6 +143,10 @@ pub struct RichBlock {
     pub hidden: bool,
     /// Whether the sender's style, or a `center` element, centers it.
     pub centered: bool,
+    /// Whether it follows the paragraph before it as that one's next line
+    /// would, with no room between them: the sender set none, as a receipt
+    /// sets a date under its label.
+    pub joined: bool,
 }
 
 /// What a block is, with its content.
@@ -159,12 +180,19 @@ pub enum BlockKind {
         /// The part of the message it is, named as that part's
         /// `Content-ID`, when it travels in the message.
         content_id: Option<String>,
+        /// Where the link it sits in goes, kept as a text link's is: a
+        /// picture is often all a link holds, as a profile's photo is.
+        link: Option<Arc<str>>,
     },
     /// A line across, between two parts of the body.
     Rule,
     /// A table of data, as a receipt's lines or a timetable are. A table
     /// that only lays a page out reads as the paragraphs of its rows.
     Table(Vec<TableRow>),
+    /// Cells a sender set side by side, as a booking's check-in beside its
+    /// checkout: a one-row table of two to four cells, each of a few short
+    /// paragraphs, its blocks.
+    Columns(Vec<Vec<RichBlock>>),
 }
 
 /// A row of a table of data.
@@ -384,6 +412,12 @@ struct OpenTable {
     /// Whether it may still hold data: nothing but short text in its cells,
     /// and no table within it.
     data: bool,
+    /// The blocks each cell made, while it may still be read as columns:
+    /// one row, no table within it, and each cell's text in blocks of its
+    /// own rather than running on into the next cell.
+    columns: Option<Vec<std::ops::Range<usize>>>,
+    /// The first block of the cell being read.
+    cell_start: usize,
 }
 
 impl OpenTable {
@@ -396,6 +430,8 @@ impl OpenTable {
             widths: Vec::new(),
             width: 0,
             data: true,
+            columns: Some(Vec::new()),
+            cell_start: start,
         }
     }
 
@@ -562,6 +598,33 @@ struct Builder {
     truncated: bool,
     /// See [`RichBody::undescribed_images`].
     undescribed_images: usize,
+    /// Whether room separates the block read next from the last one: a
+    /// margin, a block's own spacing, a cell, or a blank line. The first
+    /// block has room above it.
+    spaced: bool,
+    /// Whether a block came between them that leaves no room only because
+    /// its kind leaves none, as a bare `div`, rather than by its style.
+    assumed: bool,
+    /// The blocks open whose room below is yet to come, innermost last, at
+    /// most [`MAX_STYLE_DEPTH`], each with that room and whether a line runs
+    /// under it.
+    below: Vec<(String, Room, bool)>,
+    /// How many are open beyond those kept, so that their ends close them
+    /// before any of `below`.
+    omitted_below: usize,
+    /// Whether a cell of the row being read has a line under it, which runs
+    /// under the whole row once it ends.
+    row_ruled: bool,
+    /// The last line a border drew, which goes if nothing follows it.
+    ruled: Option<usize>,
+}
+
+/// The room a block leaves on one side, and whether its style said so
+/// rather than its kind.
+#[derive(Clone, Copy)]
+struct Room {
+    some: bool,
+    said: bool,
 }
 
 impl Builder {
@@ -591,6 +654,12 @@ impl Builder {
             used: 0,
             truncated: false,
             undescribed_images: 0,
+            spaced: true,
+            assumed: false,
+            below: Vec::new(),
+            omitted_below: 0,
+            row_ruled: false,
+            ruled: None,
         }
     }
 
@@ -687,6 +756,7 @@ impl Builder {
                 self.flush();
                 if let Some(outer) = self.tables.last_mut() {
                     outer.data = false;
+                    outer.columns = None;
                 }
                 if self.tables.len() < MAX_TABLE_DEPTH {
                     self.tables.push(OpenTable::new(self.blocks.len()));
@@ -733,12 +803,22 @@ impl Builder {
                     .and_then(|columns| columns.trim().parse::<usize>().ok())
                     .unwrap_or(1)
                     .clamp(1, MAX_TABLE_DEPTH);
+                let running_on = !self.spans.is_empty();
+                let start = self.blocks.len();
                 if let Some(table) = self.open_table() {
                     table.start_cell(name == "th", columns);
+                    // Columns hold one row, whose cells start text of their own.
+                    if running_on || !table.rows.is_empty() {
+                        table.columns = None;
+                    }
+                    table.cell_start = start;
                 }
             }
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
+        }
+        if spaces(name) {
+            self.open_block(name, tag);
         }
     }
 
@@ -854,8 +934,17 @@ impl Builder {
             "pre" => self.end_pre(),
             "a" => self.link = None,
             "td" | "th" => {
+                let running_on = !self.spans.is_empty();
+                let end = self.blocks.len();
                 if let Some(table) = self.open_table() {
                     table.end_cell();
+                    if running_on {
+                        table.columns = None;
+                    }
+                    let start = table.cell_start;
+                    if let Some(cells) = &mut table.columns {
+                        cells.push(start..end);
+                    }
                 }
             }
             "tr" => {
@@ -873,13 +962,28 @@ impl Builder {
                     // Read whole, a table of data takes the place of the
                     // paragraphs its rows made.
                     if table.holds_data() {
-                        self.blocks.truncate(table.start);
+                        self.truncate(table.start);
                         self.push(BlockKind::Table(table.rows));
+                    } else if let Some(cells) = table.columns.take()
+                        && let Some((columns, above, below)) = self.columns(&cells, table.start)
+                    {
+                        // Likewise a row of columns, with the lines it had.
+                        self.truncate(table.start);
+                        if above {
+                            self.rule();
+                        }
+                        self.push(BlockKind::Columns(columns));
+                        if below {
+                            self.rule();
+                        }
                     }
                 }
             }
             _ if BLOCK_ELEMENTS.contains(&name) => self.flush(),
             _ => {}
+        }
+        if spaces(name) {
+            self.close_block(name);
         }
     }
 
@@ -898,6 +1002,11 @@ impl Builder {
             return;
         }
 
+        // A non-breaking space before any word makes a line of its own, as
+        // a blank paragraph a sender writes with `&nbsp;` does.
+        if self.spans.is_empty() && text.contains('\u{a0}') {
+            self.spaced = true;
+        }
         // Collapse whitespace runs like a browser does. A control character
         // separates words too, without a space.
         for run in text.split_inclusive(|c: char| c.is_whitespace() || c.is_control()) {
@@ -917,6 +1026,7 @@ impl Builder {
                     && table.cell.is_none()
                 {
                     table.data = false;
+                    table.columns = None;
                 }
                 self.space_written = false;
                 self.push_text(word);
@@ -1063,6 +1173,9 @@ impl Builder {
         } else if !self.spans.is_empty() {
             self.push_text("\n");
             self.space_written = false;
+        } else {
+            // A line break with nothing before it is a blank line.
+            self.spaced = true;
         }
     }
 
@@ -1100,9 +1213,19 @@ impl Builder {
             },
             None => None,
         };
+        // Its link costs what a run's does, so many linked pictures cannot
+        // grow the body past its limit.
+        let link = self.link.clone();
+        let overhead = link.as_ref().map_or(0, |link| link.len());
+        if self.limit.saturating_sub(self.used) < overhead.saturating_add(BLOCK_SIZE) {
+            self.truncated = true;
+            return;
+        }
+        self.used += overhead;
         self.push(BlockKind::Image {
             description,
             content_id,
+            link,
         });
     }
 
@@ -1177,7 +1300,197 @@ impl Builder {
         } else {
             BlockKind::Paragraph(spans)
         };
-        self.push_block(kind, hidden, self.centered);
+        let joined = self.follows_closely(&kind);
+        self.push_block(kind, hidden, self.centered, joined);
+        self.spaced = false;
+        self.assumed = false;
+    }
+
+    /// Whether `kind`, read next, follows the last block as its next line
+    /// would: both paragraphs at one quote depth, nothing between them that
+    /// leaves room, and, where a bare block alone said so, two short lines.
+    fn follows_closely(&self, kind: &BlockKind) -> bool {
+        let (BlockKind::Paragraph(spans), Some(last)) = (kind, self.blocks.last()) else {
+            return false;
+        };
+        let BlockKind::Paragraph(previous) = &last.kind else {
+            return false;
+        };
+        let line = |spans: &[RichSpan]| {
+            let text = join(spans);
+            !text.contains('\n') && text.chars().count() <= SHORT_LINE_CHARS
+        };
+        !self.spaced
+            && usize::from(last.quote_depth) == self.quote_depth.min(usize::from(u8::MAX))
+            && (!self.assumed || (line(previous) && line(spans)))
+    }
+
+    /// Notes the room above the block `name` that starts now, and keeps the
+    /// room it leaves below for its end.
+    fn open_block(&mut self, name: &str, tag: &Tag) {
+        let around = attribute(tag, "style")
+            .map(super::spacing::around)
+            .unwrap_or_default();
+        let side = |said: Option<bool>| match said {
+            // A table's own spacing is its cells' padding, which a class
+            // usually sets: its rows and cells keep the room of paragraphs.
+            _ if TABLE_PARTS.contains(&name) => Room {
+                some: true,
+                said: true,
+            },
+            Some(some) => Room { some, said: true },
+            None => Room {
+                some: ROOMY_BLOCKS.contains(&name),
+                said: false,
+            },
+        };
+        self.leave(side(around.room[0]));
+        if around.line[0] {
+            self.line_above(name);
+        }
+        if name == "hr" {
+            return;
+        }
+        if self.below.len() < MAX_STYLE_DEPTH {
+            self.below
+                .push((name.to_owned(), side(around.room[1]), around.line[1]));
+        } else {
+            self.omitted_below += 1;
+        }
+    }
+
+    /// Notes the room the block `name` that ends now leaves below it.
+    fn close_block(&mut self, name: &str) {
+        if self.omitted_below > 0 {
+            self.omitted_below -= 1;
+            return;
+        }
+        if let Some(index) = self.below.iter().rposition(|(open, ..)| open == name) {
+            let (_, room, line) = self.below[index];
+            self.below.truncate(index);
+            self.leave(room);
+            if line {
+                self.line_below(name);
+            }
+        }
+        if name == "tr" && std::mem::take(&mut self.row_ruled) {
+            self.rule();
+        }
+    }
+
+    /// A line the sender drew across the top of the block `name` that starts
+    /// now. A cell's runs above its row only when the cell starts the row;
+    /// a table's comes before it, so it stays if the table holds data.
+    fn line_above(&mut self, name: &str) {
+        if matches!(name, "td" | "th") && !self.spans.is_empty() {
+            return;
+        }
+        self.rule();
+        let start = self.blocks.len();
+        if name == "table"
+            && let Some(table) = self.open_table()
+        {
+            table.start = start;
+        }
+    }
+
+    /// A line the sender drew under the block `name` that ends now; a
+    /// cell's, under its row once that ends.
+    fn line_below(&mut self, name: &str) {
+        if matches!(name, "td" | "th") {
+            self.row_ruled = true;
+        } else {
+            self.rule();
+        }
+    }
+
+    /// A line across the body, where a border drew one: never two in a row,
+    /// nor before anything.
+    fn rule(&mut self) {
+        self.flush();
+        if matches!(
+            self.blocks.last(),
+            None | Some(RichBlock {
+                kind: BlockKind::Rule,
+                ..
+            })
+        ) {
+            return;
+        }
+        self.push(BlockKind::Rule);
+        self.ruled = Some(self.blocks.len() - 1);
+    }
+
+    /// Drops the blocks from `start` on, and with them the note of a
+    /// border's line among them.
+    fn truncate(&mut self, start: usize) {
+        self.blocks.truncate(start);
+        if self.ruled.is_some_and(|index| index >= start) {
+            self.ruled = None;
+        }
+    }
+
+    /// The columns a one-row table's `cells` make of the blocks read since
+    /// `start`, and whether a line ran above and below the row: two to four
+    /// cells with text, each of at most [`MAX_COLUMN_LINES`] visible
+    /// paragraphs and [`MAX_CELL_CHARS`] characters, with nothing but lines
+    /// between them.
+    fn columns(
+        &self,
+        cells: &[std::ops::Range<usize>],
+        start: usize,
+    ) -> Option<(Vec<Vec<RichBlock>>, bool, bool)> {
+        let is_rule = |block: &RichBlock| matches!(block.kind, BlockKind::Rule);
+        let mut columns = Vec::new();
+        let mut covered = start;
+        let mut above = false;
+        for cell in cells {
+            let between = self.blocks.get(covered..cell.start)?;
+            let within = self.blocks.get(cell.clone())?;
+            if !between.iter().all(is_rule) {
+                return None;
+            }
+            // A cell's line above it runs above the row.
+            above |= !between.is_empty() || within.iter().any(is_rule);
+            covered = cell.end;
+            let blocks: Vec<RichBlock> = within.iter().filter(|b| !is_rule(b)).cloned().collect();
+            if blocks.is_empty() {
+                continue;
+            }
+            let mut characters = 0;
+            let mut lines = 0;
+            for block in &blocks {
+                let BlockKind::Paragraph(spans) = &block.kind else {
+                    return None;
+                };
+                if block.hidden {
+                    return None;
+                }
+                let text = join(spans);
+                characters += text.chars().count();
+                lines += text.lines().count().max(1);
+            }
+            if characters > MAX_CELL_CHARS || lines > MAX_COLUMN_LINES {
+                return None;
+            }
+            columns.push(blocks);
+        }
+        let after = self.blocks.get(covered..)?;
+        if !after.iter().all(is_rule) {
+            return None;
+        }
+        (2..=MAX_COLUMNS)
+            .contains(&columns.len())
+            .then_some((columns, above, !after.is_empty()))
+    }
+
+    /// Notes `room` between the last block and the next.
+    fn leave(&mut self, room: Room) {
+        if room.some {
+            self.spaced = true;
+        } else if !room.said {
+            self.assumed = true;
+        }
     }
 
     fn end_pre(&mut self) {
@@ -1199,7 +1512,8 @@ impl Builder {
 
     /// A block that is not text, hidden if the sender hid what it is in.
     fn push(&mut self, kind: BlockKind) {
-        self.push_block(kind, self.marking(), self.centers());
+        self.push_block(kind, self.marking(), self.centers(), false);
+        self.spaced = true;
     }
 
     /// Whether the sender's style centers what is read now.
@@ -1211,7 +1525,7 @@ impl Builder {
             .unwrap_or(false)
     }
 
-    fn push_block(&mut self, kind: BlockKind, hidden: bool, centered: bool) {
+    fn push_block(&mut self, kind: BlockKind, hidden: bool, centered: bool, joined: bool) {
         if self.limit.saturating_sub(self.used) < BLOCK_SIZE {
             self.truncated = true;
             return;
@@ -1222,11 +1536,26 @@ impl Builder {
             quote_depth: u8::try_from(self.quote_depth).unwrap_or(u8::MAX),
             hidden,
             centered,
+            joined,
         });
     }
 
     fn finish(mut self) -> RichBody {
         self.flush();
+        // A line a border drew under the last block separates it from nothing.
+        if self
+            .ruled
+            .is_some_and(|index| index + 1 == self.blocks.len())
+            && matches!(
+                self.blocks.last(),
+                Some(RichBlock {
+                    kind: BlockKind::Rule,
+                    ..
+                })
+            )
+        {
+            self.blocks.pop();
+        }
         if self.pre_depth > 0 {
             // A <pre> left open ends with the body: at depth one, end_pre
             // closes all its levels at once.
@@ -1239,6 +1568,37 @@ impl Builder {
             undescribed_images: self.undescribed_images,
         }
     }
+}
+
+/// The parts of a table, whose rows and cells keep the room of paragraphs.
+const TABLE_PARTS: [&str; 7] = ["table", "tbody", "thead", "tfoot", "tr", "td", "th"];
+
+/// The blocks a browser gives room above and below, unless a style says
+/// otherwise; the others, as a `div`, leave none.
+const ROOMY_BLOCKS: [&str; 14] = [
+    "p",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "ul",
+    "ol",
+    "dl",
+    "blockquote",
+    "pre",
+    "figure",
+    "hr",
+];
+
+/// Whether the element `name` starts and ends a block whose room counts.
+fn spaces(name: &str) -> bool {
+    BLOCK_ELEMENTS.contains(&name)
+        || matches!(
+            name,
+            "ul" | "ol" | "li" | "blockquote" | "pre" | "td" | "th" | "hr"
+        )
 }
 
 /// Whether two runs read alike, and so make one.

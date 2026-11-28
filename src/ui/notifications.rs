@@ -21,6 +21,16 @@ const MAX_SENDER_CHARS: usize = 160;
 /// The most characters of a subject a notification shows.
 const MAX_SUBJECT_CHARS: usize = 240;
 
+/// Why notifications cannot be shown here: macOS sends them only from the
+/// installed app.
+#[cfg(target_os = "macos")]
+const UNAVAILABLE: &str =
+    "Notifications need the installed Ruston Mail.app and an available system service.";
+/// Why notifications cannot be shown here.
+#[cfg(not(target_os = "macos"))]
+const UNAVAILABLE: &str =
+    "The system notification service is unavailable. Mail refresh will continue.";
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[repr(u8)]
 pub(super) enum Status {
@@ -50,14 +60,7 @@ impl Status {
             Self::Denied => {
                 "Notifications are blocked. Allow Ruston Mail in system notification settings."
             }
-            #[cfg(target_os = "macos")]
-            Self::Unavailable => {
-                "Notifications need the installed Ruston Mail.app and an available system service."
-            }
-            #[cfg(not(target_os = "macos"))]
-            Self::Unavailable => {
-                "The system notification service is unavailable. Mail refresh will continue."
-            }
+            Self::Unavailable => UNAVAILABLE,
         }
     }
 }
@@ -107,17 +110,10 @@ impl Notifications {
         self.enabled.store(false, Ordering::Release);
         self.enabled = Arc::new(AtomicBool::new(enabled));
         self.status = SharedStatus::default();
-        if !enabled {
-            self.withdraw();
-        }
         if enabled {
-            #[cfg(target_os = "macos")]
-            macos::request_permission(self.status.clone(), context.clone());
-            #[cfg(not(target_os = "macos"))]
-            {
-                self.status.set(Status::Ready);
-                let _ = context;
-            }
+            activate(&self.status, context);
+        } else {
+            self.withdraw();
         }
     }
 
@@ -181,47 +177,89 @@ impl Notifications {
         }
         let sender = display_text(sender, "Proton Mail", MAX_SENDER_CHARS);
         let subject = display_text(subject, "(No subject)", MAX_SUBJECT_CHARS);
-        #[cfg(target_os = "macos")]
-        {
-            let _ = runtime;
-            if self.status() != Status::Pending {
-                macos::show(
-                    &sender,
-                    &subject,
-                    self.enabled.clone(),
-                    self.status.clone(),
-                    context.clone(),
-                );
-            }
-        }
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
-        {
-            let enabled = self.enabled.clone();
-            let status = self.status.clone();
-            let context = context.clone();
-            #[cfg(target_os = "linux")]
-            let shown = self.shown.clone();
-            runtime.spawn_message(async move {
-                if !enabled.load(Ordering::Acquire) {
-                    return None;
-                }
-                #[cfg(target_os = "linux")]
-                let result = linux::show(&sender, &subject, enabled, shown).await;
-                #[cfg(target_os = "windows")]
-                let result = tokio::task::spawn_blocking({
-                    let context = context.clone();
-                    move || windows::show(&sender, &subject, enabled, context)
-                })
-                .await
-                .unwrap_or(Status::Unavailable);
-                status.set(result);
-                context.request_repaint();
-                None
-            });
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-        let _ = (sender, subject, runtime, context);
+        self.deliver(sender, subject, runtime, context);
     }
+
+    /// Hands the notification to macOS, unless its permission is still
+    /// being asked for.
+    #[cfg(target_os = "macos")]
+    fn deliver(&self, sender: String, subject: String, _: &Runtime, context: &egui::Context) {
+        if self.status() != Status::Pending {
+            macos::show(
+                &sender,
+                &subject,
+                self.enabled.clone(),
+                self.status.clone(),
+                context.clone(),
+            );
+        }
+    }
+
+    /// Hands the notification to the desktop's notification service, off the
+    /// interface thread.
+    #[cfg(target_os = "linux")]
+    fn deliver(&self, sender: String, subject: String, runtime: &Runtime, context: &egui::Context) {
+        let enabled = self.enabled.clone();
+        let shown = self.shown.clone();
+        self.spawn_delivery(runtime, context, async move {
+            linux::show(&sender, &subject, enabled, shown).await
+        });
+    }
+
+    /// Hands the notification to Windows, on a blocking thread, as its
+    /// notification API asks.
+    #[cfg(target_os = "windows")]
+    fn deliver(&self, sender: String, subject: String, runtime: &Runtime, context: &egui::Context) {
+        let enabled = self.enabled.clone();
+        let toast_context = context.clone();
+        self.spawn_delivery(runtime, context, async move {
+            tokio::task::spawn_blocking(move || {
+                windows::show(&sender, &subject, enabled, toast_context)
+            })
+            .await
+            .unwrap_or(Status::Unavailable)
+        });
+    }
+
+    /// Other systems have no notifications to show.
+    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+    fn deliver(&self, _: String, _: String, _: &Runtime, _: &egui::Context) {}
+
+    /// Runs `delivery` on the runtime, unless notifications are turned off
+    /// before it starts, and keeps the status it reports.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    fn spawn_delivery(
+        &self,
+        runtime: &Runtime,
+        context: &egui::Context,
+        delivery: impl std::future::Future<Output = Status> + Send + 'static,
+    ) {
+        let enabled = self.enabled.clone();
+        let status = self.status.clone();
+        let context = context.clone();
+        runtime.spawn_message(async move {
+            if !enabled.load(Ordering::Acquire) {
+                return None;
+            }
+            status.set(delivery.await);
+            context.request_repaint();
+            None
+        });
+    }
+}
+
+/// Lets an account that turned notifications on have them: macOS asks the
+/// system's permission first.
+#[cfg(target_os = "macos")]
+fn activate(status: &SharedStatus, context: &egui::Context) {
+    macos::request_permission(status.clone(), context.clone());
+}
+
+/// Lets an account that turned notifications on have them: other systems
+/// ask no permission of an app.
+#[cfg(not(target_os = "macos"))]
+fn activate(status: &SharedStatus, _: &egui::Context) {
+    status.set(Status::Ready);
 }
 
 impl Drop for Notifications {

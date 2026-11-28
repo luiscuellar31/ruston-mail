@@ -9,7 +9,7 @@ members = [
 default-members = ["."]
 
 [workspace.package]
-version = "0.10.1"
+version = "0.11.0"
 edition = "2024"
 rust-version = "1.96"
 license = "MIT"
@@ -47,6 +47,9 @@ futures = "0.3"
 urlencoding = "2"
 rusqlite = { version = "0.41", features = ["bundled"] }
 ammonia = "4.1.9"
+# The CSS parser ammonia reads styles with, at its version and features, so
+# core reads a style as the sanitizer will.
+cssparser = { version = "0.37.0", default-features = false }
 html5ever = "0.39"
 url = "2"
 rpassword = "7"
@@ -80,6 +83,11 @@ default-run = "ruston"
 name = "ruston"
 path = "src/main.rs"
 
+[features]
+# Lets the demo take the README's screenshots, for packaging/readme-screenshots.sh.
+# Off by default, and no release turns it on.
+readme-screenshots = []
+
 [dependencies]
 directories = { workspace = true }
 futures = { workspace = true }
@@ -87,6 +95,9 @@ getrandom = { workspace = true }
 jiff = { workspace = true, features = ["tz-system", "tzdb-zoneinfo", "tzdb-bundle-platform"] }
 # Decodes the pictures a message carries within it, and no other format.
 image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# Asks GitHub for the latest release when checking for updates is on, with
+# the proxies and TLS core's Proton client uses.
+reqwest = { workspace = true }
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
 egui_extras = { version = "0.36", default-features = false, features = ["image", "svg"] }
 ruston-core = { workspace = true }
@@ -105,10 +116,15 @@ winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
 [dev-dependencies]
 # Paused time lets the sign-in deadline be tested without waiting for it.
 tokio = { version = "1", features = ["test-util"] }
+wiremock = { workspace = true }
 zbus = { version = "5", features = ["p2p"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 zbus = "5"
+# Where a Wayland compositor leaves the window's frame to the app, as GNOME's
+# does, winit draws it in Adwaita's style instead of its plain fallback. Without
+# the title: drawing it would bring in ttf-parser, which is unmaintained.
+winit = { version = "0.30", default-features = false, features = ["wayland-csd-adwaita-notitle"] }
 
 [build-dependencies]
 winresource = { version = "0.1.31", default-features = false }
@@ -125,8 +141,11 @@ windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "F
 windows-sys = { version = "0.61", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# macOS draws with Metal; OpenGL, which Apple deprecated, stays as the fallback.
+eframe = { version = "0.36", default-features = false, features = ["wgpu_no_default_features"] }
+wgpu = { version = "30", default-features = false, features = ["metal"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle", "NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSWindow", "NSView"] }
+objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSApplication", "NSDockTile", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationSettings"] }
 block2 = "0.6"

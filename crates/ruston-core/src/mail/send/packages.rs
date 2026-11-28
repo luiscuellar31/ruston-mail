@@ -207,14 +207,15 @@ pub(super) fn build_packages<P: proton_crypto::crypto::PGPProviderSync>(
 pub(super) fn password_entry(
     password: &str,
     hint: &str,
-    (modulus, modulus_id): &(String, String),
+    modulus: &api::keys::SrpModulus,
     body_key: &SessionKeyMaterial,
     attachments: &[AttachmentKey],
 ) -> Result<Value> {
     let provider = crypto::provider();
-    let verifier: SRPVerifierB64 = SRPAuth::generate_verifier_with_pgp(password, None, modulus)
-        .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?
-        .into();
+    let verifier: SRPVerifierB64 =
+        SRPAuth::generate_verifier_with_pgp(password, None, &modulus.modulus)
+            .map_err(|e| Error::Srp(format!("EO verifier: {e}")))?
+            .into();
     let (_fresh, token) = crypto::new_session_key(&provider)?;
     let enc_token = crypto::encrypt_text_with_password(&provider, password, &token)?;
     let body_key_packet = crypto::wrap_session_key_with_password(&provider, password, body_key)?;
@@ -226,7 +227,7 @@ pub(super) fn password_entry(
         "BodyKeyPacket": STANDARD.encode(&body_key_packet),
         "Auth": {
             "Version": u8::from(verifier.version),
-            "ModulusID": modulus_id,
+            "ModulusID": modulus.id,
             "Salt": verifier.salt,
             "Verifier": verifier.verifier,
         },

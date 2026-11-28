@@ -156,12 +156,14 @@ fn settings_changes_reach_the_app() {
     let _ = app.update(Message::SetShowInlineImages(false));
     let _ = app.update(Message::SetComposePlacement(ComposePlacement::Window));
     let _ = app.update(Message::SetZoom(1.3));
+    let _ = app.update(Message::SetTextScale(1.15));
     let _ = app.update(Message::SetAppearance(Appearance::Light));
 
     assert!(!app.settings().mark_read_on_open);
     assert!(!app.settings().confirm_links);
     assert_eq!(app.settings().compose_placement, ComposePlacement::Window);
     assert_eq!(app.settings().zoom, 1.3);
+    assert_eq!(app.settings().text_scale, 1.15);
     assert_eq!(app.settings().appearance, Appearance::Light);
     // Following the system keeps the scheme chosen; choosing one stops it.
     let _ = app.update(Message::SetFollowSystemAppearance(true));
@@ -299,6 +301,7 @@ fn resetting_layout_preserves_other_preferences() {
         sidebar: 0.35,
         conversations: 0.6,
     };
+    app.settings.sidebar_folded = true;
     app.settings.appearance = Appearance::Light;
     let revision = app.settings_revision();
 
@@ -307,6 +310,10 @@ fn resetting_layout_preserves_other_preferences() {
     assert!(matches!(effect, Some(Effect::Ui(UiEffect::ResetLayout))));
     assert_eq!(app.settings.window, Window::default());
     assert_eq!(app.settings.panels, Panels::default());
+    assert!(
+        !app.settings.sidebar_folded,
+        "the sidebar unfolds with the layout"
+    );
     assert_eq!(app.settings.appearance, Appearance::Light);
     assert_eq!(app.settings_revision(), revision + 1);
     assert!(app.mailbox().is_some());
@@ -335,7 +342,7 @@ fn third_party_notices_open_in_the_background_only_when_shipped() {
     app.third_party_notices = None;
     assert_eq!(app.update(Message::OpenThirdPartyNotices).units(), 0);
 
-    app.third_party_notices = Some(PathBuf::from("THIRD_PARTY_LICENSES.txt"));
+    app.third_party_notices = Some(PathBuf::from("THIRD_PARTY_NOTICES.txt"));
     let effects = app.update(Message::OpenThirdPartyNotices);
 
     assert_eq!(effects.units(), 1);
@@ -344,4 +351,30 @@ fn third_party_notices_open_in_the_background_only_when_shipped() {
         Some(Effect::Background(_))
     ));
     assert!(app.showing_settings());
+}
+
+#[test]
+fn settings_open_again_to_the_section_left_open() {
+    let mut app = authenticated_app();
+    assert_eq!(app.settings_section(), SettingsSection::Reading);
+
+    let _ = app.update(Message::ShowSettings(true));
+    let _ = app.update(Message::ShowSettingsSection(SettingsSection::Keyboard));
+    assert_eq!(app.settings_section(), SettingsSection::Keyboard);
+    // Leaving and coming back, as the menu's Settings or its key do.
+    let _ = app.update(Message::ShowSettings(false));
+    let _ = app.update(Message::ShowSettings(true));
+    assert_eq!(app.settings_section(), SettingsSection::Keyboard);
+}
+
+#[test]
+fn the_sidebar_stays_folded_until_unfolded() {
+    let mut app = authenticated_app();
+    let revision = app.settings_revision();
+
+    let _ = app.update(Message::FoldSidebar(true));
+    assert!(app.settings().sidebar_folded);
+    assert_eq!(app.settings_revision(), revision + 1, "it is saved");
+    let _ = app.update(Message::FoldSidebar(false));
+    assert!(!app.settings().sidebar_folded);
 }

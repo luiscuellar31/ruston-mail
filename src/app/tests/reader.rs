@@ -32,7 +32,7 @@ fn open_behind_the_draft(app: &mut App, id: &str) {
 }
 
 #[test]
-fn demo_selection_is_local() {
+fn the_demo_selects_the_conversation_asked_for() {
     let (mut app, _) = App::boot(true, Settings::default());
     deliver_latest_demo_page(&mut app, 0);
 

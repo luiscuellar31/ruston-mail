@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use super::reader::{ConversationReader, ReaderState};
 use crate::mail::{
-    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, MailAction,
-    MailFolder, MailboxCounts, MailboxError, SummaryKind,
+    ConversationDetail, ConversationPage, ConversationSummary, CustomKind, Folder, ListFilter,
+    ListOrder, MailAction, MailFolder, MailboxCounts, MailboxError, SummaryKind,
 };
 
 /// Identifies an asynchronous mailbox request. Only the response matching the
@@ -23,6 +23,10 @@ const LISTING_CACHE_CAPACITY: usize = 8;
 pub struct PageRequest {
     pub id: RequestId,
     pub folder: Folder,
+    /// Which of the folder's conversations it lists.
+    pub filter: ListFilter,
+    /// The order it lists them in.
+    pub order: ListOrder,
     /// Zero-based server page.
     pub page: u32,
     pub page_size: u32,
@@ -197,11 +201,13 @@ struct SplitConversation {
 
 impl SplitConversation {
     fn matches(&self, source: &ConversationSummary) -> bool {
-        // Read/star flags do not change threading. Reinspection refreshes the
-        // individual flags while these rows remain visible.
+        // Read/star flags and labels, the folder's among them, do not change
+        // threading. Reinspection refreshes each message's own while these
+        // rows remain visible.
         let mut current = source.clone();
         current.unread = self.source.unread;
         current.starred = self.source.starred;
+        current.labels.clone_from(&self.source.labels);
         current == self.source
     }
 }
@@ -267,6 +273,7 @@ impl ConversationGroups {
     fn apply_split(
         &mut self,
         rows: &mut Vec<ConversationSummary>,
+        order: ListOrder,
         id: &str,
         mut incoming: Vec<ConversationSummary>,
     ) -> bool {
@@ -312,7 +319,7 @@ impl ConversationGroups {
         );
         rows.splice(insertion..insertion, incoming);
         deduplicate_rows(rows);
-        sort_newest_first(rows);
+        sort_by_date(rows, order);
         self.retain_rows(&collect_ids(rows));
         true
     }
@@ -370,6 +377,13 @@ pub struct SearchRequest {
 
 pub struct Mailbox {
     folder: Folder,
+    /// Which of the folder's conversations the list shows. Only a listing of
+    /// all of them, newest first, is kept when the folder, the filter or the
+    /// order changes; rows read while it shows only unread ones stay until it
+    /// is loaded again, and so do rows made unread among the read ones.
+    filter: ListFilter,
+    /// The order the list shows them in.
+    order: ListOrder,
     status: ListStatus,
     conversations: Vec<ConversationSummary>,
     row_ids: HashSet<String>,
@@ -467,6 +481,8 @@ impl Mailbox {
     ) -> (Self, PageRequest) {
         let mailbox = Self {
             folder,
+            filter: ListFilter::All,
+            order: ListOrder::NewestFirst,
             status: ListStatus::Loading(page_request),
             conversations: Vec::new(),
             row_ids: HashSet::new(),
@@ -515,6 +531,16 @@ impl Mailbox {
 
     pub fn folder(&self) -> &Folder {
         &self.folder
+    }
+
+    /// Which of the folder's conversations the list shows.
+    pub fn filter(&self) -> ListFilter {
+        self.filter
+    }
+
+    /// The order the list shows them in.
+    pub fn order(&self) -> ListOrder {
+        self.order
     }
 
     pub fn status(&self) -> ListStatus {
@@ -869,6 +895,12 @@ impl Mailbox {
             .map_or(self.has_more, |search| search.has_more)
     }
 
+    /// Whether the folder's loaded pages list `row_id`, whatever a search
+    /// shows meanwhile.
+    pub fn lists(&self, row_id: &str) -> bool {
+        self.row_ids.contains(row_id)
+    }
+
     /// Whether the rows on screen hold this one, hidden by typing or not.
     pub fn has_row(&self, row_id: &str) -> bool {
         match &self.search {
@@ -1027,15 +1059,17 @@ impl Mailbox {
     /// The rows an action acts on: those chosen together, in the order of the
     /// list, or else the open one.
     pub fn rows_acted_on(&self) -> Vec<String> {
+        let rows = self.summaries_acted_on();
+        rows.into_iter().map(|row| row.id.clone()).collect()
+    }
+
+    /// Those rows as the list shows them.
+    pub(super) fn summaries_acted_on(&self) -> Vec<&ConversationSummary> {
         let chosen = self.selected_rows();
         if chosen.is_empty() {
-            return self
-                .selected_summary()
-                .map(|row| row.id.clone())
-                .into_iter()
-                .collect();
+            return self.selected_summary().into_iter().collect();
         }
-        chosen.into_iter().map(|row| row.id.clone()).collect()
+        chosen
     }
 
     /// Adds a row to those chosen, the open one counted among them, or takes
@@ -1660,6 +1694,28 @@ impl Mailbox {
         }
     }
 
+    /// Notes that Proton read `row_id`, or made it unread again. Read, it
+    /// leaves the pages Proton lists of unread conversations, though it stays
+    /// here until the list is loaded again; unread, it comes back to them.
+    /// Among the read ones it is the other way round.
+    fn read_changed(&mut self, row_id: &str, unread: bool) {
+        let stays = match self.filter {
+            ListFilter::Unread => unread,
+            ListFilter::Read => !unread,
+            ListFilter::All | ListFilter::WithFiles => return,
+        };
+        // Only a row of the loaded pages moves the pages after them.
+        let loaded = self.row_ids.contains(row_id) || self.groups.splits.contains_key(row_id);
+        if !loaded {
+            return;
+        }
+        if stays {
+            self.moved_out.remove(row_id);
+        } else {
+            self.moved_out.insert(row_id.to_owned());
+        }
+    }
+
     /// Whether an explicit read or unread of `row_id` is on its way or waits.
     fn read_change_queued(&self, row_id: &str) -> bool {
         self.queued_actions()
@@ -1710,6 +1766,7 @@ impl Mailbox {
         // counts changed wherever the person went meanwhile. A thread split
         // into its messages is read in them.
         if self.shows(&request.folder) {
+            self.read_changed(&request.row_id, false);
             let members = self
                 .groups
                 .splits
@@ -1884,19 +1941,21 @@ impl Mailbox {
         Some(start)
     }
 
-    /// Lists `row` again where its date puts it among the loaded rows, newest
-    /// first, and remembers that Proton has yet to confirm it is here.
+    /// Lists `row` again where its date puts it among the loaded rows, and
+    /// remembers that Proton has yet to confirm it is here.
     fn list_again(&mut self, row: ConversationSummary) {
         self.listed_again.insert(row.id.clone());
         self.list_by_date(row);
     }
 
-    /// Lists `row` where its date puts it among the loaded rows, newest first.
+    /// Lists `row` where its date puts it among the loaded rows, in the
+    /// list's order.
     fn list_by_date(&mut self, row: ConversationSummary) {
+        let rank = |time: Option<i64>| time.map(|time| self.order.rank(time));
         let at = self
             .conversations
             .iter()
-            .position(|listed| listed.time < row.time)
+            .position(|listed| rank(listed.time) < rank(row.time))
             .unwrap_or(self.conversations.len());
         self.row_ids.insert(row.id.clone());
         self.conversations.insert(at, row);
@@ -2021,6 +2080,9 @@ impl Mailbox {
                 // Back where it was, it counts in Proton's pages again.
                 self.moved_out.remove(&request.row_id);
             }
+            if let MailAction::SetUnread(unread) = request.action {
+                self.read_changed(&request.row_id, unread);
+            }
             if !self.superseded(request) {
                 self.record_action(&request.row_id, &request.action);
             }
@@ -2119,7 +2181,15 @@ impl Mailbox {
             match action {
                 MailAction::SetUnread(unread) => row.unread = *unread,
                 MailAction::SetStarred(starred) => row.starred = *starred,
-                MailAction::MoveTo(_) | MailAction::SetLabel { .. } => {}
+                MailAction::SetLabel { label, on } => {
+                    if let Some(id) = label.custom_id() {
+                        row.labels.retain(|known| known != id);
+                        if *on {
+                            row.labels.push(id.to_owned());
+                        }
+                    }
+                }
+                MailAction::MoveTo(_) => {}
             }
         }
         if !self.leaves_view(&self.folder, action) {
@@ -2196,20 +2266,74 @@ impl Mailbox {
 
         self.cache_active_listing();
         self.folder = folder;
+        // Each folder opens with all its conversations, newest first.
+        self.filter = ListFilter::All;
+        self.order = ListOrder::NewestFirst;
         self.set_reader(ReaderState::Empty);
         self.action_error = None;
-        // The offer belongs to the folder it was made in.
+        self.leave_listing();
+        self.show_listing(request)
+    }
+
+    /// Lists only the folder's conversations that `filter` shows, or all of
+    /// them again. The open conversation stays in the reader.
+    pub fn show_only(&mut self, filter: ListFilter, request: RequestId) -> Option<PageRequest> {
+        self.list_as(filter, self.order, request)
+    }
+
+    /// Lists the folder's conversations in `order`.
+    pub fn sort_by(&mut self, order: ListOrder, request: RequestId) -> Option<PageRequest> {
+        self.list_as(self.filter, order, request)
+    }
+
+    fn list_as(
+        &mut self,
+        filter: ListFilter,
+        order: ListOrder,
+        request: RequestId,
+    ) -> Option<PageRequest> {
+        if (filter, order) == (self.filter, self.order) {
+            return None;
+        }
+        // Kept as when leaving the folder, a listing of all of them, newest
+        // first, is back at once when the list shows that again.
+        self.cache_active_listing();
+        self.filter = filter;
+        self.order = order;
+        self.leave_listing();
+        self.show_listing(request)
+    }
+
+    /// Whether the list shows all of the folder, newest first: the one
+    /// listing that is kept for later.
+    fn lists_everything(&self) -> bool {
+        self.filter == ListFilter::All && self.order == ListOrder::NewestFirst
+    }
+
+    /// Forgets what belongs to the listing on screen, which another is about
+    /// to take the place of.
+    fn leave_listing(&mut self) {
+        // The offer belongs to the list it was made in.
         self.undo = None;
         self.relocated.clear();
         self.listed_again.clear();
         self.moving_out.clear();
         self.moved_out.clear();
-        // So do search results: a folder is a different question.
+        // So do search results: another list is a different question.
         self.search = None;
         self.search_request = None;
         self.search_deferred = false;
+    }
 
-        let cached = self.take_cached_listing(&FolderKey::of(&self.folder));
+    /// Shows the open folder's listing: the one kept from before, unless the
+    /// list shows only some of it or another order, or else a first page to
+    /// fetch.
+    fn show_listing(&mut self, request: RequestId) -> Option<PageRequest> {
+        let cached = if self.lists_everything() {
+            self.take_cached_listing(&FolderKey::of(&self.folder))
+        } else {
+            None
+        };
         // Only now, so the folder being opened is never the one let go.
         if self.cached_listings.len() > LISTING_CACHE_CAPACITY {
             self.cached_listings.remove(0);
@@ -2237,10 +2361,11 @@ impl Mailbox {
         }
     }
 
-    /// Stores only a real folder listing. An initial load has `next_page == 0`;
-    /// search results, reader state and transient actions deliberately stay out.
+    /// Stores only a real folder listing of all its conversations, newest
+    /// first. An initial load has `next_page == 0`; search results, reader
+    /// state and transient actions deliberately stay out.
     fn cache_active_listing(&mut self) {
-        if self.next_page == 0 {
+        if self.next_page == 0 || !self.lists_everything() {
             return;
         }
         let dirty = self.active_dirty || matches!(self.status, ListStatus::Refreshing(_));
@@ -2446,10 +2571,12 @@ impl Mailbox {
         split_rows: Vec<ConversationSummary>,
     ) {
         if self.shows(folder) {
-            if self
-                .groups
-                .apply_split(&mut self.conversations, conversation_id, split_rows)
-            {
+            if self.groups.apply_split(
+                &mut self.conversations,
+                self.order,
+                conversation_id,
+                split_rows,
+            ) {
                 self.row_ids = collect_ids(&self.conversations);
                 self.last_dated_time = last_dated_time(&self.conversations);
                 self.recompute_visible();
@@ -2458,8 +2585,10 @@ impl Mailbox {
             .cached_listings
             .iter_mut()
             .find(|cached| cached.folder == FolderKey::of(folder))
+            // Only a listing newest first is ever kept.
             && cached.listing.groups.apply_split(
                 &mut cached.listing.conversations,
+                ListOrder::NewestFirst,
                 conversation_id,
                 split_rows,
             )
@@ -2499,7 +2628,13 @@ impl Mailbox {
         keep_deeper: bool,
     ) -> Vec<ConversationSummary> {
         deduplicate_rows(&mut fresh);
-        let oldest = fresh.iter().filter_map(|row| row.time).min();
+        // The rows a page ends at rank lowest, in either order.
+        let order = self.order;
+        let deepest = fresh
+            .iter()
+            .filter_map(|row| row.time)
+            .map(|time| order.rank(time))
+            .min();
         let mut covered = collect_ids(&fresh);
         for source in &fresh {
             if let Some(group) = self.groups.splits.get(&source.id) {
@@ -2511,12 +2646,12 @@ impl Mailbox {
         for row in std::mem::take(&mut self.conversations) {
             if covered.contains(&row.id) {
                 previous.entry(row.id.clone()).or_insert(row);
-            } else if keep_deeper && let Some(oldest) = oldest {
+            } else if keep_deeper && let Some(deepest) = deepest {
                 let parent = self.groups.parents.get(&row.id);
                 let time = parent
                     .and_then(|id| self.groups.splits.get(id))
                     .map_or(row.time, |group| group.source.time);
-                if time.is_some_and(|time| time < oldest)
+                if time.is_some_and(|time| order.rank(time) < deepest)
                     && !parent.is_some_and(|id| covered.contains(id))
                 {
                     deeper.push(row);
@@ -2577,6 +2712,8 @@ impl Mailbox {
         PageRequest {
             id,
             folder: self.folder.clone(),
+            filter: self.filter,
+            order: self.order,
             page,
             page_size: self.page_size,
         }
@@ -2623,7 +2760,12 @@ impl Mailbox {
                 .collect();
             self.row_ids.extend(new.iter().map(|row| row.id.clone()));
             let from = self.conversations.len();
-            let appended = append_newest_first(&mut self.conversations, new, self.last_dated_time);
+            let appended = append_in_order(
+                &mut self.conversations,
+                new,
+                self.last_dated_time,
+                self.order,
+            );
             self.last_dated_time = appended.last_dated_time;
             if appended.at_end && invalidated.is_empty() && self.search.is_none() {
                 self.append_visible(from);
@@ -2650,7 +2792,7 @@ impl Mailbox {
                 self.refreshed_rows(page.conversations, received >= self.page_size as usize);
             self.row_ids = collect_ids(&self.conversations);
             // Rows split out of a conversation carry their own, older times.
-            sort_newest_first(&mut self.conversations);
+            sort_by_date(&mut self.conversations, self.order);
             self.last_dated_time = last_dated_time(&self.conversations);
             self.recompute_visible();
             self.next_page = self.next_page.max(1);
@@ -2704,31 +2846,38 @@ struct Appended {
 }
 
 /// Keeps older pages proportional to the new page. Interleaved pages use a
-/// stable linear merge, with earlier pages winning ties.
-fn append_newest_first(
+/// stable linear merge, with earlier pages winning ties. Rows compare by the
+/// rank `order` gives their dates, which is higher the earlier a row goes.
+fn append_in_order(
     rows: &mut Vec<ConversationSummary>,
     incoming: Vec<ConversationSummary>,
     last_dated: Option<i64>,
+    order: ListOrder,
 ) -> Appended {
-    let seed = last_dated
-        .or_else(|| incoming.iter().find_map(|row| row.time))
+    let first_rank = |rows: &[ConversationSummary]| {
+        let time = rows.iter().find_map(|row| row.time);
+        time.map(|time| order.rank(time))
+    };
+    let last_rank = last_dated.map(|time| order.rank(time));
+    let seed = last_rank
+        .or_else(|| first_rank(&incoming))
         .unwrap_or(i64::MAX);
-    let mut keyed = keyed_by_time(incoming, seed);
-    let tail_key = last_dated.unwrap_or(seed);
+    let mut keyed = ranked(incoming, seed, order);
+    let tail_key = last_rank.unwrap_or(seed);
 
-    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
-    if !rows.is_empty() && keyed.first().is_some_and(|(time, _)| *time > tail_key) {
+    keyed.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
+    if !rows.is_empty() && keyed.first().is_some_and(|(rank, _)| *rank > tail_key) {
         // The old rows are already ordered. Recreate their undated sort keys
         // using the same seed as sorting the concatenated pages would use.
-        let old_seed = rows.iter().find_map(|row| row.time).unwrap_or(seed);
-        let mut old = keyed_by_time(std::mem::take(rows), old_seed)
+        let old_seed = first_rank(rows).unwrap_or(seed);
+        let mut old = ranked(std::mem::take(rows), old_seed, order)
             .into_iter()
             .peekable();
         let mut new = keyed.into_iter().peekable();
         rows.reserve(old.len() + new.len());
 
-        while let (Some((older, _)), Some((newer, _))) = (old.peek(), new.peek()) {
-            let next = if older >= newer {
+        while let (Some((listed, _)), Some((arriving, _))) = (old.peek(), new.peek()) {
+            let next = if listed >= arriving {
                 old.next()
             } else {
                 new.next()
@@ -2754,25 +2903,28 @@ fn append_newest_first(
     }
 }
 
-/// Sorts newest first while preserving undated rows' relative positions.
-fn sort_newest_first(rows: &mut Vec<ConversationSummary>) {
-    let seed = rows.iter().find_map(|row| row.time).unwrap_or(i64::MAX);
-    let mut keyed = keyed_by_time(rows.drain(..), seed);
-    keyed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+/// Sorts by date in `order` while preserving undated rows' relative
+/// positions.
+fn sort_by_date(rows: &mut Vec<ConversationSummary>, order: ListOrder) {
+    let first = rows.iter().find_map(|row| row.time);
+    let seed = first.map_or(i64::MAX, |time| order.rank(time));
+    let mut keyed = ranked(rows.drain(..), seed, order);
+    keyed.sort_by_key(|(rank, _)| std::cmp::Reverse(*rank));
     rows.extend(keyed.into_iter().map(|(_, row)| row));
 }
 
-/// Pairs each row with the time it sorts by: its own, or for an undated row
-/// the time of the row before it, and `seed` for the first. A stable sort
-/// then leaves undated rows beside their neighbours.
-fn keyed_by_time(
+/// Pairs each row with the rank it sorts by: its own date's in `order`, or
+/// for an undated row that of the row before it, and `seed` for the first. A
+/// stable sort then leaves undated rows beside their neighbours.
+fn ranked(
     rows: impl IntoIterator<Item = ConversationSummary>,
     seed: i64,
+    order: ListOrder,
 ) -> Vec<(i64, ConversationSummary)> {
     let mut previous = seed;
     rows.into_iter()
         .map(|row| {
-            previous = row.time.unwrap_or(previous);
+            previous = row.time.map_or(previous, |time| order.rank(time));
             (previous, row)
         })
         .collect()

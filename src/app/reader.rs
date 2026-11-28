@@ -197,6 +197,7 @@ mod tests {
 
     fn message(id: &str, time: i64) -> MailMessage {
         MailMessage {
+            address_id: String::new(),
             id: id.to_owned(),
             verdict: crate::mail::Verdict::Unverified,
             sender: MailAddress::default(),
@@ -261,12 +262,14 @@ mod tests {
                         4 => BlockKind::Image {
                             content_id: None,
                             description: format!("chart {index}"),
+                            link: None,
                         },
                         _ => BlockKind::Rule,
                     },
                     quote_depth: (index % 3) as u8,
                     hidden: false,
                     centered: false,
+                    joined: false,
                 })
                 .collect(),
             ..RichBody::default()
@@ -321,6 +324,7 @@ mod tests {
                     quote_depth: 0,
                     hidden: false,
                     centered: false,
+                    joined: false,
                 })
                 .collect(),
             ..RichBody::default()

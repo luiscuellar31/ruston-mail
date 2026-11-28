@@ -99,18 +99,23 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   ignores ordinary focus requests. Activation remains subject to compositor policy.
 - [`src/ui/`](../src/ui/) draws widgets with `eframe` and `egui`, gathers user
   actions, dispatches `Message`s, and applies effects that require the UI thread.
-- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: OpenGL (glow)
-  on macOS and Linux; on Windows DirectX 12 through wgpu, on the GPU that uses
-  the least power or on WARP, Windows' software renderer, without one, and
-  OpenGL when `RUSTON_RENDERER=opengl`. If DirectX 12 fails before the app is
-  created, `ui::run` opens the window again with OpenGL. The activation
+- [`ui/graphics.rs`](../src/ui/graphics.rs) picks the renderer: the system's
+  own API through wgpu, Metal on macOS and DirectX 12 on Windows, on the GPU
+  that uses the least power, or on WARP, Windows' software renderer, without
+  one; OpenGL (glow) on Linux, and on the other two when
+  `RUSTON_RENDERER=opengl`. If Metal or DirectX 12 fails before the app is
+  created, `ui::run` opens the window again with OpenGL. Metal presents at
+  the display's rate, where OpenGL on macOS drew frames the display never
+  showed, and a draft's own window no longer costs a change of OpenGL context
+  every pass. The activation
   instance waits in a `Cell` until the app takes it, so the retry keeps the
-  single-instance lock and link hand-off. On macOS, glutin asks for OpenGL
+  single-instance lock and link hand-off. For OpenGL on macOS, glutin asks for
   renderers that may sit offline and the bundle's
   [`Info.plist`](../assets/macos/Info.plist) sets
   `NSSupportsAutomaticGraphicsSwitching`, as Apple requires both, so a Mac with
   two GPUs can keep Ruston on the integrated one.
-- The Inbox unread count goes on the Dock tile on macOS and, through
+- The Inbox unread count goes on the Dock tile on macOS, through
+  [`ui/macos.rs`](../src/ui/macos.rs), and, through
   [`ui/taskbar.rs`](../src/ui/taskbar.rs), over the Windows taskbar button as
   an overlay icon: a red disc with the count, up to "99+", drawn in Segoe UI
   with GDI, and the count as its description. On Linux,
@@ -132,6 +137,15 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   remembers the normal size and place, but nothing while the window is full
   screen or minimized, and on Windows and Linux keeps the normal size while it
   is maximized. On macOS, zoom is remembered as the larger frame it is.
+- [`ui/readme_screenshots.rs`](../src/ui/readme_screenshots.rs), built only
+  with the `readme-screenshots` feature that no release turns on, takes the
+  README's screenshots for
+  [`packaging/readme-screenshots.sh`](../packaging/readme-screenshots.sh). In
+  the demo, `logic` moves it a frame at a time: it opens the booking
+  newsletter, then Settings and a message being written, and saves each dark
+  and then light with macOS's `screencapture`, off the interface thread,
+  keeping only each PNG's picture and color chunks.
+  `raw_input_hook` keeps the mouse and keys away meanwhile.
 - On macOS, [`ui/macos.rs`](../src/ui/macos.rs) measures the root window's
   traffic lights with eframe's `WindowChromeMetrics` on each logic pass.
   [`ui/theme.rs`](../src/ui/theme.rs) converts native points to egui points
@@ -198,6 +212,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   owning the window, and the keyboard shortcuts, the macOS menu, dropped files
   and activations all wait for it: the send key in the main window cannot send
   a draft whose own window is still choosing files.
+  `key_presses` reports what was pressed and `app/keys.rs` alone says what a
+  key means: the arrows and the Command or Ctrl keys, and Proton Mail's single
+  keys, which the terminal interface takes too. A single key is read from the
+  text typed, so a symbol is the same key on every keyboard layout, and only
+  while no text field has the keyboard and no menu is open.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine. Its dispatch only names
@@ -234,7 +253,8 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   overlapping dates are merged. Each split retains its server conversation
   metadata and member IDs, with a reverse message-to-conversation index. Refresh
   reuses the displayed members when that conversation's metadata is unchanged
-  apart from read/star flags. Deeper split rows are classified by their parent's
+  apart from read/star flags and labels, its folder's included, which the next
+  inspection brings for each member. Deeper split rows are classified by their parent's
   time and identity, so an older member cannot survive as an unrelated page row.
   Changed conversations invalidate their old members before using the new server
   row. Inspection replaces all prior members together, with fresh metadata and
@@ -249,6 +269,20 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   of the loaded pages moves its later pages up by one: **Load more** asks for
   the page that holds the first row not loaded, and the rows it repeats are
   dropped as already listed. A row that comes back, as with Undo, counts again.
+  The Filter menu asks Proton for only some of a folder's conversations
+  (`ListFilter`: unread, read, or with attachments) or for another order
+  (`ListOrder`: oldest first), which core sends as `Unread`, `Attachments` and
+  `Desc`; Proton filters, sorts and pages, and nothing is sorted here beyond
+  keeping the loaded pages in that order. The listing of all of them, newest
+  first, waits in the cache meanwhile, so going back to it shows it at once,
+  and no other listing is ever cached. Whatever keeps rows in order (merging a
+  page, refreshing, listing a row again by its date) compares
+  `ListOrder::rank` of their dates, higher for the row that goes first, so
+  one code path serves both orders. A row read under the unread filter, or
+  made unread under the read one, stays until the list loads again, but counts
+  as gone from Proton's pages the same way. Another folder opens unfiltered,
+  newest first. The demo, which lists from a snapshot after each change, keeps
+  the rows already listed the same way.
   Page responses preserve the open reader, including expansion and quote state.
   A server search submitted while a folder page loads waits for that page, so
   the search does not turn the folder response into a stale one. A failed list
@@ -292,7 +326,9 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   persistent scroll data is added.
   The reader's buttons act on the rows chosen (`Message::ApplyAction`); a row's
   context menu names its row (`Message::ApplyRowAction`) and offers the same
-  moves and flags, built by `reader::moves` and `reader::flags`. Both reach
+  moves and flags, built by `reader::moves` and `reader::flags`, with the
+  toolbar's Move to… list and, for one row, its label list
+  (`reader::destination_list`, `reader::label_list`) in menus beside it. Both reach
   `App::apply_to_rows`, which acts through the demo service or
   `Mailbox::start_actions_on`, so a row acted on from its menu is never opened
   or read automatically. The mailbox also keeps the rows chosen together with
@@ -317,8 +353,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   labels list mail wherever it sits, so a move to another folder keeps the row
   there and the mailbox remembers where it went, for the reader's buttons and a
   later undo; Spam and Trash still take it out. One notice at the foot of the
-  list carries the undo offer or, with none, `App`'s `Notice` of a message sent
-  or a file saved; [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it and starts
+  list carries the undo offer or, with none, `App`'s `Notice` of a message sent,
+  a file saved or a newer release. With Settings shown it sits at the foot of
+  their page, above Back to mail, and its words wrap rather than run
+  past the list, the page or the window. Words that fit on one line share it
+  with the notice's button, both centered on a line as high as the button;
+  longer words wrap and put the button below them.
+  [`ui/mailbox.rs`](../src/ui/mailbox.rs) times it by `Settings::notice_seconds`,
+  5 unless Settings → General changes it and kept between 3 and 10, starts
   its time again while the pointer rests on it, then sends `DismissUndo` or
   `DismissNotice`, which drop it only if it is still current. The undo offer keeps each row as
   it was listed, so `Mailbox::start_move_back` lists it again at once, where its
@@ -370,10 +412,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   either [`ProtonMailService`](../src/mail/proton.rs), backed by `ruston-core`, or
   the local [`DemoMailbox`](../src/mail/demo.rs). Its
   [`model.rs`](../src/mail/model.rs) defines the types the desktop uses. The
+  demo account has a folder and three labels of its own, with mail in them, so
+  moving and labeling work there as with an account. The
   demo answers its fictional mail with core's `reply_recipients`, given the
   flags Proton would set (received, sent, or a draft never sent), so a reply
   goes where it would with an account; its tests find conversations by what
-  they are, not by their place among the fixtures.
+  they are, not by their place among the fixtures. Its account has two
+  addresses, so the composer's choice of sender shows, and a message sent from
+  the second is kept as sent from it.
   Actions on a conversation row use Proton's conversation endpoints, one
   request each: a move, a star or a custom label applies to every message in
   the conversation, as in Proton's web client. A sign-in has two minutes of
@@ -396,7 +442,13 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   columns as skeletons, at their stored widths, from
   [`src/ui/mailbox.rs`](../src/ui/mailbox.rs)'s `show_opening`; without
   one, it is the plain waiting screen, so whoever has to sign in sees no
-  mailbox flash by first.
+  mailbox flash by first. The skeletons stand where the mailbox will: the
+  sidebar's first row as tall as its own, or, folded, a mark on each of the
+  strip's icons in the strip's own rows (`rail_slot`), the list's head (its title and
+  Refresh, the search field and Unread, the line under them) from the same
+  heights the list lays out with, and in one column the buttons between the
+  panes, laid out unseen as the mailbox's own, so nothing moves when the
+  mailbox replaces them.
 - [`src/settings.rs`](../src/settings.rs) stores desktop preferences, a demo
   process in a file of its own, and moves a file it cannot read aside before
   saving defaults in its place. `App` writes settled settings off the
@@ -423,6 +475,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   bounds connection and reply to three seconds and falls back to opening the
   containing folder with `xdg-open`. Finder's `open -R` and that `xdg-open`
   are waited for like the browser opener below.
+  The widgets the views share, icon buttons and their menus, the check box,
+  text fields, buttons with their emphasis and confirmations, are in
+  [`ui/widgets.rs`](../src/ui/widgets.rs), which takes its colours, sizes and
+  icons from the theme.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors; egui gives each window's
   title bar the same theme when it changes. Following the system sets egui's
@@ -430,16 +486,33 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   stored scheme as its fallback; settings keep that choice in a field of its
   own, so an older version still reads a scheme it knows. winit 0.30 reports
   no system theme on Linux, so Settings offers the choice on macOS and Windows.
-  With Windows' Animation effects off, read on every pass, `theme` sets egui's
-  animation time to zero and scrolls without gliding, so loading pulses keep
-  the still picture of an unfocused window. macOS's and Linux's
-  reduced-motion settings are not read yet. winit gives a Windows title bar
+  With Windows' Animation effects off, or macOS's Reduce motion on
+  (`NSWorkspace`'s `accessibilityDisplayShouldReduceMotion`), each read on
+  every pass, `theme` sets egui's animation time to zero and scrolls without
+  gliding, so loading pulses keep the still picture of an unfocused window.
+  On Linux [`ui/reduced_motion.rs`](../src/ui/reduced_motion.rs) asks the
+  desktop's settings portal on a thread of its own, and follows its changes:
+  `reduced-motion` where the portal has that setting, and GNOME's
+  `enable-animations` where it does not yet. winit gives a Windows title bar
   the Windows theme again whenever Windows announces a changed setting, so
   `theme::TitleBar` repeats egui's request for the main and composer windows
   when the Windows theme changes or the window comes back to the front. A
   change announced while the window keeps focus shows until then. The shell
   stores the preference for the next run and applies
   [`ui/fonts.rs`](../src/ui/fonts.rs)'s font policy.
+  The text size is `Settings::text_scale`, one of `TEXT_SCALES`; a loaded
+  value takes the nearest, so text is only drawn at sizes the layout was made
+  for. The shell hands it to `theme::set_text_scale` on every pass, which
+  scales egui's own text styles and keeps the scale for `theme::text_scale`
+  and `theme::text_size`. Every size of the type scale goes through them, and
+  so does every length made to hold text: a conversation row's height, the
+  step the virtualized list places and scrolls rows by, its time column, the
+  sidebar's rows, compact buttons, and the lines of a message header with the
+  signature mark that stands in them. An icon button is as tall as a button
+  of words, so a toolbar keeps one height. Other icons, padding, panes and
+  corner radii keep their size, which only the zoom changes. The reader stamps
+  remembered block heights with the body text's height, so a new size lays
+  the blocks out again.
   Bundled typography stays primary by default. The optional system UI face is
   San Francisco/Helvetica Neue on macOS, Segoe UI/Arial on Windows, or
   Fontconfig's sans-serif family on Linux (with known local alternatives).
@@ -460,10 +533,14 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   `App::update`; password visibility stays only in transient UI state. The
   desktop dispatch clears it on submit, cancellation, or a move away from a
   password step.
-- [`app/layout.rs`](../src/app/layout.rs) owns the minimum width for usable
-  columns and chooses compact presentation below 602 available egui points.
+- [`app/layout.rs`](../src/app/layout.rs) owns the minimum widths for usable
+  columns, 200 points for the sidebar and the list and 410 for the reader,
+  room for its toolbar on one line with the label menu at the usual text size,
+  and chooses compact presentation when they cannot fit beside the sidebar as
+  it is: below 812 available egui points, or, folded, the strip's width and
+  612. Dragging a divider stops at the same minimums.
   [`ui/mailbox.rs`](../src/ui/mailbox.rs) then shows a single pane with Folders,
-  Mail, and Reading/Message navigation; Mail repeats over the list why the last
+  Mail, and Reader/Message navigation; Mail repeats over the list why the last
   action failed, which columns show under the reader's buttons. The local
   selection lives in `UiState`;
   `DesktopApp` follows accepted folder selections, opened conversations, search
@@ -471,18 +548,37 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   rendering never sends `PanelsResized`, so returning to columns preserves the
   saved ratios and egui's remembered divider widths. Explicit UI identities
   keep list and reader scroll/expansion state when their parent pane changes.
-  Search controls reserve one horizontal row in both layouts, leaving the
+  Search controls reserve one horizontal row in both layouts, as tall as the
+  search field, whose height is known before the buttons beside it are laid
+  out: they take it, and Unread takes Refresh's width while the field keeps at
+  least 160 points, so the two stand as a column, leaving the
   remaining height for visible, selectable conversations. Centered controls
   must not allocate the list's full remaining height. The line under them
   that says what a search covers is kept, empty, while nothing is typed, and
   is shortened rather than wrapped, so typing never moves the list.
   The sidebar scrolls its folders and labels independently, reserving the
-  account, Settings, and sign-out actions at the bottom. The Proton adapter
+  account, Settings, and sign-out actions at the bottom. Folded
+  (`Settings::sidebar_folded`), it is a panel of its own, a fixed strip of
+  icons, so the sidebar's panel keeps its width for when it unfolds:
+  `layout::widths_beside_rail` gives the list its share of the rest, and while
+  folded only that share is saved, never the sidebar's. Each of the strip's
+  buttons is a square in its middle, in a row as tall as the place it stands
+  for in the unfolded sidebar (`rail_slot`), so folding moves no icon up or
+  down. One column ignores
+  the fold. The button that folds it is placed by hand in a child `Ui`, which
+  takes no room the panel would grow to fit, beside a title row as tall as the
+  button, whose top a shorter row would leave for the scroll area to cut off. The View menu's Control-Command-S
+  folds it on macOS, and `F9` elsewhere, read by `key_presses` as a mailbox
+  shortcut that Settings, shown beside the sidebar, lets through.
+  The Proton adapter
   lists the account's folders in tree order, each before its subfolders and
   in Proton's order among siblings, and sends with them an `OwnPlaces` map of
   `PlaceLook`s: a folder's depth, from its `ParentID`, and a label's color.
   `App` keeps those looks apart from the `Folder`s, whose equality and saved
-  form stay the place alone, and the sidebar indents and colors by them; that block asks for
+  form stay the place alone, and the sidebar indents and colors by them. Each
+  `ConversationSummary` carries the label IDs Proton lists it with, and a row
+  marks those of the account's labels with a dot in their colors; a label
+  Proton confirms is added to or taken from the rows at once. That block asks for
   one more frame only while its measured height is new, so a window too short
   for it does not redraw on every frame;
   [`ui/compose.rs`](../src/ui/compose.rs) scrolls the editor in both placements.
@@ -495,29 +591,49 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   placement, whose default is the reading pane.
 - With a mailbox open, [`ui/mailbox.rs`](../src/ui/mailbox.rs) replaces the
   conversation list and reader with
-  [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. The desktop
-  keeps the sidebar visible in the three-pane layout and gives Settings the
-  full content width in compact presentation. Compact navigation leaves
-  Settings through the same unsaved-change confirmation as normal navigation.
-  The UI holds preference edits until Apply and confirms whether to apply or discard
-  them before leaving for a folder, composer, or sign-out. Resetting the layout
+  [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. Settings
+  shows one section at a time, the `SettingsSection` `App` keeps for the
+  session and `Message::ShowSettingsSection` changes. In the three-pane layout
+  the sidebar lists the sections in place of New message and the folders,
+  under a way back to the mailbox, as Proton's web client does, its rows drawn
+  as the folders' are (`place_button`); folded, the strip lists their icons,
+  and compact presentation, which gives Settings the full content width, lists
+  them as a row above the page. Each section's page scrolls on its own.
+  A choice applies as it is made: each frame the page's controls edit a copy
+  of the settings, and `preference_changes` turns what they changed in it into
+  the `Message`s that set it, so nothing waits to be applied and leaving
+  Settings asks nothing. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.
   Choices most people can leave alone, recipient encryption lookups and
-  international domain names, share an Advanced card before Keyboard.
-  Settings ends with an About card containing the existing logo, package version,
+  international domain names, share an Advanced section before Keyboard.
+  Settings ends with an About section containing the existing logo, package version,
   technology and author credits, license, a Source code button and a
   Third-party notices button. Source code dispatches `OpenSourceCode` through
   `App`, which opens the package repository using the existing background
   browser effect. Third-party notices dispatches `OpenThirdPartyNotices`, and
-  `App` hands the same effect the `THIRD_PARTY_LICENSES.txt` that
+  `App` hands the same effect the `THIRD_PARTY_NOTICES.txt` that
   [`licenses.rs`](../src/licenses.rs) found at boot from the running
   executable: beside it, in `../Resources` or in `../share/doc/ruston-mail`,
   the places every package puts it (see
   [Local state and tests](#local-state-and-tests)). Every system tries all
   three, so each layout is tested on any of them. The file opens in the
   system's default app for its type; a build run from Cargo has none, and the
-  card leaves that button out. That effect, like the CLI's
+  card leaves that button out. The card's Check for updates box is off by
+  default. While it is on, `DesktopApp` sends `CheckForUpdates` as the window
+  opens or the box is applied, and a day after each check by the window's
+  clock, which [`releases::Schedule`](../src/releases.rs) keeps. `App`
+  ([`app/updates.rs`](../src/app/updates.rs)) runs
+  `releases::latest_release`, which asks GitHub's API for the latest
+  published release with a reqwest client of its own: the system's proxies and
+  core's TLS, a `ruston-mail` user agent, no cookies, no redirects, and at most
+  1 MiB of reply, of which only `tag_name` is read, as `MAJOR.MINOR.PATCH`. A
+  newer number becomes `UpdateStatus::Available` and, the first time it is
+  found, `Notice::UpdateAvailable` at the foot of the mailbox; a failed check
+  keeps the last answer. Their Download button sends `OpenReleasePage`, whose
+  address is built from the package repository, never taken from the reply.
+  Turning the box off forgets the status and leaves answers still on their way
+  unread. The browser effect, like the CLI's
   human-verification page in [`hv.rs`](../crates/ruston-cli/src/hv.rs), hands
   the address or file to the system's opener without a shell, which both
   take from core's [`browser::opener`](../crates/ruston-core/src/browser.rs):
@@ -567,7 +683,39 @@ element of the same name within the hidden one does not end it. It also keeps
 `font-weight`, `font-style`, `text-decoration` and `text-align`: the parser
 follows them, `center` elements and the `align` of a paragraph, a heading, a
 cell or a row, through a bounded stack of styled elements, as a browser lets them apply within, and records them on each run's
-`SenderStyle` and each block's `centered`, apart from what tags did. The
+`SenderStyle` and each block's `centered`, apart from what tags did.
+Margins, padding and borders it rewrites first, in
+[`html/spacing.rs`](../crates/ruston-core/src/html/spacing.rs), through
+ammonia's `attribute_filter`, which runs before its property filter. Read
+with the CSS parser ammonia uses (`cssparser`, at ammonia's version), so a
+comment or an escape hides nothing from it, every declaration of them the
+sender wrote is dropped, and in their place come `margin-top` and
+`margin-bottom` of `0` or `1em`, where the sender gave a block room or none,
+and `border-top` and `border-bottom` of `1px solid`, where a line runs across
+a block with none down its sides. Nothing else of them comes through, so a
+quoted reply cannot be overlaid. The parser reads that room, with
+`spacing::around`, so raw HTML reads as sanitized HTML does, on top of what a
+browser gives each block: a paragraph, a heading, a list, a quote and
+preformatted text have room above and below, a `div` and its kin none. A
+paragraph that follows another with no room between them is `joined`; rows
+and cells keep the room of paragraphs, a blank line (`<br>` alone, or a block
+of `&nbsp;`) leaves some, and two lines that only a bare block's default
+leaves tight must both be short (80 characters), so a newsletter whose margins
+came from a stylesheet keeps its paragraphs apart. The reader draws a joined
+paragraph right under the one before it (`room_after` takes back egui's item
+spacing), and the CLI writes it on the next line. A line a border draws
+across a block becomes a `BlockKind::Rule` above or below it: a cell's above
+its row only when the cell starts the row, and under the row once it ends; a
+table's before it, so a table of data keeps that line while its own grid
+goes. There are never two in a row, none before anything, and one a border
+drew under the last block goes. A table that holds no data, of one row whose
+two to four cells hold their text in blocks of their own (not running on
+from one cell into the next), each of at most four visible paragraphs and
+120 characters, with no table, picture, heading or list within, becomes a
+`BlockKind::Columns`: each cell its blocks, which keep how closely they
+follow one another. The reader sets them side by side with egui's `columns`
+where each gets 150 points, else one under the other; plain text and the CLI
+write them one after the other. The
 reader counts them unless **Use the sender's text styles** is off
 (`Reading::sender_text_styles`), centering a line that fits on one; the CLI
 always writes them as Markdown markers. The same stack notes an element with a
@@ -587,7 +735,11 @@ data in columns** is off (`Reading::data_tables`); the CLI as columns between
 pipes, measured in terminal cells. An image that names a part of its own
 message (`cid:`, which the sanitizer keeps, as it keeps no other scheme but a
 link's) carries that part's `Content-ID`, which core reads from an
-attachment's headers. When the reader reaches one, it sends
+attachment's headers. An image inside a link keeps that link's target
+(`BlockKind::Image::link`), through the same filter as a text link's, so the
+reader draws its description, or the picture, as that link, with the same
+hover, prompt and menu (`follow_link`), and the CLI writes it as a Markdown
+link. When the reader reaches one, it sends
 `Message::LoadInlineImage`; `App` ([`app/pictures.rs`](../src/app/pictures.rs))
 checks it is a part of the open conversation within the size limit, downloads
 it as it does an attachment to save, and decodes it on a blocking worker with
@@ -664,7 +816,13 @@ previous reference and release their slot; session expiry closes the mailbox.
 and 180-second background polls with one pending page request and backoff up to
 300 seconds. It is timed by the window's own clock (`DesktopApp::clock`), not
 egui's, which stands still while the window is minimized or covered and no
-pass is drawn; egui requests the timed wake-ups that run `logic` then. Busy mailbox
+pass is drawn; egui requests the timed wake-ups that run `logic` then. Not
+under Wayland: winit cannot tell that a window is minimized or hidden there,
+and its redraw waits for a frame the compositor does not ask for, so eframe
+0.36 runs nothing until the window shows again (seen with a probe build on
+headless Weston; eframe 0.37 runs `logic` after 250 ms without a frame). A
+minimized window counts as away (`has_keyboard`): egui keeps the focus its last
+pass saw, so it would still poll as in front. Busy mailbox
 or send operations defer polling. Returning after 30 seconds can refresh early
 if a recent success or failure backoff does not prevent it. Only accepted page
 responses update timing; stale successes cannot reset backoff. Navigation releases
@@ -706,7 +864,12 @@ attachments, recipients, replies and packages each have a module under
 `mail/send/`. The
 result returns to the app as a message. A reply opens with To, and Cc for
 Reply all, filled in as core would address it; whatever the fields then hold
-is sent, as for a new message or a forward. One draft is open at a time: asking
+is sent, as for a new message or a forward. A draft keeps the account's
+addresses mail can go out from, in Proton's order, and the one it goes out
+from: an answer starts with the address the original reached, found by the
+message's `address_id` as the terminal interface finds it, and a new message,
+or an answer to an address that can no longer send, leaves the choice to core,
+which sends from the first. One draft is open at a time: asking
 for a new message, a reply or a forward while one is open leaves it as it is,
 marks it so the composer says why, and, in its own window, returns
 `UiEffect::RaiseComposer`, which the shell turns into un-minimizing and
@@ -721,6 +884,11 @@ only when the same account signs in again, and asks again about recipients
 whose lookup the ended session left unanswered. Another account's sign-in
 drops it, the sign-in screen says whose sign-in brings it back, and closing
 the window asks before discarding it. Nothing of it is written to disk.
+
+What else a session gathers, the account's folders, a link or an email request
+waiting, the notice at the foot, an attachment being saved and the mail
+already announced, is `App`'s `SessionState`, which `close_mailbox` replaces
+with an empty one, so nothing kept there can reach the next account.
 
 The composer's protection notice takes the same path. When a recipient field
 loses focus, or a reply opens with the recipients of a conversation Proton
@@ -1069,7 +1237,8 @@ instead of an unknown outcome.
   skip, for a local test server.
 - [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs)
   offers a numbered sender choice when `messages send` runs in a terminal with
-  multiple account addresses and no `--from`. Noninteractive and JSON sends
+  multiple addresses mail can go out from and no `--from`.
+  Noninteractive and JSON sends
   keep the primary-address default from core. It also detects likely HTML in
   an interactive send without `--html` and asks before changing the format;
   scripted sends keep the explicit flag behavior. Permanent deletes ask first,
@@ -1294,6 +1463,11 @@ instead of an unknown outcome.
   passphrase derivation; the armored key and passphrase stay as a fallback.
   User keys only open address keys, so `KeyStore` keeps none of them: unlocking
   returns the key password for the saved session and lets the rest go.
+  `KeyStore` also keeps the keys of an address Proton has disabled, or does
+  not let send, to open the mail that reached it, but no mail goes out from
+  one: it is never the default sender nor an answer's, and naming it is
+  refused, so the desktop's **From** and the CLI's sender choice leave it out
+  too.
   An address's keys are kept primary first, then those Proton has not marked
   compromised or obsolete, whatever order the API lists them in; messages are
   signed and drafts encrypted with the first. OpenPGP dates and checks
@@ -1324,6 +1498,7 @@ instead of an unknown outcome.
 | CLI message reading | [`commands/messages.rs`](../crates/ruston-cli/src/commands/messages.rs) | [`render.rs`](../crates/ruston-cli/src/render.rs), [`render/html.rs`](../crates/ruston-cli/src/render/html.rs), core [`html/rich.rs`](../crates/ruston-core/src/html/rich.rs) and [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs) |
 | Compose, send, and outgoing attachments | [`src/app/compose.rs`](../src/app/compose.rs), [`src/mail/outgoing.rs`](../src/mail/outgoing.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/send.rs`](../crates/ruston-core/src/mail/send.rs), [`mail/recipients.rs`](../crates/ruston-core/src/mail/recipients.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | Downloading received attachments | Desktop [`src/app/attachments.rs`](../src/app/attachments.rs), [`src/downloads.rs`](../src/downloads.rs); CLI [`commands/attachments.rs`](../crates/ruston-cli/src/commands/attachments.rs) | [`src/mail/proton.rs`](../src/mail/proton.rs), core [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
+| Desktop update notice | [`src/releases.rs`](../src/releases.rs), [`src/app/updates.rs`](../src/app/updates.rs) | [`src/ui/settings.rs`](../src/ui/settings.rs), [`src/ui/mailbox.rs`](../src/ui/mailbox.rs), [`src/ui/mod.rs`](../src/ui/mod.rs) |
 | Native file dialogs and revealing saved files | [`src/ui/dialogs.rs`](../src/ui/dialogs.rs), [`src/file_manager.rs`](../src/file_manager.rs) | [`src/ui/mod.rs`](../src/ui/mod.rs), [`src/app/effect.rs`](../src/app/effect.rs) |
 | CLI EML export | [`commands/export.rs`](../crates/ruston-cli/src/commands/export.rs) | Core [`mail/export.rs`](../crates/ruston-core/src/mail/export.rs), [`mail/read.rs`](../crates/ruston-core/src/mail/read.rs), [`mail/attachments.rs`](../crates/ruston-core/src/mail/attachments.rs) |
 | CLI terminal interface | [`tui.rs`](../crates/ruston-cli/src/tui.rs), [`tui/app.rs`](../crates/ruston-cli/src/tui/app.rs), [`tui/view.rs`](../crates/ruston-cli/src/tui/view.rs), [`tui/reading.rs`](../crates/ruston-cli/src/tui/reading.rs), [`tui/command.rs`](../crates/ruston-cli/src/tui/command.rs), [`tui/compose.rs`](../crates/ruston-cli/src/tui/compose.rs), [`tui/editor.rs`](../crates/ruston-cli/src/tui/editor.rs) | [`mailbox.rs`](../crates/ruston-cli/src/mailbox.rs), [`main.rs`](../crates/ruston-cli/src/main.rs), [`terminal.rs`](../crates/ruston-cli/src/terminal.rs), [`demo.rs`](../crates/ruston-cli/src/demo.rs) |
@@ -1375,7 +1550,10 @@ directory and credentials in the OS keychain. The storage identifier is
 separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
 tokens as one keychain entry and the session's API address as another; loading
-rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
+rejects metadata whose address differs from it. A `ProfileStorage` holds one
+profile's files and its secret store together, so the file of one profile is
+never read or written beside another's secrets; `Client` keeps the one its
+session is saved in. Session writes and token refresh use a per-profile
 file lock. A process waits at most 30 seconds for it, trying again every 50 ms,
 and then fails with a "profile is busy" session error, so another process
 stopped while holding it cannot stall it for good. Sign-in and resume read and save the session on Tokio's blocking
@@ -1585,7 +1763,7 @@ for MSVC targets, so neither executable needs the Visual C++ redistributable.
 Committed Linux PNGs
 and the Windows ICO are derived from the existing logo by
 [`packaging/generate-desktop-icons.py`](../packaging/generate-desktop-icons.py).
-The committed `THIRD_PARTY_LICENSES.txt` comes from
+The committed `THIRD_PARTY_NOTICES.txt` comes from
 [`packaging/third-party-licenses.py`](../packaging/third-party-licenses.py):
 the notice of every crate the binaries use on the six release targets,
 procedural macros aside, under the least demanding license it offers (none

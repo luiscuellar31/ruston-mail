@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::theme;
+use super::{theme, widgets};
 use crate::app::{App, AuthState, Message, SignInStep};
 use crate::settings::Appearance;
 
@@ -9,6 +9,8 @@ const CARD_PADDING: i8 = 36;
 const LOGO_SIZE: f32 = 44.0;
 /// The heading of each sign-in step.
 const HEADING_SIZE: f32 = 28.0;
+/// The height of each step's primary button.
+const SUBMIT_HEIGHT: f32 = 44.0;
 
 pub(super) fn show(
     root: &mut egui::Ui,
@@ -77,8 +79,16 @@ fn version_overlay(context: &egui::Context) -> egui::Response {
         .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-12.0, -5.0))
         .interactable(false)
         .fade_in(false)
-        .show(context, super::version_label)
+        .show(context, version_label)
         .inner
+}
+
+fn version_label(ui: &mut egui::Ui) -> egui::Response {
+    ui.label(
+        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
+            .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
+            .color(theme::colors(ui).muted),
+    )
 }
 
 fn body(
@@ -191,75 +201,22 @@ fn sign_in(
         _ => (SignInStep::Credentials, false),
     };
 
-    ui.heading(egui::RichText::new("Sign in").size(HEADING_SIZE).strong());
+    ui.heading(
+        egui::RichText::new("Sign in")
+            .size(theme::text_size(ui, HEADING_SIZE))
+            .strong(),
+    );
     ui.label(
         egui::RichText::new("Continue to Ruston Mail with your Proton account.")
             .color(theme::colors(ui).muted),
     );
     ui.add_space(30.0);
 
-    let fields = match step {
-        SignInStep::Credentials => {
-            let username = edit_field(
-                ui,
-                "Username or email",
-                "name@proton.me",
-                app.username_mut(),
-                busy,
-                messages,
-            );
-            if username.changed() {
-                app.login_edited();
-            }
-            let password = edit_secret_field(
-                ui,
-                "Password",
-                "Password",
-                app.password_mut(),
-                show_password,
-                busy,
-                messages,
-            );
-            if password.changed() {
-                app.login_edited();
-            }
-            vec![
-                (username, app.username_mut().is_empty()),
-                (password, app.password_mut().is_empty()),
-            ]
-        }
-        SignInStep::Totp => {
-            ui.label("Enter the code from your authenticator app.");
-            let field = edit_field(
-                ui,
-                "Two-factor code",
-                "123456",
-                app.totp_mut(),
-                busy,
-                messages,
-            );
-            if field.changed() {
-                app.login_edited();
-            }
-            vec![(field, app.totp_mut().is_empty())]
-        }
-        SignInStep::MailboxPassword => {
-            ui.label("This account uses a separate mailbox password.");
-            let field = edit_secret_field(
-                ui,
-                "Mailbox password",
-                "Mailbox password",
-                app.mailbox_password_mut(),
-                show_password,
-                busy,
-                messages,
-            );
-            if field.changed() {
-                app.login_edited();
-            }
-            vec![(field, app.mailbox_password_mut().is_empty())]
-        }
-    };
+    let fields = step_fields(ui, app, step, show_password, busy, messages);
+    // Editing clears the last error, which is drawn below the fields.
+    if fields.iter().any(|field| field.response.changed()) {
+        app.login_edited();
+    }
     // A field waiting for a reply cannot take the cursor.
     if !busy {
         focus_on_arrival(ui, step, &fields);
@@ -272,35 +229,7 @@ fn sign_in(
         messages.push(Message::RetrySavedSession);
     }
     ui.add_space(12.0);
-    let submit = if busy {
-        "Signing in…"
-    } else {
-        match step {
-            SignInStep::Credentials => "Sign in",
-            SignInStep::Totp => "Verify",
-            SignInStep::MailboxPassword => "Unlock mailbox",
-        }
-    };
-    let submit_clicked = ui
-        .scope(|ui| {
-            theme::primary_visuals(ui);
-            let button = egui::Button::new((egui::Atom::grow(), submit, egui::Atom::grow()))
-                .min_size(egui::vec2(ui.available_width(), 44.0))
-                .stroke(egui::Stroke::NONE);
-            if busy {
-                // Readable while the sign-in runs, yet it takes no clicks
-                // and screen readers still hear it as unavailable.
-                theme::busy_visuals(ui);
-                ui.add(button.sense(egui::Sense::hover())).widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, false, submit)
-                });
-                false
-            } else {
-                ui.add(button).clicked()
-            }
-        })
-        .inner;
-    if submit_clicked {
+    if submit_button(ui, submit_label(step, busy), busy) {
         messages.push(Message::Submit);
     }
     if step == SignInStep::Credentials {
@@ -334,7 +263,7 @@ fn sign_in(
 fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     ui.heading(
         egui::RichText::new("Verify you are human")
-            .size(HEADING_SIZE)
+            .size(theme::text_size(ui, HEADING_SIZE))
             .strong(),
     );
     ui.add_space(12.0);
@@ -356,18 +285,123 @@ fn verification(ui: &mut egui::Ui, app: &App, messages: &mut Vec<Message>) {
     });
     error(ui, app);
     ui.add_space(8.0);
-    if ui
-        .add_sized(
-            [ui.available_width(), 44.0],
-            theme::primary(egui::Button::new("I completed the verification")),
-        )
-        .clicked()
-    {
+    if submit_button(ui, "I completed the verification", false) {
         messages.push(Message::Submit);
     }
     if ui.button("Back").clicked() {
         messages.push(Message::CancelChallenge);
     }
+}
+
+/// A field of a sign-in step, as drawn this pass.
+struct StepField {
+    response: egui::Response,
+    /// Whether it holds nothing yet, which [`focus_on_arrival`] looks for.
+    empty: bool,
+}
+
+/// Draws the fields `step` asks for, with what `app` holds in them.
+fn step_fields(
+    ui: &mut egui::Ui,
+    app: &mut App,
+    step: SignInStep,
+    show_password: &mut bool,
+    busy: bool,
+    messages: &mut Vec<Message>,
+) -> Vec<StepField> {
+    match step {
+        SignInStep::Credentials => {
+            let username = edit_field(
+                ui,
+                "Username or email",
+                "name@proton.me",
+                app.username_mut(),
+                busy,
+                messages,
+            );
+            let password = edit_secret_field(
+                ui,
+                "Password",
+                app.password_mut(),
+                show_password,
+                busy,
+                messages,
+            );
+            vec![
+                StepField {
+                    response: username,
+                    empty: app.username_mut().is_empty(),
+                },
+                StepField {
+                    response: password,
+                    empty: app.password_mut().is_empty(),
+                },
+            ]
+        }
+        SignInStep::Totp => {
+            ui.label("Enter the code from your authenticator app.");
+            let code = edit_field(
+                ui,
+                "Two-factor code",
+                "123456",
+                app.totp_mut(),
+                busy,
+                messages,
+            );
+            vec![StepField {
+                response: code,
+                empty: app.totp_mut().is_empty(),
+            }]
+        }
+        SignInStep::MailboxPassword => {
+            ui.label("This account uses a separate mailbox password.");
+            let password = edit_secret_field(
+                ui,
+                "Mailbox password",
+                app.mailbox_password_mut(),
+                show_password,
+                busy,
+                messages,
+            );
+            vec![StepField {
+                response: password,
+                empty: app.mailbox_password_mut().is_empty(),
+            }]
+        }
+    }
+}
+
+/// What the button of `step` says.
+fn submit_label(step: SignInStep, busy: bool) -> &'static str {
+    if busy {
+        return "Signing in…";
+    }
+    match step {
+        SignInStep::Credentials => "Sign in",
+        SignInStep::Totp => "Verify",
+        SignInStep::MailboxPassword => "Unlock mailbox",
+    }
+}
+
+/// A step's primary button, across the card; whether it was clicked.
+fn submit_button(ui: &mut egui::Ui, label: &str, busy: bool) -> bool {
+    ui.scope(|ui| {
+        widgets::primary_visuals(ui);
+        let button = egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
+            .min_size(egui::vec2(ui.available_width(), SUBMIT_HEIGHT))
+            .stroke(egui::Stroke::NONE);
+        if busy {
+            // Readable while the sign-in runs, yet it takes no clicks and
+            // screen readers still hear it as unavailable.
+            widgets::busy_visuals(ui);
+            ui.add(button.sense(egui::Sense::hover()))
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, label));
+            false
+        } else {
+            ui.add(button).clicked()
+        }
+    })
+    .inner
 }
 
 fn edit_field(
@@ -378,34 +412,33 @@ fn edit_field(
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    let name = ui.label(egui::RichText::new(label).strong());
+    let name = field_label(ui, label);
     let mut unseen = String::new();
     let response = ui
         .add_enabled(
             !busy,
-            theme::text_field(ui, measured(ui, value, &mut unseen))
+            widgets::text_field(ui, measured(ui, value, &mut unseen))
                 .hint_text(hint)
                 .desired_width(f32::INFINITY),
         )
         .labelled_by(name.id);
     keep_no_history(ui.ctx(), response.id);
-    if response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
-        messages.push(Message::Submit);
-    }
+    submit_on_enter(ui, &response, busy, messages);
     ui.add_space(14.0);
     response
 }
 
+/// A field for a password, whose name is its hint too, with the button that
+/// shows or hides what was typed.
 fn edit_secret_field(
     ui: &mut egui::Ui,
     label: &str,
-    hint: &str,
     value: &mut String,
     show_password: &mut bool,
     busy: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Response {
-    let name = ui.label(egui::RichText::new(label).strong());
+    let name = field_label(ui, label);
     let width =
         (ui.available_width() - theme::ICON_BUTTON_MIN_SIZE.x - ui.spacing().item_spacing.x)
             .max(1.0);
@@ -415,19 +448,14 @@ fn edit_secret_field(
             let response = ui
                 .add_enabled(
                     !busy,
-                    theme::text_field(ui, measured(ui, value, &mut unseen))
-                        .hint_text(hint)
+                    widgets::text_field(ui, measured(ui, value, &mut unseen))
+                        .hint_text(label)
                         .password(!*show_password)
                         .desired_width(width),
                 )
                 .labelled_by(name.id);
             keep_no_history(ui.ctx(), response.id);
-            if response.lost_focus()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                && !busy
-            {
-                messages.push(Message::Submit);
-            }
+            submit_on_enter(ui, &response, busy, messages);
             password_toggle(ui, show_password, busy);
             response
         })
@@ -436,19 +464,31 @@ fn edit_secret_field(
     response
 }
 
+/// A field's name, in bold above it; screen readers take it as the field's.
+fn field_label(ui: &mut egui::Ui, label: &str) -> egui::Response {
+    ui.label(egui::RichText::new(label).strong())
+}
+
+/// Sends the step when Enter leaves `field`, unless a reply is awaited.
+fn submit_on_enter(ui: &egui::Ui, field: &egui::Response, busy: bool, messages: &mut Vec<Message>) {
+    if field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) && !busy {
+        messages.push(Message::Submit);
+    }
+}
+
 /// Remembers which step last gave a field the cursor.
 const FOCUSED_STEP: &str = "sign-in-focused-step";
 
 /// Puts the cursor in the first empty field the first time a step shows, or
 /// in the last field when all are filled, so typing can start at once.
-fn focus_on_arrival(ui: &egui::Ui, step: SignInStep, fields: &[(egui::Response, bool)]) {
+fn focus_on_arrival(ui: &egui::Ui, step: SignInStep, fields: &[StepField]) {
     let shown = egui::Id::new(FOCUSED_STEP);
     if ui.is_sizing_pass() || ui.data(|data| data.get_temp::<SignInStep>(shown)) == Some(step) {
         return;
     }
     ui.data_mut(|data| data.insert_temp(shown, step));
-    if let Some((field, _)) = fields.iter().find(|(_, empty)| *empty).or(fields.last()) {
-        field.request_focus();
+    if let Some(field) = fields.iter().find(|field| field.empty).or(fields.last()) {
+        field.response.request_focus();
         // The field was made before it was given focus; show it focused now.
         ui.ctx().request_repaint();
     }
@@ -531,7 +571,7 @@ fn brand(ui: &mut egui::Ui) {
         );
         ui.label(
             egui::RichText::new("Ruston Mail")
-                .size(theme::APP_NAME_SIZE)
+                .size(theme::text_size(ui, theme::APP_NAME_SIZE))
                 .strong(),
         );
     });
@@ -542,13 +582,13 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
     ui.vertical_centered(|ui| {
         ui.label(
             egui::RichText::new("Not affiliated with Proton")
-                .size(theme::FOOTNOTE_SIZE)
+                .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                 .color(color),
         );
         ui.add(
             egui::AtomLayout::new((
                 egui::RichText::new("Made with")
-                    .size(theme::FOOTNOTE_SIZE)
+                    .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                     .color(color),
                 egui::Image::new(egui::include_image!(
                     "../../assets/icons/bootstrap/heart.svg"
@@ -557,7 +597,7 @@ fn footer(ui: &mut egui::Ui) -> egui::Rect {
                 .tint(theme::ACCENT)
                 .alt_text("heart"),
                 egui::RichText::new("by Luis Cuellar")
-                    .size(theme::FOOTNOTE_SIZE)
+                    .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
                     .color(color),
             ))
             .gap(ui.spacing().item_spacing.x),

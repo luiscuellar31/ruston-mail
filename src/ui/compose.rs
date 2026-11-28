@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
-use super::theme::{self, Emphasis};
-use super::{identity, mailbox::detail, reader};
+use super::widgets::{self, Emphasis, detail};
+use super::{identity, reader, theme};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;
@@ -44,7 +44,7 @@ fn drop_hint(ui: &egui::Ui, rect: egui::Rect) {
         rect.center(),
         egui::Align2::CENTER_CENTER,
         "Drop files to attach",
-        egui::FontId::proportional(18.0),
+        egui::FontId::proportional(theme::text_size(ui, 18.0)),
         ui.visuals().strong_text_color(),
     );
 }
@@ -87,6 +87,10 @@ pub(super) fn show_window(
         theme::paint_focus_ring(root.ctx());
 
         if blocked {
+            // A confirmation or a file dialog of the mailbox window holds the
+            // app, and decides first: what this window asked is dropped, and
+            // so are the files dropped on it, so a drop never releases a
+            // dialog's slot.
             if root.input(|input| input.viewport().close_requested()) {
                 root.ctx()
                     .send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -98,32 +102,12 @@ pub(super) fn show_window(
             };
         }
 
-        if root.input(|input| input.viewport().close_requested()) {
-            if compose.in_flight() {
-                root.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            } else if compose.is_untouched() || compose.confirming_discard() {
-                messages.push(Message::DiscardCompose);
-            } else {
-                root.ctx()
-                    .send_viewport_cmd(egui::ViewportCommand::CancelClose);
-                messages.push(Message::CloseCompose);
-            }
-        } else if !egui::Popup::is_any_open(root.ctx())
-            && root.input(|input| input.key_pressed(egui::Key::Escape))
-        {
-            // An open menu takes Escape first, as in the mailbox window.
-            if compose.confirming_discard() {
-                messages.push(Message::CancelDiscard);
-            } else {
-                messages.push(Message::CloseCompose);
-            }
-        } else if root.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter))
-            && compose.not_ready().is_none()
-            && !compose.in_flight()
-        {
-            messages.push(Message::Send);
-        }
+        let answer = if root.input(|input| input.viewport().close_requested()) {
+            window_close(root.ctx(), compose)
+        } else {
+            window_shortcut(root, compose)
+        };
+        messages.extend(answer);
 
         WindowPass {
             messages,
@@ -131,6 +115,41 @@ pub(super) fn show_window(
             dropped,
         }
     })
+}
+
+/// What a request to close the window does to the draft, as
+/// `App::close_compose` decides for one in the pane: a message on its way
+/// keeps the window open; an untouched one, or one whose discard was already
+/// asked, goes; a written one keeps the window open and asks.
+fn window_close(context: &egui::Context, compose: &Compose) -> Option<Message> {
+    if compose.in_flight() {
+        context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        return None;
+    }
+    if compose.is_untouched() || compose.confirming_discard() {
+        return Some(Message::DiscardCompose);
+    }
+    context.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+    Some(Message::CloseCompose)
+}
+
+/// What the window's own keys ask of the draft. `App` takes only the
+/// mailbox window's keys (see `App::draft_in_window`), so these do here what
+/// `Shortcut::Dismiss` and `Shortcut::Send` do for a draft in the pane:
+/// Escape answers "Keep writing" to the discard question or closes the
+/// draft, and Command+Enter sends one that can go.
+fn window_shortcut(ui: &egui::Ui, compose: &Compose) -> Option<Message> {
+    // An open menu takes Escape first, as in the mailbox window.
+    if !egui::Popup::is_any_open(ui.ctx()) && ui.input(|input| input.key_pressed(egui::Key::Escape))
+    {
+        return Some(if compose.confirming_discard() {
+            Message::CancelDiscard
+        } else {
+            Message::CloseCompose
+        });
+    }
+    let send = ui.input(|input| input.modifiers.command && input.key_pressed(egui::Key::Enter));
+    (send && compose.can_send()).then_some(Message::Send)
 }
 
 fn show(root: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
@@ -166,6 +185,7 @@ fn page(ui: &mut egui::Ui, compose: &Compose, messages: &mut Vec<Message>) {
             quote_choice(ui, compose, leaving, messages);
         }
     }
+    sender_choice(ui, compose, leaving, messages);
     recipient_fields(ui, compose, leaving, messages);
     ui.add_space(4.0);
     if compose.asks_for_subject() {
@@ -206,7 +226,7 @@ fn title_and_actions(
     ui.horizontal_wrapped(|ui| {
         ui.heading(
             egui::RichText::new(heading(compose))
-                .size(theme::PAGE_TITLE_SIZE)
+                .size(theme::text_size(ui, theme::PAGE_TITLE_SIZE))
                 .strong(),
         );
         ui.with_layout(
@@ -214,11 +234,10 @@ fn title_and_actions(
             |ui| {
                 // Nothing is offered while the message is on its way: it is out
                 // of the sender's hands, and a second press must not send twice.
-                let ready = compose.not_ready().is_none();
                 if ui
                     .add_enabled(
-                        ready && !leaving,
-                        theme::primary(egui::Button::new(send_label)),
+                        compose.can_send(),
+                        widgets::primary(egui::Button::new(send_label)),
                     )
                     .clicked()
                 {
@@ -253,7 +272,7 @@ fn send_label(sending: &Sending) -> &'static str {
 /// Asks whether to throw the written message away, over the window the
 /// draft is in, so the form under the question stays where it is.
 fn discard_prompt(context: &egui::Context) -> Option<Message> {
-    theme::confirmation(
+    widgets::confirmation(
         context,
         "discard-draft",
         "Discard unsaved message?",
@@ -264,6 +283,33 @@ fn discard_prompt(context: &egui::Context) -> Option<Message> {
         ],
         Message::CancelDiscard,
     )
+}
+
+/// Which of the account's addresses the message goes out from, offered
+/// when it has more than one: the first unless the message answers mail
+/// that reached another.
+fn sender_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &mut Vec<Message>) {
+    let choices = compose.sender_choices();
+    let Some(sender) = compose.sender().filter(|_| !choices.is_empty()) else {
+        return;
+    };
+    let name = ui.label(egui::RichText::new("From").color(theme::colors(ui).muted));
+    let mut chosen = sender.to_owned();
+    ui.add_enabled_ui(!leaving, |ui| {
+        egui::ComboBox::from_id_salt(("compose-sender", compose.id()))
+            .selected_text(sender)
+            .width(ui.available_width())
+            .show_ui(ui, |ui| {
+                for address in choices {
+                    ui.selectable_value(&mut chosen, address.clone(), address.as_str());
+                }
+            })
+            .response
+            .labelled_by(name.id);
+    });
+    if chosen != sender {
+        messages.push(Message::ComposeSender(chosen));
+    }
 }
 
 /// To, and Cc and Bcc once asked for; what the typed addresses mean for how
@@ -301,7 +347,7 @@ fn recipient_fields(
         "More options"
     };
     if ui
-        .add_enabled(!leaving, theme::compact_button(more))
+        .add_enabled(!leaving, widgets::compact_button(ui, more))
         .clicked()
     {
         messages.push(Message::ToggleComposeCopies);
@@ -330,7 +376,7 @@ fn attachment_list(
                 egui::RichText::new(format!("📎 {name}{size}")).color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .add_enabled(!leaving, widgets::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::RemoveComposeAttachment(index));
@@ -359,7 +405,7 @@ fn forwarded_list(
                 .color(ui.visuals().text_color()),
             );
             if ui
-                .add_enabled(!leaving, theme::compact_button("Remove"))
+                .add_enabled(!leaving, widgets::compact_button(ui, "Remove"))
                 .clicked()
             {
                 messages.push(Message::LeaveOutForwarded(file.id.clone()));
@@ -385,8 +431,11 @@ fn body_editor(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &m
             .id(body_id(compose.id()))
             .hint_text("Write your message…")
             // What is written reads at the size it will be read at.
-            .font(egui::FontId::proportional(theme::BODY_SIZE))
-            .frame(theme::field_frame(ui))
+            .font(egui::FontId::proportional(theme::text_size(
+                ui,
+                theme::BODY_SIZE,
+            )))
+            .frame(widgets::field_frame(ui))
             .desired_width(f32::INFINITY)
             .desired_rows(16),
     );
@@ -429,7 +478,10 @@ pub(super) fn folded_strip(ui: &mut egui::Ui, compose: &Compose, messages: &mut 
     theme::card(ui).show(ui, |ui| {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(theme::compact_button("Continue writing")).clicked() {
+                if ui
+                    .add(widgets::compact_button(ui, "Continue writing"))
+                    .clicked()
+                {
                     messages.push(Message::ContinueWriting);
                 }
                 ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
@@ -478,7 +530,7 @@ fn quote_choice(ui: &mut egui::Ui, compose: &Compose, leaving: bool, messages: &
     let mut quoted = compose.quote() == Some(Quote::Original);
     let choice = ui.add_enabled(
         !leaving,
-        theme::Checkbox::new(&mut quoted, "Quote the original under your text"),
+        widgets::Checkbox::new(&mut quoted, "Quote the original under your text"),
     );
     if choice.changed() {
         messages.push(Message::ToggleComposeQuote);
@@ -500,7 +552,7 @@ fn line(
     let response = ui
         .add_enabled(
             !leaving,
-            theme::text_field(ui, &mut value)
+            widgets::text_field(ui, &mut value)
                 .id(field_id(field, compose.id()))
                 .desired_width(f32::INFINITY),
         )

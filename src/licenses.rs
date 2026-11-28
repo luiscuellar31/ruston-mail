@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 /// The file `packaging/third-party-licenses.py` writes and every package
 /// carries.
-const THIRD_PARTY_NOTICES: &str = "THIRD_PARTY_LICENSES.txt";
+const THIRD_PARTY_NOTICES: &str = "THIRD_PARTY_NOTICES.txt";
 
 /// The notices that came with the running app. A build run from Cargo's
 /// output folder has none.
@@ -56,14 +56,14 @@ mod tests {
             "windows",
             &[
                 "Ruston Mail/ruston.exe",
-                "Ruston Mail/THIRD_PARTY_LICENSES.txt",
+                "Ruston Mail/THIRD_PARTY_NOTICES.txt",
             ],
         );
         let found = notices_near(&root.join("Ruston Mail/ruston.exe"));
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
-            Some(root.join("Ruston Mail/THIRD_PARTY_LICENSES.txt"))
+            Some(root.join("Ruston Mail/THIRD_PARTY_NOTICES.txt"))
         );
     }
 
@@ -73,14 +73,14 @@ mod tests {
             "macos",
             &[
                 "Ruston Mail.app/Contents/MacOS/ruston",
-                "Ruston Mail.app/Contents/Resources/THIRD_PARTY_LICENSES.txt",
+                "Ruston Mail.app/Contents/Resources/THIRD_PARTY_NOTICES.txt",
             ],
         );
         let found = notices_near(&root.join("Ruston Mail.app/Contents/MacOS/ruston"));
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
-            Some(root.join("Ruston Mail.app/Contents/Resources/THIRD_PARTY_LICENSES.txt"))
+            Some(root.join("Ruston Mail.app/Contents/Resources/THIRD_PARTY_NOTICES.txt"))
         );
     }
 
@@ -90,24 +90,21 @@ mod tests {
             "appimage",
             &[
                 "AppDir/usr/bin/ruston",
-                "AppDir/usr/share/doc/ruston-mail/THIRD_PARTY_LICENSES.txt",
+                "AppDir/usr/share/doc/ruston-mail/THIRD_PARTY_NOTICES.txt",
             ],
         );
         let found = notices_near(&root.join("AppDir/usr/bin/ruston"));
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(
             found,
-            Some(root.join("AppDir/usr/share/doc/ruston-mail/THIRD_PARTY_LICENSES.txt"))
+            Some(root.join("AppDir/usr/share/doc/ruston-mail/THIRD_PARTY_NOTICES.txt"))
         );
     }
 
     #[test]
     fn a_build_run_from_cargo_finds_no_notices() {
         // The repository's own copy is not one a package put there.
-        let root = package(
-            "cargo",
-            &["THIRD_PARTY_LICENSES.txt", "target/debug/ruston"],
-        );
+        let root = package("cargo", &["THIRD_PARTY_NOTICES.txt", "target/debug/ruston"]);
         let found = notices_near(&root.join("target/debug/ruston"));
         std::fs::remove_dir_all(&root).unwrap();
         assert_eq!(found, None);
