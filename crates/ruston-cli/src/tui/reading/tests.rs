@@ -71,6 +71,7 @@ fn an_answer_answers_the_last_message_that_is_not_a_draft() {
     let own = [AddressInfo {
         id: "addr-2".into(),
         email: "alias@example.test".into(),
+        can_send: true,
     }];
     let mut first = meta("alex@example.test");
     first.id = "m1".into();
@@ -119,6 +120,36 @@ fn an_answer_answers_the_last_message_that_is_not_a_draft() {
         Reading::new(&Conversation::default(), &[only], &own).answer,
         None
     );
+}
+
+#[test]
+fn an_answer_to_an_address_that_can_no_longer_send_leaves_from_the_primary() {
+    let own = [AddressInfo {
+        id: "addr-old".into(),
+        email: "old@example.test".into(),
+        can_send: false,
+    }];
+    let mut reached = meta("alex@example.test");
+    reached.address_id = "addr-old".into();
+    reached.to_list = vec![Recipient::new("old@example.test")];
+    reached.cc_list = vec![Recipient::new("sam@example.test")];
+    let message = ConversationMessage::Opened(FullMessage {
+        meta: reached,
+        body: "Hi".into(),
+        mime_type: "text/plain".into(),
+        verdict: Verdict::Verified,
+        attachments: Vec::new(),
+        reply_tos: Vec::new(),
+    });
+
+    let answer = Reading::new(&Conversation::default(), &[message], &own)
+        .answer
+        .unwrap();
+    // Core sends it from the primary address, which From then shows.
+    assert_eq!(answer.from, None);
+    // The old address is still the account's, so Reply all leaves it out.
+    assert_eq!(answer.to, ["alex@example.test"]);
+    assert_eq!(answer.cc, ["sam@example.test"]);
 }
 
 #[test]

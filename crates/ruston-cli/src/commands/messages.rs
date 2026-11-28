@@ -363,8 +363,8 @@ impl Change {
             Change::Label { action, label } => {
                 let label = client.folder_id(label).await?;
                 match action {
-                    LabelAction::Add => client.apply_label(ids, &label).await,
-                    LabelAction::Rm => client.remove_label(ids, &label).await,
+                    LabelAction::Add => client.label_messages(ids, &label).await,
+                    LabelAction::Rm => client.unlabel_messages(ids, &label).await,
                 }
             }
             // These commands name one message each.
@@ -449,11 +449,15 @@ async fn send(ctx: &Ctx, mut args: SendArgs) -> Result<()> {
     Ok(())
 }
 
-/// With several addresses and a terminal to ask on, asks which one sends a
-/// message that names none.
+/// With several addresses mail can go out from and a terminal to ask on,
+/// asks which one sends a message that names none.
 fn choose_sender(ctx: &Ctx, client: &Client, message: &mut DraftArgs) -> Result<()> {
     if message.from.is_none() && can_prompt(ctx) {
-        let addresses = client.addresses();
+        let addresses: Vec<AddressInfo> = client
+            .addresses()
+            .into_iter()
+            .filter(|address| address.can_send)
+            .collect();
         if addresses.len() > 1 {
             message.from = Some(prompt_sender(
                 &addresses,
@@ -566,6 +570,7 @@ mod tests {
         let addresses = [AddressInfo {
             id: "a".into(),
             email: untrusted.into(),
+            can_send: true,
         }];
         let mut output = Vec::new();
         let selected = prompt_sender(&addresses, &mut Cursor::new("\n"), &mut output).unwrap();
@@ -584,10 +589,12 @@ mod tests {
             AddressInfo {
                 id: "primary".into(),
                 email: "primary@example.test".into(),
+                can_send: true,
             },
             AddressInfo {
                 id: "alias".into(),
                 email: "alias@example.test".into(),
+                can_send: true,
             },
         ];
 

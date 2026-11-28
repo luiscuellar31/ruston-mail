@@ -225,6 +225,38 @@ fn refreshed_read_and_star_flags_keep_grouping_until_fresh_inspection_updates_me
 }
 
 #[test]
+fn a_label_given_to_a_split_message_keeps_its_thread_split() {
+    let (mut mailbox, mut split) = inspected_last_inbox();
+    let label = MailAction::SetLabel {
+        label: Folder::label("work", "Work"),
+        on: true,
+    };
+    let sent = mailbox
+        .start_action_on("m49-b".into(), SummaryKind::Message, label, 10)
+        .and_then(|start| start.send)
+        .unwrap();
+    assert_eq!(mailbox.row("m49-b").unwrap().labels, ["work"]);
+    let _ = mailbox.finish_action(&sent, Ok(()));
+
+    // Proton now lists the conversation with the label its message was
+    // given, beside the folder it is in.
+    let refresh = mailbox.refresh(11).unwrap();
+    let mut page = full_page(0, 120).unwrap();
+    page.conversations.last_mut().unwrap().labels = vec!["0".into(), "work".into()];
+    mailbox.finish_page(refresh.id, Ok(page));
+    assert!(!mailbox.has_row("p49"), "the thread came back whole");
+    assert_eq!(mailbox.row("m49-b").unwrap().labels, ["work"]);
+    assert!(mailbox.row("m49-a").unwrap().labels.is_empty());
+    assert_eq!(mailbox.visible_count(), PAGE_SIZE as usize + 1);
+
+    // The next inspection brings each message's own labels.
+    split[1].labels = vec!["0".into(), "work".into()];
+    mailbox.split_conversation(&Folder::INBOX, "p49", split);
+    assert_eq!(mailbox.row("m49-b").unwrap().labels, ["0", "work"]);
+    assert!(mailbox.indexes_its_rows());
+}
+
+#[test]
 fn overlapping_pages_keep_verified_groups_and_deduplicate_new_rows() {
     let (mut mailbox, _) = inspected_last_inbox();
     let next = mailbox.load_more(10).unwrap();

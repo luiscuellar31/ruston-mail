@@ -4,7 +4,7 @@
 use super::{
     App, Effects, ListStatus, Mailbox, Message, PageRequest, RequestId, SearchRequest, SessionEpoch,
 };
-use crate::mail::{ConversationPage, Folder, MailboxError, OwnPlaces};
+use crate::mail::{ConversationPage, Folder, ListFilter, ListOrder, MailboxError, OwnPlaces};
 
 impl App {
     /// Proton owns the folder counts; reload them after a change.
@@ -32,6 +32,7 @@ impl App {
             return Effects::none();
         };
         let current = self
+            .session
             .folders
             .iter()
             .find(|place| place.custom_id() == Some(id))
@@ -73,14 +74,33 @@ impl App {
             self.abandon_reader_load();
         }
         self.showing_settings = false;
-        self.pending_link = None;
-        self.failed_save = None;
+        self.session.pending_link = None;
+        self.session.failed_save = None;
         self.remember_folder(&folder);
         let request = self.next_request();
         let page = self
             .active_mailbox()
             .and_then(|mailbox| mailbox.select_folder(folder, request));
 
+        self.fetch_page(page)
+    }
+
+    /// Lists only the open folder's conversations that `filter` shows, or all
+    /// of them again.
+    pub(super) fn show_only(&mut self, filter: ListFilter) -> Effects {
+        let request = self.next_request();
+        let page = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.show_only(filter, request));
+        self.fetch_page(page)
+    }
+
+    /// Lists the open folder's conversations in `order`.
+    pub(super) fn sort_by(&mut self, order: ListOrder) -> Effects {
+        let request = self.next_request();
+        let page = self
+            .active_mailbox()
+            .and_then(|mailbox| mailbox.sort_by(order, request));
         self.fetch_page(page)
     }
 
@@ -162,7 +182,7 @@ impl App {
         if page.is_some() {
             self.inspections.cancel();
         }
-        let folders = if self.refetch_folders {
+        let folders = if self.session.refetch_folders {
             self.fetch_folders()
         } else {
             Effects::none()
@@ -185,13 +205,13 @@ impl App {
 
         let refresh = self.refresh_mailbox();
         // Nothing was loading before, so a refresh on its way is this one.
-        self.automatic_refresh = self
-            .mailbox
-            .as_ref()
-            .and_then(|mailbox| match mailbox.status() {
-                ListStatus::Refreshing(request) => Some(request),
-                _ => None,
-            });
+        self.session.automatic_refresh =
+            self.mailbox
+                .as_ref()
+                .and_then(|mailbox| match mailbox.status() {
+                    ListStatus::Refreshing(request) => Some(request),
+                    _ => None,
+                });
         let notifications = if self.is_demo() {
             Effects::none()
         } else {
@@ -219,11 +239,21 @@ impl App {
             return Effects::none();
         };
 
-        let (id, folder, page, page_size) =
-            (request.id, request.folder, request.page, request.page_size);
+        let PageRequest {
+            id,
+            folder,
+            filter,
+            order,
+            page,
+            page_size,
+        } = request;
 
         Effects::perform(
-            async move { backend.list_conversations(&folder, page, page_size).await },
+            async move {
+                backend
+                    .list_conversations(&folder, filter, order, page, page_size)
+                    .await
+            },
             move |result| Message::ConversationsLoaded(id, result),
         )
     }
@@ -280,7 +310,7 @@ impl App {
     /// Asks for the folders the account made. They change rarely, so only a
     /// list that failed to load is asked for again, by the next refresh.
     pub(super) fn fetch_folders(&mut self) -> Effects {
-        self.refetch_folders = false;
+        self.session.refetch_folders = false;
         let Some(backend) = self.backend.clone() else {
             return Effects::none();
         };
@@ -303,14 +333,14 @@ impl App {
         }
         match result {
             Ok(places) => {
-                self.folders = places.folders;
-                self.place_looks = places.looks;
+                self.session.folders = places.folders;
+                self.session.place_looks = places.looks;
             }
             // Without them the sidebar shows Proton's own until the next
             // refresh asks again. A list that did not arrive says nothing about
             // the open folder, which stays open.
             Err(error) => {
-                self.refetch_folders = true;
+                self.session.refetch_folders = true;
                 self.end_session_if_expired(Some(error));
                 return Effects::none();
             }
@@ -325,7 +355,7 @@ impl App {
             return Effects::none();
         };
 
-        let folders = self.folders.clone();
+        let folders = self.session.folders.clone();
 
         Effects::perform(
             async move { backend.conversation_counts(&folders).await },

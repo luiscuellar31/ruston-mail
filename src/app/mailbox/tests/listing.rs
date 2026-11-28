@@ -107,6 +107,8 @@ fn opening_loads_first_inbox_page_with_unknown_counts() {
         PageRequest {
             id: 1,
             folder: Folder::INBOX,
+            filter: ListFilter::All,
+            order: ListOrder::NewestFirst,
             page: 0,
             page_size: PAGE_SIZE,
         }
@@ -375,4 +377,147 @@ fn moves_that_did_not_leave_keep_load_more_on_the_next_page() {
 
     // One move was refused and the other taken back: nothing left the pages.
     assert_eq!(mailbox.load_more(6).unwrap().page, 1);
+}
+
+#[test]
+fn the_unread_filter_lists_only_unread_mail_and_gives_the_whole_list_back() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+
+    let request = mailbox
+        .show_only(ListFilter::Unread, 3)
+        .expect("a first page of unread conversations");
+    assert_eq!((request.filter, request.page), (ListFilter::Unread, 0));
+    assert_eq!(mailbox.status(), ListStatus::Loading(3));
+    mailbox.finish_page(request.id, page_of(vec![unread("b")], 1));
+    assert_eq!(ids(&mailbox), ["b"]);
+    assert_eq!(mailbox.show_only(ListFilter::Unread, 4), None);
+
+    // Without the filter, the whole list is back at once.
+    assert_eq!(mailbox.show_only(ListFilter::All, 5), None);
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+}
+
+#[test]
+fn the_oldest_first_order_asks_proton_again_and_gives_the_kept_list_back() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+
+    let request = mailbox
+        .sort_by(ListOrder::OldestFirst, 3)
+        .expect("a first page, oldest first");
+    assert_eq!(
+        (request.filter, request.order, request.page),
+        (ListFilter::All, ListOrder::OldestFirst, 0)
+    );
+    assert_eq!(mailbox.status(), ListStatus::Loading(3));
+    mailbox.finish_page(request.id, dated_page(&[("old", 10), ("new", 90)], 2));
+    assert_eq!(ids(&mailbox), ["old", "new"]);
+    assert_eq!(mailbox.sort_by(ListOrder::OldestFirst, 4), None);
+
+    // A filter chosen now keeps the order, and the other way round.
+    let read = mailbox.show_only(ListFilter::Read, 5).unwrap();
+    assert_eq!(
+        (read.filter, read.order),
+        (ListFilter::Read, ListOrder::OldestFirst)
+    );
+    mailbox.finish_page(read.id, dated_page(&[("old", 10)], 1));
+    let all = mailbox.show_only(ListFilter::All, 6).unwrap();
+    assert_eq!(all.order, ListOrder::OldestFirst);
+    mailbox.finish_page(all.id, dated_page(&[("old", 10), ("new", 90)], 2));
+
+    // Newest first again, the list kept from before is back at once.
+    assert_eq!(mailbox.sort_by(ListOrder::NewestFirst, 7), None);
+    assert_eq!(mailbox.status(), ListStatus::Loaded);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+}
+
+#[test]
+fn another_folder_opens_with_all_its_mail() {
+    let mut mailbox = loaded_inbox(&["a", "b"], 2);
+    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
+    mailbox.finish_page(request.id, page_of(vec![unread("b")], 1));
+    let request = mailbox.sort_by(ListOrder::OldestFirst, 30).unwrap();
+    mailbox.finish_page(request.id, page_of(vec![unread("b")], 1));
+
+    let archive = mailbox
+        .select_folder(sys(MailFolder::Archive), 4)
+        .expect("the Archive's first page");
+    assert_eq!(archive.filter, ListFilter::All);
+    assert_eq!(archive.order, ListOrder::NewestFirst);
+    assert_eq!(mailbox.filter(), ListFilter::All);
+    assert_eq!(mailbox.order(), ListOrder::NewestFirst);
+
+    // The Inbox comes back as it was listed whole, not as the filter left it.
+    assert_eq!(mailbox.select_folder(Folder::INBOX, 5), None);
+    assert_eq!(ids(&mailbox), ["a", "b"]);
+}
+
+#[test]
+fn mail_read_under_the_unread_filter_stays_and_later_pages_follow_proton() {
+    let (mut mailbox, request) = open();
+    mailbox.finish_page(request.id, full_page(0, 120));
+    let request = mailbox.show_only(ListFilter::Unread, 3).unwrap();
+    let mut first = full_page(0, 120).unwrap();
+    for row in &mut first.conversations {
+        row.unread = true;
+    }
+    mailbox.finish_page(request.id, Ok(first));
+
+    let read = mailbox
+        .start_action_on(
+            "p3".into(),
+            SummaryKind::Conversation,
+            MailAction::SetUnread(false),
+            4,
+        )
+        .and_then(|start| start.send)
+        .unwrap();
+    let _ = mailbox.finish_action(&read, Ok(()));
+
+    // Read, it stays until the list is loaded again.
+    let row = mailbox
+        .conversations()
+        .iter()
+        .find(|row| row.id == "p3")
+        .expect("p3 is still listed");
+    assert!(!row.unread);
+    // Proton no longer lists it among the unread, so p50 is now on its first
+    // page: asking for the second would skip it.
+    let more = mailbox.load_more(5).unwrap();
+    assert_eq!((more.filter, more.page), (ListFilter::Unread, 0));
+}
+
+#[test]
+fn mail_made_unread_under_the_read_filter_stays_and_later_pages_follow_proton() {
+    // The first page of what `filter` shows, then `p3` made unread or read
+    // in turn: the page asked for next.
+    let next_page_after = |filter, changes: &[bool]| {
+        let (mut mailbox, request) = open();
+        mailbox.finish_page(request.id, full_page(0, 120));
+        let request = mailbox.show_only(filter, 3).unwrap();
+        mailbox.finish_page(request.id, full_page(0, 120));
+        for (unread, id) in changes.iter().zip(4..) {
+            let sent = mailbox
+                .start_action_on(
+                    "p3".into(),
+                    SummaryKind::Conversation,
+                    MailAction::SetUnread(*unread),
+                    id,
+                )
+                .and_then(|start| start.send)
+                .unwrap();
+            let _ = mailbox.finish_action(&sent, Ok(()));
+        }
+        // It stays until the list is loaded again.
+        assert!(mailbox.conversations().iter().any(|row| row.id == "p3"));
+        mailbox.load_more(20).unwrap().page
+    };
+
+    // Unread, Proton no longer lists it among the read, so p50 is now on its
+    // first page: asking for the second would skip it.
+    assert_eq!(next_page_after(ListFilter::Read, &[true]), 0);
+    // Read again, it is back among them, and the pages are as they were.
+    assert_eq!(next_page_after(ListFilter::Read, &[true, false]), 1);
+    // A filter that does not look at what is read moves nothing.
+    assert_eq!(next_page_after(ListFilter::WithFiles, &[true]), 1);
 }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::{MemoryStore, Paths, SecretStore, Session};
+use crate::session::{MemoryStore, Paths, ProfileStorage, SecretStore, Session};
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
 use wiremock::matchers::{body_json, header, method, path};
@@ -61,7 +61,9 @@ async fn settled_outlasts_a_request_cut_short_during_its_refresh() {
         .expect("settled once the refresh ended");
     let auth = c.auth.read().await;
     assert_eq!(
-        auth.refresh.as_ref().map(|t| t.expose_secret().to_owned()),
+        auth.tokens
+            .as_ref()
+            .map(|tokens| tokens.refresh.expose_secret().to_owned()),
         Some("new-ref".to_owned())
     );
 }
@@ -725,11 +727,10 @@ async fn an_expired_access_token_is_renewed_and_the_request_sent_again() {
     assert_eq!(decoded.value, 99);
     server.verify().await;
     let auth = http.auth.read().await;
-    let held =
-        |token: &Option<SecretString>| token.as_ref().map(|token| token.expose_secret().to_owned());
+    let held = auth.tokens.as_ref().unwrap();
     assert_eq!(
-        (held(&auth.access), held(&auth.refresh)),
-        (Some("new-acc".to_owned()), Some("new-ref".to_owned()))
+        (held.access.expose_secret(), held.refresh.expose_secret()),
+        ("new-acc", "new-ref")
     );
 }
 
@@ -767,8 +768,14 @@ async fn refresh_persistence_failure_reaches_the_request() {
         .unwrap_err();
     assert!(matches!(err, Error::Session(message) if message == "keyring unavailable"));
     let state = c.auth.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
 }
 
 #[tokio::test]
@@ -830,28 +837,29 @@ async fn failed_persistence_keeps_newer_in_memory_tokens_for_next_refresh() {
         "ruston-unsaved-refresh-{}-{unique}",
         std::process::id()
     ));
-    let paths = Paths::with_base(&base);
-    let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
-    Session {
-        uid: "uid".into(),
-        app_version: "Other".into(),
-        base_url: server.uri(),
-        password_mode: 1,
-        user_agent: None,
-        user_id: "user-1".into(),
-    }
-    .save(
-        &paths,
+    let storage = ProfileStorage::new(
+        Paths::with_base(&base),
         "ruston",
-        store.as_ref(),
-        &Tokens {
-            uid: "uid".into(),
-            access: SecretString::from("old-acc"),
-            refresh: SecretString::from("old-ref"),
-        },
-        &SecretString::from("skp"),
-    )
-    .unwrap();
+        Arc::new(MemoryStore::new()),
+    );
+    storage
+        .save(
+            &Session {
+                uid: "uid".into(),
+                app_version: "Other".into(),
+                base_url: server.uri(),
+                password_mode: 1,
+                user_agent: None,
+                user_id: "user-1".into(),
+            },
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
 
     let mut client = client(&server.uri());
     client
@@ -861,7 +869,7 @@ async fn failed_persistence_keeps_newer_in_memory_tokens_for_next_refresh() {
             SecretString::from("old-ref"),
         )
         .await;
-    crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+    crate::mail::Client::wire_refresh(&mut client, &storage);
     // Only saving is made to fail; loading stays the client's own.
     client.set_refresh_persist_fallible(Arc::new(|_| {
         Err(Error::Session("keyring unavailable".into()))
@@ -870,13 +878,14 @@ async fn failed_persistence_keeps_newer_in_memory_tokens_for_next_refresh() {
         client.decode::<ValueResp>(Request::get("/protected")).await,
         Err(Error::Session(_))
     ));
-    crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+    crate::mail::Client::wire_refresh(&mut client, &storage);
 
     let result: ValueResp = client.decode(Request::get("/protected")).await.unwrap();
     assert_eq!(result.value, 99);
     server.verify().await;
     assert_eq!(
-        Session::load(&paths, "ruston", store.as_ref())
+        storage
+            .load()
             .unwrap()
             .unwrap()
             .tokens
@@ -950,8 +959,14 @@ async fn a_request_cancelled_mid_refresh_keeps_the_rotated_tokens() {
     );
     let state = http.auth_state();
     let state = state.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
     server.verify().await;
 }
 
@@ -1019,29 +1034,26 @@ async fn waiting_for_the_profile_outlasts_a_refresh_until_its_tokens_are_saved()
         "ruston-settle-session-{}-{unique}",
         std::process::id()
     ));
-    let paths = Paths::with_base(&base);
     let slow_store = Arc::new(SlowStore::default());
-    let store: Arc<dyn SecretStore> = slow_store.clone();
-    Session {
-        uid: "uid".into(),
-        app_version: "Other".into(),
-        base_url: server.uri(),
-        password_mode: 1,
-        user_agent: None,
-        user_id: "user-1".into(),
-    }
-    .save(
-        &paths,
-        "ruston",
-        store.as_ref(),
-        &Tokens {
-            uid: "uid".into(),
-            access: SecretString::from("old-acc"),
-            refresh: SecretString::from("old-ref"),
-        },
-        &SecretString::from("skp"),
-    )
-    .unwrap();
+    let storage = ProfileStorage::new(Paths::with_base(&base), "ruston", slow_store.clone());
+    storage
+        .save(
+            &Session {
+                uid: "uid".into(),
+                app_version: "Other".into(),
+                base_url: server.uri(),
+                password_mode: 1,
+                user_agent: None,
+                user_id: "user-1".into(),
+            },
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
     slow_store
         .slow
         .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -1053,20 +1065,18 @@ async fn waiting_for_the_profile_outlasts_a_refresh_until_its_tokens_are_saved()
             SecretString::from("old-ref"),
         )
         .await;
-    crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+    crate::mail::Client::wire_refresh(&mut client, &storage);
 
     let request =
         tokio::spawn(async move { client.decode::<ValueResp>(Request::get("/protected")).await });
     requested.notified().await;
     // As Ctrl+C would, once Proton has spent the old refresh token.
-    let waiting = paths.clone();
-    tokio::task::spawn_blocking(move || Session::wait_unlocked(&waiting, "ruston"))
+    let waiting = storage.clone();
+    tokio::task::spawn_blocking(move || waiting.wait_unlocked())
         .await
         .unwrap()
         .unwrap();
-    let saved = Session::load(&paths, "ruston", store.as_ref())
-        .unwrap()
-        .unwrap();
+    let saved = storage.load().unwrap().unwrap();
     assert_eq!(saved.tokens.refresh.expose_secret(), "new-ref");
     assert_eq!(request.await.unwrap().unwrap().value, 99);
     server.verify().await;
@@ -1131,8 +1141,14 @@ async fn concurrent_401s_refresh_shared_session_once() {
     assert_eq!(a.unwrap().value, 99);
     assert_eq!(b.unwrap().value, 99);
     let state = auth.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
 }
 
 #[tokio::test]
@@ -1175,28 +1191,29 @@ async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
         "ruston-shared-refresh-{}-{unique}",
         std::process::id()
     ));
-    let paths = Paths::with_base(&base);
-    let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
-    Session {
-        uid: "uid".into(),
-        app_version: "Other".into(),
-        base_url: server.uri(),
-        password_mode: 1,
-        user_agent: None,
-        user_id: "user-1".into(),
-    }
-    .save(
-        &paths,
+    let storage = ProfileStorage::new(
+        Paths::with_base(&base),
         "ruston",
-        store.as_ref(),
-        &Tokens {
-            uid: "uid".into(),
-            access: SecretString::from("old-acc"),
-            refresh: SecretString::from("old-ref"),
-        },
-        &SecretString::from("skp"),
-    )
-    .unwrap();
+        Arc::new(MemoryStore::new()),
+    );
+    storage
+        .save(
+            &Session {
+                uid: "uid".into(),
+                app_version: "Other".into(),
+                base_url: server.uri(),
+                password_mode: 1,
+                user_agent: None,
+                user_id: "user-1".into(),
+            },
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("old-acc"),
+                refresh: SecretString::from("old-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
 
     let mut clients = Vec::new();
     for _ in 0..2 {
@@ -1208,7 +1225,7 @@ async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
                 SecretString::from("old-ref"),
             )
             .await;
-        crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
+        crate::mail::Client::wire_refresh(&mut client, &storage);
         clients.push(client);
     }
 
@@ -1220,7 +1237,8 @@ async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
     assert_eq!(second.unwrap().value, 99);
     server.verify().await;
     assert_eq!(
-        Session::load(&paths, "ruston", store.as_ref())
+        storage
+            .load()
             .unwrap()
             .unwrap()
             .tokens
@@ -1236,7 +1254,7 @@ async fn separate_clients_reuse_rotated_tokens_from_shared_session() {
 /// `cli-ref`, as after the machine slept. Returns the folder to remove.
 async fn client_behind_its_saved_session(
     server: &MockServer,
-) -> (HttpClient, Paths, Arc<dyn SecretStore>, std::path::PathBuf) {
+) -> (HttpClient, ProfileStorage, std::path::PathBuf) {
     // Tests run in parallel and the clock can read the same for two of
     // them, so a counter keeps each directory to itself.
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
@@ -1249,28 +1267,29 @@ async fn client_behind_its_saved_session(
         std::process::id(),
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
-    let paths = Paths::with_base(&base);
-    let store: Arc<dyn SecretStore> = Arc::new(MemoryStore::new());
-    Session {
-        uid: "uid".into(),
-        app_version: "Other".into(),
-        base_url: server.uri(),
-        password_mode: 1,
-        user_agent: None,
-        user_id: "user-1".into(),
-    }
-    .save(
-        &paths,
+    let storage = ProfileStorage::new(
+        Paths::with_base(&base),
         "ruston",
-        store.as_ref(),
-        &Tokens {
-            uid: "uid".into(),
-            access: SecretString::from("cli-acc"),
-            refresh: SecretString::from("cli-ref"),
-        },
-        &SecretString::from("skp"),
-    )
-    .unwrap();
+        Arc::new(MemoryStore::new()),
+    );
+    storage
+        .save(
+            &Session {
+                uid: "uid".into(),
+                app_version: "Other".into(),
+                base_url: server.uri(),
+                password_mode: 1,
+                user_agent: None,
+                user_id: "user-1".into(),
+            },
+            &Tokens {
+                uid: "uid".into(),
+                access: SecretString::from("cli-acc"),
+                refresh: SecretString::from("cli-ref"),
+            },
+            &SecretString::from("skp"),
+        )
+        .unwrap();
     let mut client = client(&server.uri());
     client
         .set_tokens(
@@ -1279,8 +1298,8 @@ async fn client_behind_its_saved_session(
             SecretString::from("old-ref"),
         )
         .await;
-    crate::mail::Client::wire_refresh(&mut client, store.clone(), paths.clone(), "ruston");
-    (client, paths, store, base)
+    crate::mail::Client::wire_refresh(&mut client, &storage);
+    (client, storage, base)
 }
 
 /// Answers `token` with 401 `times` times, each after `delay`.
@@ -1329,11 +1348,12 @@ async fn saved_tokens_that_have_also_expired_are_refreshed() {
         .expect(1)
         .mount(&server)
         .await;
-    let (client, paths, store, base) = client_behind_its_saved_session(&server).await;
+    let (client, storage, base) = client_behind_its_saved_session(&server).await;
 
     let result = client.decode::<ValueResp>(Request::get("/protected")).await;
 
-    let saved = Session::load(&paths, "ruston", store.as_ref())
+    let saved = storage
+        .load()
         .unwrap()
         .unwrap()
         .tokens
@@ -1354,7 +1374,7 @@ async fn a_request_asks_proton_for_new_tokens_at_most_once() {
     refuse(&server, "cli-acc", 1, std::time::Duration::ZERO).await;
     rotate_saved_refresh_token(&server).await;
     refuse(&server, "new-acc", 1, std::time::Duration::ZERO).await;
-    let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+    let (client, _, base) = client_behind_its_saved_session(&server).await;
 
     let result = client.decode::<ValueResp>(Request::get("/protected")).await;
 
@@ -1373,7 +1393,7 @@ async fn a_request_asks_proton_for_new_tokens_at_most_once() {
         .expect(1)
         .mount(&server)
         .await;
-    let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+    let (client, _, base) = client_behind_its_saved_session(&server).await;
 
     let result = client.decode::<ValueResp>(Request::get("/protected")).await;
 
@@ -1400,7 +1420,7 @@ async fn concurrent_requests_share_one_refresh_of_expired_saved_tokens() {
         .expect(2)
         .mount(&server)
         .await;
-    let (client, _, _, base) = client_behind_its_saved_session(&server).await;
+    let (client, _, base) = client_behind_its_saved_session(&server).await;
 
     let (first, second) = tokio::join!(
         client.decode::<ValueResp>(Request::get("/protected")),

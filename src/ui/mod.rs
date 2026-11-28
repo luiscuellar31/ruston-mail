@@ -21,11 +21,12 @@ mod taskbar;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod widgets;
 mod window_place;
 
 use eframe::egui;
 
-use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, Notice, UiEffect, UndoMove};
+use crate::app::{App, AuthState, Effects, Key, KeyPress, Message, UiEffect};
 use crate::mail::Folder;
 use crate::runtime::Runtime;
 use crate::settings::{ComposePlacement, MIN_WINDOW_SIZE, Settings, Window};
@@ -49,53 +50,47 @@ pub(super) struct UiState {
     reveal_conversation: Option<String>,
     conversation_scroll: Option<mailbox::ConversationScroll>,
     compact_view: mailbox::CompactView,
-    bottom_notice: Option<TimedNotice>,
+    bottom_notice: Option<mailbox::TimedNotice>,
     notification_status: notifications::Status,
 }
 
-/// What the notice at the foot of the mailbox says: the offer to take back
-/// the last move, or a confirmation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum BottomNotice {
-    Undo(Box<UndoMove>),
-    Confirmation(Notice),
-}
-
-/// The bottom notice on screen, and when it goes.
-struct TimedNotice {
-    notice: BottomNotice,
-    expires_at: f64,
-}
-
 pub(crate) fn main_viewport(settings: &Settings) -> egui::ViewportBuilder {
-    let viewport = identity::viewport()
-        .with_inner_size([settings.window.width, settings.window.height])
-        .with_min_inner_size(MIN_WINDOW_SIZE);
+    window_frame(
+        identity::viewport()
+            .with_inner_size([settings.window.width, settings.window.height])
+            .with_min_inner_size(MIN_WINDOW_SIZE),
+    )
+}
 
-    #[cfg(target_os = "macos")]
-    let viewport = viewport
+/// The main window's frame: on macOS, the app draws under a title bar it
+/// hides, keeping only the window's buttons.
+#[cfg(target_os = "macos")]
+fn window_frame(viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    viewport
         .with_fullsize_content_view(true)
         .with_titlebar_shown(false)
-        .with_title_shown(false);
+        .with_title_shown(false)
+}
 
+/// Other systems keep their own title bar.
+#[cfg(not(target_os = "macos"))]
+fn window_frame(viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
     viewport
 }
 
 pub fn run(demo: bool, activation: crate::launch::Instance) -> eframe::Result {
-    #[cfg(target_os = "windows")]
     identity::set_process_app_id()?;
 
     // The app takes the activation once its window draws. A renderer that
     // fails before then leaves it for the next one.
     let activation = std::cell::Cell::new(Some(activation));
     let result = open(demo, &activation, graphics::preferred_renderer());
-    #[cfg(target_os = "windows")]
-    if let Err(eframe::Error::Wgpu(error)) = &result
+    if let Some((renderer, why)) = graphics::next_renderer(&result)
         && let Some(instance) = activation.take()
     {
-        eprintln!("Ruston Mail: DirectX 12 cannot draw the window ({error}); using OpenGL");
+        eprintln!("Ruston Mail: {why}");
         activation.set(Some(instance));
-        return open(demo, &activation, eframe::Renderer::Glow);
+        return open(demo, &activation, renderer);
     }
     result
 }
@@ -106,13 +101,7 @@ fn open(
     renderer: eframe::Renderer,
 ) -> eframe::Result {
     let settings = Settings::load(demo);
-    let options = eframe::NativeOptions {
-        viewport: main_viewport(&settings),
-        renderer,
-        #[cfg(target_os = "windows")]
-        wgpu_options: graphics::wgpu_options(),
-        ..Default::default()
-    };
+    let options = graphics::native_options(main_viewport(&settings), renderer);
 
     eframe::run_native(
         "Ruston Mail",
@@ -140,10 +129,6 @@ struct DesktopApp {
     auto_refresh: AutoRefresh,
     /// When to ask GitHub whether a newer release is out.
     update_schedule: crate::releases::Schedule,
-    /// Preferences being edited in the settings pane until Apply is pressed.
-    settings_draft: Option<Settings>,
-    /// Where to go after the user decides what to do with unsaved preferences.
-    pending_settings_exit: Option<SettingsExit>,
     /// Set while the root window asks whether to discard a written message,
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
@@ -189,11 +174,6 @@ struct DesktopApp {
     readme_screenshots: Option<readme_screenshots::Session>,
 }
 
-enum SettingsExit {
-    Navigate(Box<Message>),
-    CloseWindow,
-}
-
 /// What the screen drawn in one pass asks of the shell.
 #[derive(Default)]
 struct ScreenPass {
@@ -206,7 +186,6 @@ struct ScreenPass {
 
 /// The answers given in one pass to the prompts then open.
 struct PromptAnswers {
-    settings_exit: Option<settings::ExitDecision>,
     discard: Option<Message>,
     wait: Option<close::WaitDecision>,
 }
@@ -218,12 +197,19 @@ impl DesktopApp {
         if let Some(window) = &app.main_window {
             window_place::restore(window, app.app.settings().window);
         }
-        #[cfg(target_os = "macos")]
-        {
-            app.native_menu = macos::Menu::install(&creation.egui_ctx);
-        }
+        app.install_native_menu(&creation.egui_ctx);
         app
     }
+
+    /// Puts the app's commands in macOS's menu bar.
+    #[cfg(target_os = "macos")]
+    fn install_native_menu(&mut self, context: &egui::Context) {
+        self.native_menu = macos::Menu::install(context);
+    }
+
+    /// Other systems have no menu bar of the app's own.
+    #[cfg(not(target_os = "macos"))]
+    fn install_native_menu(&mut self, _context: &egui::Context) {}
 
     fn with_context(context: &egui::Context, demo: bool, settings: Settings) -> Self {
         theme::install(context);
@@ -241,8 +227,6 @@ impl DesktopApp {
             unread_badge: None,
             auto_refresh: AutoRefresh::default(),
             update_schedule: crate::releases::Schedule::default(),
-            settings_draft: None,
-            pending_settings_exit: None,
             pending_discard: None,
             pending_account: None,
             window_close_approved: false,
@@ -298,36 +282,6 @@ impl DesktopApp {
             )
         {
             return;
-        }
-        let message = if self.app.showing_settings() {
-            match message {
-                Message::KeyPressed(press) if press.leaves_settings() => {
-                    Message::ShowSettings(false)
-                }
-                other => other,
-            }
-        } else {
-            message
-        };
-        if self.app.showing_settings()
-            && matches!(
-                message,
-                Message::ShowSettings(false)
-                    | Message::SelectFolder(_)
-                    | Message::OpenCompose
-                    | Message::Logout
-                    | Message::SwitchAccount(_)
-                    | Message::AddAccount
-            )
-        {
-            if self.pending_settings_exit.is_some() {
-                return;
-            }
-            if self.has_unapplied_settings() {
-                self.pending_settings_exit = Some(SettingsExit::Navigate(Box::new(message)));
-                context.request_repaint();
-                return;
-            }
         }
         let changing_account = matches!(message, Message::SwitchAccount(_) | Message::AddAccount);
         if matches!(message, Message::Logout) || changing_account {
@@ -421,47 +375,18 @@ impl DesktopApp {
             .cancel_superseded(|request| self.app.accepts_page(request), now);
     }
 
-    fn resolve_settings_exit(&mut self, decision: settings::ExitDecision, context: &egui::Context) {
-        let Some(destination) = self.pending_settings_exit.take() else {
-            return;
-        };
-        context.request_repaint();
-        match decision {
-            settings::ExitDecision::KeepEditing => return,
-            settings::ExitDecision::Discard => {}
-            settings::ExitDecision::Apply => {
-                if let Some(draft) = &self.settings_draft {
-                    for change in settings::preference_changes(self.app.settings(), draft) {
-                        self.dispatch(change, context);
-                    }
-                }
-            }
-        }
-        self.settings_draft = None;
-        match destination {
-            SettingsExit::Navigate(message) => self.dispatch(*message, context),
-            SettingsExit::CloseWindow => self.request_window_close(context),
-        }
-    }
-
     fn request_window_close(&mut self, context: &egui::Context) {
         if self.window_close_approved {
             return;
         }
-        // A send, a native file dialog or a settings prompt already open keeps
-        // the window open without asking anything more.
+        // A send or a native file dialog keeps the window open without asking
+        // anything more.
         let sending = self
             .app
             .compose()
             .is_some_and(crate::app::Compose::in_flight);
-        if sending || self.file_dialog_open || self.pending_settings_exit.is_some() {
+        if sending || self.file_dialog_open {
             Self::cancel_root_close(context);
-            return;
-        }
-        if self.has_unapplied_settings() {
-            Self::cancel_root_close(context);
-            self.pending_settings_exit = Some(SettingsExit::CloseWindow);
-            Self::bring_main_window_forward(context);
             return;
         }
         // A written draft is discarded only once asked, and so is one kept
@@ -513,17 +438,7 @@ impl DesktopApp {
     /// confirmation, or a native file dialog, whose result is what releases
     /// its slot. Shortcuts, menus, dropped files and activations wait for it.
     fn prompt_open(&self) -> bool {
-        self.pending_discard.is_some()
-            || self.pending_settings_exit.is_some()
-            || self.file_dialog_open
-    }
-
-    /// Whether the open settings page has changes that are not applied yet.
-    fn has_unapplied_settings(&self) -> bool {
-        self.app.showing_settings()
-            && self.settings_draft.as_ref().is_some_and(|draft| {
-                !settings::preference_changes(self.app.settings(), draft).is_empty()
-            })
+        self.pending_discard.is_some() || self.file_dialog_open
     }
 
     /// What signing out leaves: the demo mailbox, or the account.
@@ -610,11 +525,9 @@ impl DesktopApp {
                     egui::ViewportId::ROOT,
                     egui::ViewportCommand::Minimized(false),
                 );
-                // A new message comes forward in the draft's own window, unless
-                // leaving Settings first waits on its question in this one.
+                // A new message comes forward in the draft's own window.
                 let destination = if self.app.compose().is_some()
                     && self.app.settings().compose_placement == ComposePlacement::Window
-                    && self.pending_settings_exit.is_none()
                 {
                     compose::viewport_id()
                 } else {
@@ -623,6 +536,12 @@ impl DesktopApp {
                 Self::bring_forward(context, destination);
             }
             macos::Action::Zoom(step) => self.step_zoom(step, context),
+            macos::Action::ToggleSidebar
+                if self.app.auth_state().is_authenticated() && !self.prompt_open() =>
+            {
+                let folded = self.app.settings().sidebar_folded;
+                self.dispatch(Message::FoldSidebar(!folded), context);
+            }
             macos::Action::Edit(edit) => {
                 let events = edit.events();
                 if self.composer_window_focused(context) {
@@ -826,13 +745,9 @@ impl DesktopApp {
         }
     }
 
-    /// Moves the zoom one offered step, keeping an open Settings page, whose
-    /// draft would otherwise put the old zoom back, in step with it.
+    /// Moves the zoom one offered step.
     fn step_zoom(&mut self, step: settings::ZoomStep, context: &egui::Context) {
         let zoom = settings::zoom_step(self.app.settings().zoom, step);
-        if let Some(draft) = &mut self.settings_draft {
-            draft.zoom = zoom;
-        }
         if (zoom - self.app.settings().zoom).abs() > f32::EPSILON {
             self.dispatch(Message::SetZoom(zoom), context);
         }
@@ -871,14 +786,14 @@ impl DesktopApp {
     }
 
     fn app_has_focus(&self, context: &egui::Context) -> bool {
-        context.input_for(egui::ViewportId::ROOT, |input| input.focused)
+        context.input_for(egui::ViewportId::ROOT, has_keyboard)
             || self.composer_window_focused(context)
     }
 
     fn composer_window_focused(&self, context: &egui::Context) -> bool {
         self.app.settings().compose_placement == ComposePlacement::Window
             && self.app.compose().is_some()
-            && context.input_for(compose::viewport_id(), |input| input.focused)
+            && context.input_for(compose::viewport_id(), has_keyboard)
     }
 
     /// Seconds since this window opened, by the system's clock. egui's own
@@ -982,9 +897,38 @@ impl DesktopApp {
     #[cfg(not(target_os = "macos"))]
     fn keep_secure_input(&mut self, _context: &egui::Context) {}
 
+    /// Follows macOS's side of the window on each pass: secure keyboard
+    /// entry, the title bar's buttons, and the menu bar's commands and
+    /// states.
+    #[cfg(target_os = "macos")]
+    fn follow_native_chrome(&mut self, context: &egui::Context, frame: &eframe::Frame) {
+        self.secure_input.follow_focus(context);
+        macos::update_window_chrome(context, frame);
+        let actions = self
+            .native_menu
+            .as_ref()
+            .map(macos::Menu::drain)
+            .unwrap_or_default();
+        for action in actions {
+            self.native_action(action, context);
+        }
+        if let Some(menu) = &self.native_menu {
+            menu.adopt_windows();
+            menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
+            menu.set_sidebar_folded(self.app.settings().sidebar_folded);
+        }
+    }
+
+    /// Other systems draw the window's chrome themselves, with no menu bar of
+    /// the app's own.
+    #[cfg(not(target_os = "macos"))]
+    fn follow_native_chrome(&mut self, _context: &egui::Context, _frame: &eframe::Frame) {}
+
     fn update_unread_badge(&mut self) {
         let badge = unread_badge_count(&self.app);
-        if badge != self.unread_badge && set_unread_badge(self.main_window.as_deref(), badge) {
+        if badge != self.unread_badge
+            && set_unread_badge(self.main_window.as_deref(), badge) == BadgeUpdate::Settled
+        {
             self.unread_badge = badge;
         }
     }
@@ -1050,25 +994,12 @@ impl DesktopApp {
             return;
         }
         Self::bring_forward(context, target);
-        #[cfg(target_os = "linux")]
-        context.send_viewport_cmd_to(
-            target,
-            egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
-        );
+        ask_for_attention(context, target);
         self.focus_after_activation = false;
     }
 
     fn activation_blocked(&self) -> bool {
         self.window_close_approved || self.prompt_open()
-    }
-
-    /// Drops the settings draft, and the exit waiting on it, once the
-    /// settings pane is gone.
-    fn forget_hidden_settings_draft(&mut self) {
-        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
-            self.settings_draft = None;
-            self.pending_settings_exit = None;
-        }
     }
 
     /// Draws the screen the sign-in state calls for, and the composer's own
@@ -1095,15 +1026,7 @@ impl DesktopApp {
             }
             AuthState::Authenticated { .. } => {
                 if self.app.mailbox().is_some() {
-                    let draft = if self.app.showing_settings() {
-                        Some(
-                            self.settings_draft
-                                .get_or_insert_with(|| self.app.settings().clone()),
-                        )
-                    } else {
-                        None
-                    };
-                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut pass.messages);
+                    mailbox::show(ui, &self.app, &mut self.ui, &mut pass.messages);
                 } else {
                     status_view(ui, "Opening mailbox…");
                 }
@@ -1114,7 +1037,7 @@ impl DesktopApp {
                     let window = compose::show_window(
                         context,
                         writing,
-                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
+                        self.pending_discard.is_some(),
                         std::mem::take(&mut self.composer_edits),
                         &mut self.composer_title_bar,
                     );
@@ -1128,7 +1051,7 @@ impl DesktopApp {
             }
             AuthState::SigningOut => {
                 if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut pass.messages);
+                    mailbox::show(ui, &self.app, &mut self.ui, &mut pass.messages);
                 } else {
                     status_view(ui, "Signing out…");
                 }
@@ -1140,10 +1063,6 @@ impl DesktopApp {
     /// Draws the prompts open now and reads their answers.
     fn ask_prompts(&self, context: &egui::Context) -> PromptAnswers {
         PromptAnswers {
-            settings_exit: self
-                .pending_settings_exit
-                .as_ref()
-                .and_then(|_| settings::confirm_exit(context)),
             discard: self
                 .pending_discard
                 .and_then(|leaving| close::confirm_discard(context, leaving)),
@@ -1155,9 +1074,6 @@ impl DesktopApp {
     }
 
     fn apply_prompt_answers(&mut self, answers: PromptAnswers, context: &egui::Context) {
-        if let Some(decision) = answers.settings_exit {
-            self.resolve_settings_exit(decision, context);
-        }
         if let Some(decision) = answers.discard {
             self.resolve_discard(decision, context);
         }
@@ -1178,7 +1094,7 @@ impl DesktopApp {
 }
 
 impl eframe::App for DesktopApp {
-    fn logic(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, context: &egui::Context, frame: &mut eframe::Frame) {
         self.runtime.attach(context);
         apply_appearance(context, self.app.settings());
         theme::reduce_motion(context, system_reduces_motion());
@@ -1190,23 +1106,7 @@ impl eframe::App for DesktopApp {
             fonts::Typeface::chosen(self.app.settings().system_font),
         );
         self.drain_runtime(context);
-        #[cfg(target_os = "macos")]
-        {
-            self.secure_input.follow_focus(context);
-            macos::update_window_chrome(context, _frame);
-            let actions = self
-                .native_menu
-                .as_ref()
-                .map(macos::Menu::drain)
-                .unwrap_or_default();
-            for action in actions {
-                self.native_action(action, context);
-            }
-            if let Some(menu) = &self.native_menu {
-                menu.adopt_windows();
-                menu.set_enabled(self.app.auth_state().is_authenticated() && !self.prompt_open());
-            }
-        }
+        self.follow_native_chrome(context, frame);
         self.check_window_close(context);
         self.receive_activation(context);
         self.focus_activated_composer(context);
@@ -1223,7 +1123,7 @@ impl eframe::App for DesktopApp {
         self.update_unread_badge();
         #[cfg(feature = "readme-screenshots")]
         if let Some(session) = self.readme_screenshots.as_mut() {
-            for message in session.frame(context, _frame, &self.app) {
+            for message in session.frame(context, frame, &self.app) {
                 self.dispatch(message, context);
             }
         }
@@ -1252,7 +1152,6 @@ impl eframe::App for DesktopApp {
         }
         let context = ui.ctx().clone();
         reader::forget_textures(&context, self.app.inline_images());
-        self.forget_hidden_settings_draft();
         let mut pass = self.draw_screen(ui, &context);
         if let Some(link) = self.app.pending_link() {
             pass.messages.extend(reader::link_dialog(&context, link));
@@ -1351,22 +1250,35 @@ fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
         .filter(|(pressed, _)| command && input.key_pressed(*pressed))
         .map(|&(_, key)| KeyPress::with_command(key))
         .collect();
-    // Outside a text field, which takes it for its text, Command and A choose
-    // every conversation. Read from the key's own event: the macOS Edit menu's
-    // Select All sends it when clicked, with no key held.
-    let select_all = input.events.iter().any(|event| {
-        matches!(event, egui::Event::Key {
-            key: egui::Key::A,
-            pressed: true,
-            modifiers,
-            ..
-        } if modifiers.command && !modifiers.alt && !modifiers.shift)
-    });
-    if select_all && !focus.typing {
-        presses.push(KeyPress::with_command(Key::Character('a')));
+    // Outside a text field, which takes them for its text, Command and A
+    // choose every conversation and Command and Z take back a move. Read from
+    // the key's own event: the macOS Edit menu sends it when its item is
+    // clicked, with no key held.
+    for (edit, letter) in [(egui::Key::A, 'a'), (egui::Key::Z, 'z')] {
+        let asked = input.events.iter().any(|event| {
+            matches!(event, egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } if *key == edit && modifiers.command && !modifiers.alt && !modifiers.shift)
+        });
+        if asked && !focus.typing {
+            presses.push(KeyPress::with_command(Key::Character(letter)));
+        }
     }
     if !focus.menu_open && input.key_pressed(egui::Key::Escape) {
         presses.push(KeyPress::plain(Key::Escape));
+    }
+    // F9 shows or hides the side pane, as GNOME's guidelines, KDE and
+    // Thunderbird have it; it types nothing, so a text field leaves it. On
+    // macOS the View menu's Control-Command-S does it instead.
+    if cfg!(not(target_os = "macos"))
+        && !focus.menu_open
+        && input.modifiers.is_none()
+        && input.key_pressed(egui::Key::F9)
+    {
+        presses.push(KeyPress::plain(Key::F9));
     }
     // A focused widget keeps the arrows and Enter: egui moves focus with the
     // arrows and presses a focused button with Enter. Delete waits too, as a
@@ -1384,15 +1296,17 @@ fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
         presses.push(KeyPress::with_shift(Key::ArrowDown));
     } else if shift_only && unclaimed(egui::Key::ArrowUp) {
         presses.push(KeyPress::with_shift(Key::ArrowUp));
-    } else if plain && !focus.typing {
-        let letter = input.events.iter().find_map(|event| match event {
-            egui::Event::Text(text) => text
-                .chars()
-                .next()
-                .filter(|first| matches!(first, 'j' | 'k')),
+    } else if !command && !input.modifiers.alt && !focus.typing && !focus.menu_open {
+        // What was typed, so that a symbol is its own key on every layout;
+        // Shift counts with a letter alone.
+        let typed = input.events.iter().find_map(|event| match event {
+            egui::Event::Text(text) => text.chars().next(),
             _ => None,
         });
-        presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
+        presses.extend(typed.map(|typed| KeyPress {
+            shift: typed.is_alphabetic() && input.modifiers.shift,
+            ..KeyPress::plain(Key::Character(typed.to_ascii_lowercase()))
+        }));
     } else if !focus.wants_keys && command && !input.modifiers.alt && !input.modifiers.shift {
         if input.key_pressed(egui::Key::Backspace) {
             presses.push(KeyPress::with_command(Key::Backspace));
@@ -1417,9 +1331,30 @@ fn apply_appearance(context: &egui::Context, settings: &Settings) {
     }
 }
 
+/// Asks Linux to mark `target` for attention when an activation may not
+/// have brought it forward: Wayland lets a window take the focus only when
+/// its compositor agrees.
+#[cfg(target_os = "linux")]
+fn ask_for_attention(context: &egui::Context, target: egui::ViewportId) {
+    context.send_viewport_cmd_to(
+        target,
+        egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational),
+    );
+}
+
+/// Bringing the window forward is enough here.
+#[cfg(not(target_os = "linux"))]
+fn ask_for_attention(_context: &egui::Context, _target: egui::ViewportId) {}
+
+/// Whether a window has the keyboard. A minimized one never has: it draws
+/// no pass, and egui goes on saying what the last pass said.
+fn has_keyboard(input: &egui::InputState) -> bool {
+    input.focused && input.viewport().minimized != Some(true)
+}
+
 /// Whether Windows' "Animation effects" are off, under Accessibility ›
 /// Visual effects. Read on every pass, which costs one call, so a change
-/// shows on the next frame. Other systems' settings are not read yet.
+/// shows on the next frame.
 #[cfg(target_os = "windows")]
 fn system_reduces_motion() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
@@ -1438,7 +1373,15 @@ fn system_reduces_motion() -> bool {
     read != 0 && animated == 0
 }
 
-#[cfg(not(target_os = "windows"))]
+/// Whether macOS's "Reduce motion" is on, under Accessibility › Display.
+/// Read on every pass, as Windows' is, so a change shows on the next frame.
+#[cfg(target_os = "macos")]
+fn system_reduces_motion() -> bool {
+    objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
+}
+
+/// Linux's reduced-motion setting is not read yet.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn system_reduces_motion() -> bool {
     false
 }
@@ -1501,14 +1444,6 @@ fn email_link_notice(root: &mut egui::Ui, app: &App, messages: &mut Vec<Message>
         });
 }
 
-fn version_label(ui: &mut egui::Ui) -> egui::Response {
-    ui.label(
-        egui::RichText::new(concat!("v", env!("CARGO_PKG_VERSION")))
-            .size(theme::text_size(ui, theme::FOOTNOTE_SIZE))
-            .color(theme::colors(ui).muted),
-    )
-}
-
 fn window_title(app: &App, demo: bool) -> String {
     title_label(inbox_unread(app), demo)
 }
@@ -1538,37 +1473,42 @@ pub(crate) fn unread_badge_count(app: &App) -> Option<u32> {
     inbox_unread(app).filter(|&count| count > 0)
 }
 
-/// Shows the unread count on the Dock icon, on Windows the taskbar button,
-/// and on Linux the dock or panel icon. Returns false while the window cannot
-/// show it yet, so the next pass tries again.
-#[cfg(target_os = "macos")]
-fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
-    use objc2_app_kit::NSApplication;
-    use objc2_foundation::{MainThreadMarker, NSString};
+/// What became of a change to the unread badge.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BadgeUpdate {
+    /// Shown or taken away, or given up on where trying again would not
+    /// help: the badge is not asked for again until the count changes.
+    Settled,
+    /// The window cannot show it yet, so the next pass tries again. Only
+    /// Windows has such a window: one with no taskbar button yet.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    RetryLater,
+}
 
-    if let Some(mtm) = MainThreadMarker::new() {
-        let app = NSApplication::sharedApplication(mtm);
-        let dock_tile = app.dockTile();
-        let label = count.map(|c| NSString::from_str(&c.to_string()));
-        dock_tile.setBadgeLabel(label.as_deref());
-    }
-    true
+/// Shows the unread count on the Dock icon, on Windows the taskbar button,
+/// and on Linux the dock or panel icon.
+#[cfg(target_os = "macos")]
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
+    macos::show_unread(count);
+    BadgeUpdate::Settled
 }
 
 #[cfg(target_os = "windows")]
-fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
-    window.is_none_or(|window| taskbar::show_unread(window, count))
+fn set_unread_badge(window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
+    window.map_or(BadgeUpdate::Settled, |window| {
+        taskbar::show_unread(window, count)
+    })
 }
 
 #[cfg(target_os = "linux")]
-fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> bool {
+fn set_unread_badge(_window: Option<&winit::window::Window>, count: Option<u32>) -> BadgeUpdate {
     launcher::show_unread(count);
-    true
+    BadgeUpdate::Settled
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
-fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> bool {
-    true
+fn set_unread_badge(_window: Option<&winit::window::Window>, _count: Option<u32>) -> BadgeUpdate {
+    BadgeUpdate::Settled
 }
 
 #[cfg(test)]

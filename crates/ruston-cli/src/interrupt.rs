@@ -40,14 +40,17 @@ pub(crate) async fn end_on_ctrl_c(profile: String) {
 
 /// Ends the program as Ctrl+C's default would, so a shell or script that
 /// runs it sees it interrupted.
+#[cfg(unix)]
 fn end_interrupted() -> ! {
-    #[cfg(unix)]
-    {
-        let _ = signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGINT);
-        // Not reached: SIGINT's default action ends the program. 130 is how
-        // a shell reports it.
-        std::process::exit(130);
-    }
-    #[cfg(windows)]
+    let _ = signal_hook::low_level::emulate_default_handler(signal_hook::consts::SIGINT);
+    // Not reached: SIGINT's default action ends the program. 130 is how a
+    // shell reports it.
+    std::process::exit(130);
+}
+
+/// Ends the program as Ctrl+C's default would, so a shell or script that
+/// runs it sees it interrupted.
+#[cfg(windows)]
+fn end_interrupted() -> ! {
     std::process::exit(STATUS_CONTROL_C_EXIT as i32);
 }

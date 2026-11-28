@@ -208,6 +208,7 @@ fn api_error(http_status: u16) -> Error {
 fn decrypted_messages_map_to_reader_models() {
     let meta = MessageMetadata {
         id: "message".into(),
+        address_id: "address-2".into(),
         sender: person("", "alex@example.com"),
         to_list: vec![person("Demo", "demo@example.com")],
         cc_list: vec![person("", "team@example.org")],
@@ -227,6 +228,8 @@ fn decrypted_messages_map_to_reader_models() {
     );
 
     assert_eq!(message.id, "message");
+    // The account's address it reached, which an answer goes out from.
+    assert_eq!(message.address_id, "address-2");
     assert_eq!(message.verdict, ruston_core::Verdict::Invalid);
     assert_eq!(message.sender.name, None);
     assert_eq!(message.sender.address, "alex@example.com");
@@ -613,13 +616,21 @@ fn failed_mailbox_unlock_is_an_invalid_mailbox_password() {
 
 #[test]
 fn a_session_bound_to_another_address_asks_to_sign_in_again() {
-    use ruston_core::session::{MemoryStore, Paths, Session, Tokens};
+    use ruston_core::session::{MemoryStore, Paths, ProfileStorage, Session, Tokens};
+    use std::sync::Arc;
 
     let folder =
         std::env::temp_dir().join(format!("ruston-session-address-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
     let paths = Paths::with_base(&folder);
-    let save = |base_url: &str, store: &MemoryStore| {
+    let storage = |store: &Arc<MemoryStore>| {
+        ProfileStorage::new(
+            paths.clone(),
+            ruston_core::DEFAULT_SESSION_PROFILE,
+            store.clone(),
+        )
+    };
+    let save = |base_url: &str, store: &Arc<MemoryStore>| {
         let session = Session {
             uid: "UID1".into(),
             app_version: "Other".into(),
@@ -633,22 +644,16 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
             access: SecretString::from("access"),
             refresh: SecretString::from("refresh"),
         };
-        session
-            .save(
-                &paths,
-                ruston_core::DEFAULT_SESSION_PROFILE,
-                store,
-                &tokens,
-                &SecretString::from("skp"),
-            )
+        storage(store)
+            .save(&session, &tokens, &SecretString::from("skp"))
             .unwrap();
     };
     // The secret store keeps the first address; the file now names another.
-    let bound = MemoryStore::new();
+    let bound = Arc::new(MemoryStore::new());
     save("https://mail.proton.me/api", &bound);
-    save("https://example.test/api", &MemoryStore::new());
+    save("https://example.test/api", &Arc::new(MemoryStore::new()));
 
-    let Err(error) = Session::load(&paths, ruston_core::DEFAULT_SESSION_PROFILE, &bound) else {
+    let Err(error) = storage(&bound).load() else {
         panic!("a session bound to another address must not load");
     };
     std::fs::remove_dir_all(&folder).unwrap();
@@ -893,6 +898,8 @@ fn conversation_maps_to_summary() {
             starred: true,
             message_count: 3,
             has_attachments: false,
+            // Every label and folder it is filed under, for the list to mark.
+            labels: vec![label_ids::INBOX.into(), label_ids::STARRED.into()],
         }
     );
 }
@@ -1229,4 +1236,57 @@ fn folders_follow_their_parents_and_labels_keep_their_colors() {
     for odd in ["", "#fff", "#gg0000", "#ééé"] {
         assert_eq!(hex_color(odd), None, "{odd}");
     }
+}
+
+#[test]
+fn the_address_chosen_to_send_from_reaches_core() {
+    let outgoing = Outgoing {
+        kind: OutgoingKind::New,
+        from: Some("alias@proton.me".into()),
+        to: vec!["ana@example.org".into()],
+        cc: Vec::new(),
+        bcc: Vec::new(),
+        subject: "Thursday".into(),
+        body: "See you then.".into(),
+        format: super::super::BodyFormat::PlainText,
+        attachments: Vec::new(),
+    };
+    assert_eq!(
+        send_options(&outgoing).from.as_deref(),
+        Some("alias@proton.me")
+    );
+    // Unchosen, core picks: the primary address, or the one an original reached.
+    let unchosen = Outgoing {
+        from: None,
+        ..outgoing
+    };
+    assert_eq!(send_options(&unchosen).from, None);
+}
+
+#[test]
+fn a_filter_and_an_order_become_what_core_asks_proton_for() {
+    let asked = |filter, order| {
+        let options = list_options(filter, order);
+        (options.unread, options.attachments, options.oldest_first)
+    };
+    let newest_first = ListOrder::NewestFirst;
+
+    assert_eq!(asked(ListFilter::All, newest_first), (None, false, false));
+    assert_eq!(
+        asked(ListFilter::Unread, newest_first),
+        (Some(true), false, false)
+    );
+    assert_eq!(
+        asked(ListFilter::Read, newest_first),
+        (Some(false), false, false)
+    );
+    assert_eq!(
+        asked(ListFilter::WithFiles, newest_first),
+        (None, true, false)
+    );
+    // The order goes with any filter.
+    assert_eq!(
+        asked(ListFilter::Read, ListOrder::OldestFirst),
+        (Some(false), false, true)
+    );
 }

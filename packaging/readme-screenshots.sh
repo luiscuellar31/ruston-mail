@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # ==============================================================================
 # Ruston Mail - README screenshots
-# Takes the main window's screenshots in assets/screenshots again: the demo's
-# inbox with a conversation open, dark and light, as macOS draws the window.
+# Takes the screenshots in assets/screenshots again: the demo's inbox with a
+# conversation open, Settings, and a message being written, each dark and
+# light, as macOS draws the window.
 # Run it on a Mac with a Retina display and leave the window in front until it
 # closes. See "README screenshots" in docs/DEVELOPMENT.md.
 # ==============================================================================
@@ -47,12 +48,16 @@ fi
 # The files say whether it worked; the app has already said why if not.
 wait "$pid" || true
 
-for name in main-window-dark main-window-light; do
-    if [[ ! -s "$shots/$name.png" ]]; then
-        echo "$name.png was not taken." >&2
-        exit 1
-    fi
+names=()
+for view in main-window settings compose; do
+    for appearance in dark light; do
+        if [[ ! -s "$shots/$view-$appearance.png" ]]; then
+            echo "$view-$appearance.png was not taken." >&2
+            exit 1
+        fi
+        names+=("$view-$appearance.png")
+    done
 done
 mkdir -p "$REPO_ROOT/assets/screenshots"
-cp "$shots/main-window-dark.png" "$shots/main-window-light.png" "$REPO_ROOT/assets/screenshots/"
-echo "Updated assets/screenshots/main-window-dark.png and main-window-light.png"
+(cd "$shots" && cp "${names[@]}" "$REPO_ROOT/assets/screenshots/")
+echo "Updated in assets/screenshots: ${names[*]}"

@@ -23,6 +23,12 @@ pub(super) fn viewport() -> egui::ViewportBuilder {
         .with_icon(Arc::clone(icon))
 }
 
+/// Other systems name the process from its bundle or desktop entry.
+#[cfg(not(target_os = "windows"))]
+pub(super) fn set_process_app_id() -> eframe::Result {
+    Ok(())
+}
+
 /// Set the process identity before Windows creates any native windows.
 #[cfg(target_os = "windows")]
 pub(super) fn set_process_app_id() -> eframe::Result {

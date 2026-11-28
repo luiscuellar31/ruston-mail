@@ -139,17 +139,10 @@ fn an_inspection_asked_before_a_rename_still_frees_its_place() {
     let _ = app.update(Message::SelectFolder(invoices.clone()));
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
-            id: "thread-1".into(),
-            kind: crate::mail::SummaryKind::Conversation,
             subject: Some("Invoice".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(100),
-            unread: false,
-            starred: false,
             message_count: 2,
-            has_attachments: false,
+            ..summary("thread-1")
         }],
         total: 1,
         inspect_candidates: vec!["thread-1".into()],
@@ -207,17 +200,10 @@ fn a_page_with_candidates_starts_inspecting_them() {
 
     let page = ConversationPage {
         conversations: vec![ConversationSummary {
-            id: "demo-cand-1".into(),
-            kind: crate::mail::SummaryKind::Conversation,
             subject: Some("Candidate 1".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(100),
-            unread: false,
-            starred: false,
             message_count: 2,
-            has_attachments: false,
+            ..summary("demo-cand-1")
         }],
         total: 1,
         inspect_candidates: vec!["demo-cand-1".into(), "demo-cand-2".into()],
@@ -298,30 +284,16 @@ fn an_inspection_that_finds_separate_threads_splits_the_row() {
 
     let split_rows = vec![
         ConversationSummary {
-            id: "split-1".into(),
             kind: crate::mail::SummaryKind::Message,
             subject: Some("Split 1".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(150),
-            unread: false,
-            starred: false,
-            message_count: 1,
-            has_attachments: false,
+            ..summary("split-1")
         },
         ConversationSummary {
-            id: "split-2".into(),
             kind: crate::mail::SummaryKind::Message,
             subject: Some("Split 2".into()),
-            correspondents: None,
-            participants: Vec::new(),
-            preview: None,
             time: Some(140),
-            unread: false,
-            starred: false,
-            message_count: 1,
-            has_attachments: false,
+            ..summary("split-2")
         },
     ];
 
@@ -353,17 +325,10 @@ fn an_inspection_from_another_session_or_folder_changes_nothing() {
     let request = running_inspection(&app, "demo-0");
 
     let split_rows = vec![ConversationSummary {
-        id: "split-ignored".into(),
         kind: crate::mail::SummaryKind::Message,
         subject: Some("Split Ignored".into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
         time: Some(150),
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
+        ..summary("split-ignored")
     }];
 
     // Wrong epoch

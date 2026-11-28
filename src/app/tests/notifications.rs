@@ -4,7 +4,7 @@ use super::*;
 
 fn deliver_new_mail(app: &mut App, result: Result<Vec<IncomingMail>, MailboxError>) -> Effects {
     assert_eq!(app.fetch_new_mail_notification().units(), 1);
-    let request = app.new_mail.pending.unwrap();
+    let request = app.session.new_mail.pending.unwrap();
     app.update(Message::NewMailLoaded(app.session_epoch, request, result))
 }
 
@@ -60,12 +60,12 @@ fn inbox_arrivals_notify_independently_of_unread_counts() {
 fn notification_polls_are_bounded_and_stale_or_disabled_results_are_ignored() {
     let mut app = loaded_demo_app();
     assert_eq!(app.fetch_new_mail_notification().units(), 1);
-    let first = app.new_mail.pending.unwrap();
+    let first = app.session.new_mail.pending.unwrap();
     assert_eq!(app.fetch_new_mail_notification().units(), 0);
     let _ = app.update(Message::SetDesktopNotifications(false));
     let _ = app.update(Message::SetDesktopNotifications(true));
     assert_eq!(app.fetch_new_mail_notification().units(), 1);
-    let second = app.new_mail.pending.unwrap();
+    let second = app.session.new_mail.pending.unwrap();
     assert_ne!(first, second);
     assert_eq!(
         app.update(Message::NewMailLoaded(
@@ -76,7 +76,7 @@ fn notification_polls_are_bounded_and_stale_or_disabled_results_are_ignored() {
         .units(),
         0
     );
-    assert_eq!(app.new_mail.pending, Some(second));
+    assert_eq!(app.session.new_mail.pending, Some(second));
     assert_eq!(
         app.update(Message::NewMailLoaded(
             app.session_epoch,
@@ -86,7 +86,7 @@ fn notification_polls_are_bounded_and_stale_or_disabled_results_are_ignored() {
         .units(),
         0
     );
-    assert!(app.new_mail.pending.is_none());
+    assert!(app.session.new_mail.pending.is_none());
     assert_eq!(deliver_new_mail(&mut app, Ok(Vec::new())).units(), 0);
     assert_eq!(
         deliver_new_mail(&mut app, Err(MailboxError::SessionExpired)).units(),

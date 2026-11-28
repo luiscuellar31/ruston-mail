@@ -28,6 +28,8 @@ pub(super) enum Action {
     Quit,
     Edit(Edit),
     Zoom(ZoomStep),
+    /// Folds the sidebar into a strip of icons, or unfolds it.
+    ToggleSidebar,
 }
 
 /// An Edit menu command from one of the app's windows. With the menu in
@@ -174,6 +176,11 @@ define_class!(
         fn zoom_out(&self, _sender: Option<&AnyObject>) {
             self.queue(Action::Zoom(ZoomStep::Out));
         }
+
+        #[unsafe(method(rustonToggleSidebar:))]
+        fn toggle_sidebar(&self, _sender: Option<&AnyObject>) {
+            self.queue(Action::ToggleSidebar);
+        }
     }
 );
 
@@ -206,6 +213,10 @@ pub(super) struct Menu {
     /// File, Edit, View and Window, after the application menu.
     menus: Vec<Retained<NSMenuItem>>,
     new_message: Retained<NSMenuItem>,
+    /// Hide Sidebar, or Show Sidebar while it is folded.
+    sidebar: Retained<NSMenuItem>,
+    /// Whether `sidebar` says Show Sidebar.
+    sidebar_folded: Cell<bool>,
     quit: Retained<NSMenuItem>,
     original_quit_target: Option<Retained<AnyObject>>,
     /// winit's items named after the executable, with the titles they had.
@@ -264,11 +275,22 @@ impl Menu {
                 standard_item(marker, "Select All", sel!(selectAll:), "a", command),
             ],
         );
+        // Control-Command-S, as AppKit's own sidebars use.
+        let sidebar = action_item(
+            marker,
+            &target,
+            "Hide Sidebar",
+            sel!(rustonToggleSidebar:),
+            "s",
+        );
+        sidebar.setKeyEquivalentModifierMask(command | NSEventModifierFlags::Control);
         // Command with equals still reaches the window, which zooms in too.
         let view = submenu(
             marker,
             "View",
             &[
+                sidebar.clone(),
+                NSMenuItem::separatorItem(marker),
                 action_item(marker, &target, "Actual Size", sel!(rustonActualSize:), "0"),
                 action_item(marker, &target, "Zoom In", sel!(rustonZoomIn:), "+"),
                 action_item(marker, &target, "Zoom Out", sel!(rustonZoomOut:), "-"),
@@ -318,10 +340,24 @@ impl Menu {
             separator,
             menus,
             new_message,
+            sidebar,
+            sidebar_folded: Cell::new(false),
             quit,
             original_quit_target,
             renamed,
         })
+    }
+
+    /// Names the sidebar item after what it would do now.
+    pub(super) fn set_sidebar_folded(&self, folded: bool) {
+        if self.sidebar_folded.replace(folded) != folded {
+            let title = if folded {
+                "Show Sidebar"
+            } else {
+                "Hide Sidebar"
+            };
+            self.sidebar.setTitle(&NSString::from_str(title));
+        }
     }
 
     pub(super) fn set_enabled(&self, enabled: bool) {
@@ -329,6 +365,7 @@ impl Menu {
         // validation on the target so AppKit preserves the application guards.
         self.settings.setEnabled(enabled);
         self.new_message.setEnabled(enabled);
+        self.sidebar.setEnabled(enabled);
         self.target.ivars().enabled.set(enabled);
     }
 
@@ -392,6 +429,7 @@ impl Drop for Menu {
         unsafe {
             self.settings.setTarget(None);
             self.new_message.setTarget(None);
+            self.sidebar.setTarget(None);
             self.quit.setTarget(self.original_quit_target.as_deref());
             self.quit.setAction(Some(sel!(terminate:)));
         }
@@ -489,6 +527,16 @@ fn action_item(
     unsafe { item.setTarget(Some(target)) };
     item.setEnabled(false);
     item
+}
+
+/// Shows `count` on the Dock icon, or takes the count away.
+pub(super) fn show_unread(count: Option<u32>) {
+    if let Some(mtm) = MainThreadMarker::new() {
+        let label = count.map(|count| NSString::from_str(&count.to_string()));
+        NSApplication::sharedApplication(mtm)
+            .dockTile()
+            .setBadgeLabel(label.as_deref());
+    }
 }
 
 pub(super) fn update_window_chrome(context: &egui::Context, frame: &eframe::Frame) {

@@ -797,3 +797,28 @@ fn a_move_back_behind_its_move_keeps_the_row_when_the_move_ends() {
     let _ = mailbox.finish_action(&next, Err(MailboxError::Service));
     assert!(!mailbox.has_row("a"));
 }
+
+#[test]
+fn a_label_proton_confirms_marks_the_row_and_one_taken_off_unmarks_it() {
+    let mut mailbox = loaded_inbox(&["a"], 1);
+    let mut label = |on: bool, request: RequestId| {
+        let sent = mailbox
+            .start_action_on(
+                "a".into(),
+                SummaryKind::Conversation,
+                MailAction::SetLabel {
+                    label: Folder::label("work", "Work"),
+                    on,
+                },
+                request,
+            )
+            .and_then(|start| start.send)
+            .unwrap();
+        let _ = mailbox.finish_action(&sent, Ok(()));
+        mailbox.conversations()[0].labels.clone()
+    };
+
+    assert_eq!(label(true, 3), ["work"]);
+    assert_eq!(label(true, 4), ["work"], "a label is carried once");
+    assert!(label(false, 5).is_empty());
+}

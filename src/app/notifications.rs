@@ -61,7 +61,7 @@ impl App {
     pub(super) fn fetch_new_mail_notification(&mut self) -> Effects {
         if !self.auth_state.is_authenticated()
             || !self.settings.desktop_notifications
-            || self.new_mail.pending.is_some()
+            || self.session.new_mail.pending.is_some()
         {
             return Effects::none();
         }
@@ -70,7 +70,7 @@ impl App {
         };
         let epoch = self.session_epoch;
         let request = self.next_request();
-        self.new_mail.pending = Some(request);
+        self.session.new_mail.pending = Some(request);
 
         Effects::perform(
             async move { backend.recent_inbox(RECENT_LIMIT).await },
@@ -89,14 +89,14 @@ impl App {
         if !self.is_current_session(epoch)
             || !self.auth_state.is_authenticated()
             || !self.settings.desktop_notifications
-            || self.new_mail.pending != Some(request)
+            || self.session.new_mail.pending != Some(request)
         {
             return Effects::none();
         }
-        self.new_mail.pending = None;
+        self.session.new_mail.pending = None;
         match result {
             Ok(messages) => {
-                if let Some(mail) = self.new_mail.observe(&messages) {
+                if let Some(mail) = self.session.new_mail.observe(&messages) {
                     return Effects::ui(UiEffect::NotifyNewMail {
                         sender: mail.sender.clone(),
                         subject: mail.subject.clone(),

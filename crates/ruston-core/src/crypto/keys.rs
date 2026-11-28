@@ -87,10 +87,19 @@ pub struct Address {
     pub id: String,
     /// The email address.
     pub email: String,
-    /// Where it sorts among the account's addresses, from 1. The lowest is
-    /// the address mail goes out from unless another is chosen.
+    /// Where it sorts among the account's addresses, from 1. The lowest that
+    /// mail can go out from is the one it goes out from unless another is
+    /// chosen.
     #[serde(default)]
     pub order: u32,
+    /// `1` while the address is enabled, `0` once disabled, `2` while it is
+    /// being deleted. Proton leaving it out reads as `1`.
+    #[serde(default = "default_active")]
+    pub status: u8,
+    /// `1` when Proton lets mail go out from the address. Proton leaving it
+    /// out reads as `1`.
+    #[serde(default = "default_active")]
+    pub send: u8,
     /// The address's keys.
     #[serde(default)]
     pub keys: Vec<ApiKey>,
@@ -130,6 +139,10 @@ pub struct AddressKeys {
     pub address_id: String,
     /// The email address.
     pub email: String,
+    /// Whether mail can go out from the address: Proton has it enabled and
+    /// lets it send. The keys of one that cannot still open the mail that
+    /// reached it.
+    pub can_send: bool,
     /// The address's unlocked keys, the primary first: messages are signed
     /// and drafts encrypted with the first one.
     pub keys: Vec<StoredKey>,
@@ -139,8 +152,9 @@ pub struct AddressKeys {
 /// so none is kept once they have.
 #[derive(Clone)]
 pub struct KeyStore {
-    /// Each address whose keys opened, in Proton's `Order`: the default
-    /// address first.
+    /// Each address whose keys opened, in Proton's `Order`, those mail can
+    /// no longer go out from included: their keys still open the mail that
+    /// reached them.
     pub addresses: Vec<AddressKeys>,
 }
 
@@ -152,19 +166,20 @@ impl KeyStore {
             .find(|keys| keys.address_id == address_id)
     }
 
-    /// The keys of `email`, whatever the case of its ASCII letters.
+    /// The keys of `email`, whatever the case of its ASCII letters, when mail
+    /// can go out from it.
     pub fn address_for_email(&self, email: &str) -> Option<&AddressKeys> {
         self.addresses
             .iter()
-            .find(|keys| keys.email.eq_ignore_ascii_case(email))
+            .find(|keys| keys.can_send && keys.email.eq_ignore_ascii_case(email))
     }
 
     /// The address mail is sent from unless another is chosen, as in
-    /// Proton's web client: the one first in Proton's `Order`, which
-    /// unlocking puts first. A `from` address picks another through
-    /// [`Self::address_for_email`].
+    /// Proton's web client: the first in Proton's `Order`, which unlocking
+    /// keeps, that mail can go out from. A `from` address picks another
+    /// through [`Self::address_for_email`].
     pub fn primary_address(&self) -> Option<&AddressKeys> {
-        self.addresses.first()
+        self.addresses.iter().find(|keys| keys.can_send)
     }
 }
 
@@ -362,6 +377,7 @@ fn unlock_address_keys<P: PGPProviderSync>(
     Some(AddressKeys {
         address_id: address.id.clone(),
         email: address.email.clone(),
+        can_send: address.status == 1 && address.send == 1,
         keys,
     })
 }

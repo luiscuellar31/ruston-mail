@@ -137,8 +137,11 @@ windows = { version = "0.62", features = ["Data_Xml_Dom", "UI_Notifications", "F
 windows-sys = { version = "0.61", features = ["Win32_System_Com"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# macOS draws with Metal; OpenGL, which Apple deprecated, stays as the fallback.
+eframe = { version = "0.36", default-features = false, features = ["wgpu_no_default_features"] }
+wgpu = { version = "30", default-features = false, features = ["metal"] }
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSBundle", "NSAppleEventManager", "NSAppleEventDescriptor", "objc2-core-services"] }
-objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSDockTile", "NSWindow", "NSView"] }
+objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSApplication", "NSDockTile", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-user-notifications = { version = "0.3", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest", "UNNotificationTrigger", "UNNotificationSound", "UNNotificationSettings"] }
 block2 = "0.6"

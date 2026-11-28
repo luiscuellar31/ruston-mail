@@ -118,7 +118,9 @@ fn read_conversation(
     let conversation = conversations
         .into_iter()
         .find(|c| c.id == id || c.id.contains(id))
-        .ok_or_else(|| Error::Other(format!("demo conversation not found for id '{id}'")))?;
+        .ok_or_else(|| Error::NotFound {
+            kind: "conversation".into(),
+        })?;
     let messages = messages
         .into_iter()
         .filter(|m| m.meta.conversation_id == conversation.id)
@@ -534,7 +536,9 @@ fn message_named<'a>(messages: &'a [DemoMessage], reference: &str) -> Result<&'a
                     .to_lowercase()
                     .contains(&reference.to_lowercase())
         })
-        .ok_or_else(|| Error::Other(format!("demo message not found for ref '{reference}'")))
+        .ok_or_else(|| Error::NotFound {
+            kind: "message".into(),
+        })
 }
 
 /// What tells `message` from the demo's other messages: its ID without the

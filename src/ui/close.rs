@@ -3,7 +3,7 @@
 
 use eframe::egui;
 
-use super::theme::{self, Emphasis};
+use super::widgets::{self, Emphasis};
 use crate::app::Message;
 
 /// A way of leaving: what discarding a written message makes way for, and
@@ -28,7 +28,7 @@ pub(super) fn confirm_discard(context: &egui::Context, leaving: Leaving) -> Opti
         Leaving::Demo => ("Exit demo?", "Discard and exit"),
         Leaving::Account => ("Change account?", "Discard and change"),
     };
-    theme::confirmation(
+    widgets::confirmation(
         context,
         "close-with-unsaved-message",
         heading,
@@ -123,7 +123,7 @@ pub(super) fn confirm_wait(
             ),
         ),
     };
-    theme::confirmation(
+    widgets::confirmation(
         context,
         "close-with-unsent-changes",
         heading,

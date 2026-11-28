@@ -200,6 +200,20 @@ fn attachments_from_discarded_compose_are_ignored_by_new_compose() {
 }
 
 #[test]
+fn a_message_with_no_mailbox_to_go_through_stays_as_written() {
+    let mut app = loaded_demo_app();
+    write(&mut app, "alex@example.com");
+    app.backend = None;
+
+    let task = app.update(Message::Send);
+
+    // Nothing is sent, and the message can still be edited, sent or closed:
+    // marked as on its way, it would wait for an answer that never comes.
+    assert_eq!(task.units(), 0);
+    assert_eq!(app.compose().map(Compose::sending), Some(Sending::Writing));
+}
+
+#[test]
 fn a_message_is_written_sent_and_put_away() {
     let mut app = loaded_demo_app();
     write(&mut app, "alex@example.com, sam@example.org");
