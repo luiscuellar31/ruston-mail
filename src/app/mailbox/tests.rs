@@ -14,26 +14,9 @@ mod splits;
 use super::*;
 use crate::mail::{MailAddress, MailMessage, MessageBody};
 use crate::settings::Reading;
-use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, sys};
+use crate::test_support::{NEVER_ISSUED, OPENING_COUNTS, OPENING_PAGE, summary, sys};
 
 const PAGE_SIZE: u32 = 50;
-fn summary(id: &str) -> ConversationSummary {
-    ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
-        subject: None,
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
-    }
-}
-
 fn searchable_summary(
     id: &str,
     name: &str,
@@ -42,8 +25,6 @@ fn searchable_summary(
     preview: &str,
 ) -> ConversationSummary {
     ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
         subject: Some(subject.to_owned()),
         correspondents: Some(name.to_owned()),
         participants: vec![MailAddress {
@@ -51,12 +32,7 @@ fn searchable_summary(
             address: address.to_owned(),
         }],
         preview: Some(preview.to_owned()),
-        time: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary(id)
     }
 }
 

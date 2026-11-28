@@ -4,6 +4,7 @@ use jiff::civil::date;
 
 use super::*;
 use crate::mail::ConversationDetail;
+use crate::test_support::summary;
 use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 use ruston_core::html::rich::ListMarker;
 
@@ -1171,18 +1172,9 @@ fn loading_reader(
     count: u32,
 ) -> (Mailbox, crate::app::ReaderRequest, ConversationDetail) {
     let summary = ConversationSummary {
-        id: "conversation".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some(subject.into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
-        unread: false,
-        starred: false,
         message_count: count,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary("conversation")
     };
     let (mut mailbox, page) = Mailbox::open(folder, 50, 1, 2);
     mailbox.finish_page(
@@ -2052,18 +2044,9 @@ fn the_reader_actions_say_which_move_is_risky_and_which_flags_are_on() {
     );
 
     let row = ConversationSummary {
-        id: "conversation".into(),
-        kind: crate::mail::SummaryKind::Conversation,
-        subject: None,
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
         starred: true,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary("conversation")
     };
     let row_flags: Vec<(&str, bool, MailAction)> = flags(row.unread, row.starred)
         .into_iter()
@@ -3138,18 +3121,10 @@ fn a_long_table_lays_out_only_the_rows_near_sight_and_keeps_its_shape() {
 /// A row of the Inbox, starred, and unread or not.
 fn starred_row(id: &str, unread: bool) -> ConversationSummary {
     ConversationSummary {
-        id: id.into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some(id.into()),
-        correspondents: None,
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread,
         starred: true,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary(id)
     }
 }
 

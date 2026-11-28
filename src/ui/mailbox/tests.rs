@@ -5,6 +5,7 @@ use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
+use crate::test_support::summary;
 use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 
 fn mailbox_frame(
@@ -1450,18 +1451,10 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
 
 fn pagination_row(id: &str, time: i64) -> ConversationSummary {
     ConversationSummary {
-        id: id.to_owned(),
-        kind: SummaryKind::Conversation,
         time: Some(time),
         subject: Some(id.to_owned()),
         correspondents: Some("Test sender".into()),
-        participants: Vec::new(),
-        preview: None,
-        unread: false,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary(id)
     }
 }
 
@@ -3116,18 +3109,14 @@ fn a_long_folder_name_stays_on_one_row() {
 fn a_row_is_exactly_the_height_the_list_places_it_at() {
     // Rendered and virtualized row heights must match.
     let conversation = ConversationSummary {
-        id: "row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("A subject".into()),
         correspondents: Some("Alex Rivera".into()),
-        participants: Vec::new(),
-        preview: None,
         time: Some(1_700_000_000),
         unread: true,
         starred: true,
         message_count: 3,
         has_attachments: true,
-        labels: Vec::new(),
+        ..summary("row")
     };
     let now = ZonedDateTime::now();
     // At every text size, since the row grows with its text.
@@ -3205,18 +3194,10 @@ fn unread_rows_are_brighter_than_rows_already_read() {
         theme::apply(&context, appearance);
         let render = |unread: bool| {
             let conversation = ConversationSummary {
-                id: "row".into(),
-                kind: crate::mail::SummaryKind::Conversation,
                 subject: Some("Lunch on Friday".into()),
                 correspondents: Some("Alex Rivera".into()),
-                participants: Vec::new(),
-                preview: None,
-                time: None,
                 unread,
-                starred: false,
-                message_count: 1,
-                has_attachments: false,
-                labels: Vec::new(),
+                ..summary("row")
             };
             let mut palette = (
                 Color32::TRANSPARENT,
@@ -3367,18 +3348,13 @@ fn a_row_marks_the_account_labels_it_carries_in_their_colors() {
 #[test]
 fn a_row_tells_screen_readers_its_state_and_keeps_the_arrow() {
     let conversation = ConversationSummary {
-        id: "row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("Lunch on Friday".into()),
         correspondents: Some("Alex Rivera".into()),
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
         starred: true,
         message_count: 3,
         has_attachments: true,
-        labels: Vec::new(),
+        ..summary("row")
     };
     let context = egui::Context::default();
     theme::install(&context);
@@ -3436,18 +3412,10 @@ fn a_skeleton_row_matches_the_real_row_height() {
 #[test]
 fn long_correspondents_cannot_widen_the_conversation_pane() {
     let conversation = ConversationSummary {
-        id: "long-row".into(),
-        kind: crate::mail::SummaryKind::Conversation,
         subject: Some("A subject that also needs to stay bounded".into()),
         correspondents: Some("A very long correspondent name that must be truncated".into()),
-        participants: Vec::new(),
-        preview: None,
-        time: None,
         unread: true,
-        starred: false,
-        message_count: 1,
-        has_attachments: false,
-        labels: Vec::new(),
+        ..summary("long-row")
     };
     let context = egui::Context::default();
     let now = ZonedDateTime::now();

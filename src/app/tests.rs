@@ -28,7 +28,7 @@ use crate::settings::{ComposePlacement, Reading};
 use secrecy::{ExposeSecret, SecretString};
 
 use crate::mail::MailFolder;
-use crate::test_support::{OPENING_COUNTS, OPENING_PAGE, sys};
+use crate::test_support::{OPENING_COUNTS, OPENING_PAGE, summary, sys};
 
 const NOW: i64 = 1_789_000_000;
 
