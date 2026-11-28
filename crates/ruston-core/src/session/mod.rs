@@ -284,10 +284,7 @@ impl ProfileStorage {
         self.store.delete(K_SKP)?;
         self.write_metadata(session)?;
         self.store.set(K_BASE_URL, &session.base_url)?;
-        self.save_tokens(
-            tokens.access.expose_secret(),
-            tokens.refresh.expose_secret(),
-        )?;
+        self.save_tokens(tokens)?;
         self.store.set(K_SKP, skp.expose_secret())?;
         Ok(())
     }
@@ -311,10 +308,13 @@ impl ProfileStorage {
         written
     }
 
-    /// Saves the pair of tokens a refresh issued, and nothing else of the
+    /// Saves the pair of `tokens` a refresh issued, and nothing else of the
     /// session.
-    pub fn save_tokens(&self, access: &str, refresh: &str) -> Result<()> {
-        let pair = Zeroizing::new(serde_json::to_string(&StoredTokens { access, refresh })?);
+    pub fn save_tokens(&self, tokens: &Tokens) -> Result<()> {
+        let pair = Zeroizing::new(serde_json::to_string(&StoredTokens {
+            access: tokens.access.expose_secret(),
+            refresh: tokens.refresh.expose_secret(),
+        })?);
         self.store.set(K_TOKENS, &pair)?;
         Ok(())
     }

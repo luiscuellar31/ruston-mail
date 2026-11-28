@@ -363,7 +363,7 @@ impl Client {
         attachment_keys: &[AttachmentKey],
         eo: Option<EncryptedOutside<'_>>,
     ) -> Result<Vec<(&'a str, Delivery<'a>)>> {
-        let mut modulus_cache: Option<(String, String)> = None;
+        let mut modulus_cache: Option<api::keys::SrpModulus> = None;
         let mut deliveries = Vec::with_capacity(recipients.len());
         for (email, keys) in recipients {
             let delivery = match (RecipientKey::pick(keys), eo) {

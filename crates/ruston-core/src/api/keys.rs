@@ -97,20 +97,21 @@ pub async fn get_addresses<D: Doer>(d: &D) -> Result<Vec<Address>> {
     Ok(addresses)
 }
 
-#[derive(Deserialize)]
-struct ModulusResp {
+/// An SRP modulus Proton hands out, from which a verifier is made.
+#[derive(Debug, Clone, Deserialize)]
+pub struct SrpModulus {
+    /// The modulus, signed by Proton.
     #[serde(rename = "Modulus")]
-    modulus: String,
+    pub modulus: String,
+    /// Its ID, which goes back with the verifier made from it.
     #[serde(rename = "ModulusID")]
-    modulus_id: String,
+    pub id: String,
 }
 
-/// A new SRP modulus and its ID, from which mail sent with a password to
-/// someone outside Proton gets its verifier.
-pub async fn get_modulus<D: Doer>(d: &D) -> Result<(String, String)> {
-    d.decode(Request::get("/core/v4/auth/modulus"))
-        .await
-        .map(|found: ModulusResp| (found.modulus, found.modulus_id))
+/// A new SRP modulus, from which mail sent with a password to someone
+/// outside Proton gets its verifier.
+pub async fn get_modulus<D: Doer>(d: &D) -> Result<SrpModulus> {
+    d.decode(Request::get("/core/v4/auth/modulus")).await
 }
 
 /// Changes the display name, the signature or both of the address `id`;

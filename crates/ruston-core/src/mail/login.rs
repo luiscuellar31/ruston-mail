@@ -112,12 +112,7 @@ impl Client {
         let saved = storage.clone();
         http.set_refresh_load(Arc::new(move || saved.lock_and_load_tokens()));
         let saved = storage.clone();
-        http.set_refresh_persist_fallible(Arc::new(move |tokens| {
-            saved.save_tokens(
-                tokens.access.expose_secret(),
-                tokens.refresh.expose_secret(),
-            )
-        }));
+        http.set_refresh_persist_fallible(Arc::new(move |tokens| saved.save_tokens(tokens)));
     }
 
     /// Signs in with what `opts` carries, second factor included, unlocks

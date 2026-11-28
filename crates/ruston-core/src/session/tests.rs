@@ -303,7 +303,7 @@ fn failed_refresh_write_keeps_the_previous_token_pair() {
     store.reject.store(true, Ordering::Relaxed);
     assert!(
         at(&paths, "default", &store)
-            .save_tokens("new-access", "new-refresh")
+            .save_tokens(&tokens("UID1", "new-access", "new-refresh"))
             .is_err()
     );
     let kept = at(&paths, "default", &store)
