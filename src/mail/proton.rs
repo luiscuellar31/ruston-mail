@@ -447,10 +447,10 @@ impl ProtonMailService {
                     client.unlabel_conversations(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::AddLabel(label)) => {
-                    client.apply_label(ids, label).await
+                    client.label_messages(ids, label).await
                 }
                 (SummaryKind::Message, ActionCall::RemoveLabel(label)) => {
-                    client.remove_label(ids, label).await
+                    client.unlabel_messages(ids, label).await
                 }
             }
         };

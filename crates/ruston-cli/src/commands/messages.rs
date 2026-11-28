@@ -363,8 +363,8 @@ impl Change {
             Change::Label { action, label } => {
                 let label = client.folder_id(label).await?;
                 match action {
-                    LabelAction::Add => client.apply_label(ids, &label).await,
-                    LabelAction::Rm => client.remove_label(ids, &label).await,
+                    LabelAction::Add => client.label_messages(ids, &label).await,
+                    LabelAction::Rm => client.unlabel_messages(ids, &label).await,
                 }
             }
             // These commands name one message each.

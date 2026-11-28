@@ -54,12 +54,12 @@ impl Client {
     }
 
     /// Puts the label `label_id` on messages.
-    pub async fn apply_label(&self, ids: &[String], label_id: &str) -> Result<()> {
+    pub async fn label_messages(&self, ids: &[String], label_id: &str) -> Result<()> {
         self.put_label(Items::Messages, label_id, ids).await
     }
 
     /// Takes the label `label_id` off messages.
-    pub async fn remove_label(&self, ids: &[String], label_id: &str) -> Result<()> {
+    pub async fn unlabel_messages(&self, ids: &[String], label_id: &str) -> Result<()> {
         self.take_label(Items::Messages, label_id, ids).await
     }
 
@@ -401,11 +401,11 @@ mod tests {
         let ids = ["id-1".to_string()];
 
         client.move_messages(&ids, " Archive ").await.unwrap();
-        client.apply_label(&ids, "own").await.unwrap();
+        client.label_messages(&ids, "own").await.unwrap();
         client.star_messages(&ids, true).await.unwrap();
         client.trash_messages(&ids).await.unwrap();
         client.report_spam(&ids).await.unwrap();
-        client.remove_label(&ids, "own").await.unwrap();
+        client.unlabel_messages(&ids, "own").await.unwrap();
         client.star_messages(&ids, false).await.unwrap();
         client.move_conversations(&ids, "inbox").await.unwrap();
         client.label_conversations(&ids, "own").await.unwrap();
