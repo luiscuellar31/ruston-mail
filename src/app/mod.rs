@@ -69,7 +69,7 @@ pub(crate) type AuthAttempt = u64;
 const PROTON_SIGNUP_URL: &str = "https://account.proton.me/mail/signup";
 
 /// The parts Settings is split into, each shown on its own, in the order
-/// its navigation lists them. One draft covers them all.
+/// its navigation lists them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SettingsSection {
     #[default]

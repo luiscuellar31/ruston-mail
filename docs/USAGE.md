@@ -451,7 +451,7 @@ Closing the main window asks before discarding a written message, whether the
 composer is in the reading pane or a separate window. Choose **Keep writing**
 to cancel or **Discard and close** to exit. Repeating the close request does not
 discard the draft. Closing is blocked while a message is being sent or a native
-file dialog is open. Unapplied Settings changes are resolved before the draft.
+file dialog is open.
 If changes you just made, such as moves or stars, are still on their way to
 Proton, the window says so and closes once they arrive. **Close now** closes at
 once and loses them, as closing again does; **Keep open** stays. Signing out
@@ -510,19 +510,16 @@ conversation list and reader. Settings comes in sections: **Reading**,
 sidebar lists them where the folders were, each with its icon, under **Mail**,
 which returns to the mailbox, as in Proton's web client; folded, the strip of
 icons lists them instead, and a window narrow enough for one column shows them
-as a row above the page. Changes in one section stay while you look at
-another, and **Apply** saves them all without leaving. Settings opens again
-to the section you left. Press `Esc`, or choose **Mail** or **Back to mail**,
-to return. If you have unapplied changes, Ruston Mail asks whether to
-apply them, discard them, or keep editing. The same confirmation appears before
-writing a new message or signing out from Settings.
+as a row above the page. A change takes effect and is saved as you make it;
+there is nothing to apply. Settings opens again to the section you left. Press
+`Esc`, or choose **Mail** or **Back to mail**, to return.
 
 The **About** section, the last, shows the app version, credits, and license.
 Choose **Source code** to open the project's repository in your browser, or
 **Third-party notices** to read the licenses of the software Ruston Mail
 includes, which open in your system's app for text files. Only a packaged app
 has that button: a build from source has no notices beside it.
-Turn on **Check for updates** there, and Apply, to have Ruston Mail ask GitHub
+Turn on **Check for updates** there to have Ruston Mail ask GitHub
 as it starts and once a day whether a newer release is out; it is off by
 default. A newer version is announced at the foot of the window and stays in
 About, with a **Download** button that opens its release page in your browser.
@@ -566,10 +563,9 @@ Settings control:
   › Personalization › Taskbar › Taskbar behaviors).
 
 Window size and pane widths are remembered automatically. Use **Reset window and
-pane sizes** under Settings → Appearance to restore the defaults; this action
-takes effect immediately and does not apply other pending preference changes.
+pane sizes** under Settings → Appearance to restore the defaults.
 Choose the **Theme**, Dark or Light, or on macOS and Windows System, under
-Settings → Appearance and press Apply. The selection is saved for the next run. System
+Settings → Appearance. The selection is saved for the next run. System
 follows the light or dark mode of macOS or Windows as it changes and keeps the
 last scheme you chose, which an older version of Ruston opens with. Linux has
 no System choice yet, since its windowing library reports no system mode. The
@@ -577,8 +573,8 @@ sign-in screen also has a theme button in its header, which switches to the
 other scheme from the one on screen, and a control beside each password field
 to show or hide what you type.
 
-**Use system interface font** under Settings → Appearance is optional and takes
-effect after Apply, without changing text sizes. The default keeps Ruston's
+**Use system interface font** under Settings → Appearance is optional and
+changes no text size. The default keeps Ruston's
 existing look. macOS tries San Francisco, Windows Segoe UI, and Linux the
 configured Fontconfig sans-serif family; unavailable fonts fall back to Ruston's.
 Installed language fonts also provide missing characters in either mode. They

@@ -345,7 +345,7 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   later undo; Spam and Trash still take it out. One notice at the foot of the
   list carries the undo offer or, with none, `App`'s `Notice` of a message sent,
   a file saved or a newer release. With Settings shown it sits at the foot of
-  their page, above Apply and Back to mail, and its words wrap rather than run
+  their page, above Back to mail, and its words wrap rather than run
   past the list, the page or the window. Words that fit on one line share it
   with the notice's button, both centered on a line as high as the button;
   longer words wrap and put the button below them.
@@ -576,17 +576,16 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   conversation list and reader with
   [`ui/settings.rs`](../src/ui/settings.rs) when `App` shows Settings. Settings
   shows one section at a time, the `SettingsSection` `App` keeps for the
-  session and `Message::ShowSettingsSection` changes; one draft covers them
-  all, so a section left keeps its edits for Apply. In the three-pane layout
+  session and `Message::ShowSettingsSection` changes. In the three-pane layout
   the sidebar lists the sections in place of New message and the folders,
   under a way back to the mailbox, as Proton's web client does, its rows drawn
   as the folders' are (`place_button`); folded, the strip lists their icons,
   and compact presentation, which gives Settings the full content width, lists
   them as a row above the page. Each section's page scrolls on its own.
-  Compact navigation leaves
-  Settings through the same unsaved-change confirmation as normal navigation.
-  The UI holds preference edits until Apply and confirms whether to apply or discard
-  them before leaving for a folder, composer, or sign-out. Resetting the layout
+  A choice applies as it is made: each frame the page's controls edit a copy
+  of the settings, and `preference_changes` turns what they changed in it into
+  the `Message`s that set it, so nothing waits to be applied and leaving
+  Settings asks nothing. Resetting the layout
   immediately restores the default window and pane sizes in `App`; the UI
   requests the window resize and clears egui's cached pane widths once it settles.
   Choices most people can leave alone, recipient encryption lookups and

@@ -188,8 +188,7 @@ impl Session {
             };
         }
         if !self.entered {
-            // A frame after the last view was left, as Settings takes the
-            // appearance it shows when it opens.
+            // A frame after the last view was left.
             self.entered = true;
             self.began = Some(now);
             let mut messages = vec![Message::SetAppearance(appearance)];

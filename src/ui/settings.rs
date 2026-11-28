@@ -2,7 +2,7 @@ use std::path::Path;
 
 use eframe::egui::{self, Align, Layout};
 
-use super::theme::{self, Emphasis};
+use super::theme;
 use crate::app::{App, Message, SettingsSection, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{
@@ -10,19 +10,17 @@ use crate::settings::{
     TEXT_SCALES,
 };
 
-/// The section of Settings that is open, with Apply and Back to mail at its
-/// foot. `sections_row` lists the sections above it, for a window whose
-/// sidebar does not. Returns where the page scrolls, above those buttons,
-/// which a notice must leave uncovered.
+/// The section of Settings that is open, with Back to mail at its foot. A
+/// choice made in it applies at once. `sections_row` lists the sections above
+/// it, for a window whose sidebar does not. Returns where the page scrolls,
+/// above that button, which a notice must leave uncovered.
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
-    draft: &mut Settings,
     messages: &mut Vec<Message>,
     notification_status: super::notifications::Status,
     sections_row: bool,
 ) -> egui::Rect {
-    let current = app.settings();
     let section = app.settings_section();
     egui::Panel::bottom("settings-actions")
         .frame(
@@ -35,17 +33,6 @@ pub(super) fn show(
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("Back to mail").clicked() {
                     messages.push(Message::ShowSettings(false));
-                }
-
-                let changes = preference_changes(current, draft);
-                if ui
-                    .add_enabled(
-                        !changes.is_empty(),
-                        theme::primary(egui::Button::new("Apply")),
-                    )
-                    .clicked()
-                {
-                    messages.extend(changes);
                 }
             });
         });
@@ -67,15 +54,19 @@ pub(super) fn show(
                     sections(ui, section, messages);
                     ui.add_space(14.0);
                 }
+                // The controls edit a copy, and what they change in it is
+                // asked for at once.
+                let mut edited = app.settings().clone();
                 page(
                     ui,
                     section,
-                    draft,
+                    &mut edited,
                     messages,
                     notification_status,
                     app.third_party_notices(),
                     app.update_status(),
                 );
+                messages.extend(preference_changes(app.settings(), &edited));
             });
     })
     .response
@@ -121,32 +112,6 @@ fn sections(ui: &mut egui::Ui, open: SettingsSection, messages: &mut Vec<Message
             }
         }
     });
-}
-
-#[derive(Clone, Copy)]
-pub(super) enum ExitDecision {
-    KeepEditing,
-    Discard,
-    Apply,
-}
-
-pub(super) fn confirm_exit(context: &egui::Context) -> Option<ExitDecision> {
-    theme::confirmation(
-        context,
-        "unsaved-settings",
-        "Unsaved settings",
-        "Apply your changes before leaving Settings?",
-        &[
-            (
-                "Keep editing",
-                Emphasis::Secondary,
-                ExitDecision::KeepEditing,
-            ),
-            ("Discard changes", Emphasis::Danger, ExitDecision::Discard),
-            ("Apply and continue", Emphasis::Primary, ExitDecision::Apply),
-        ],
-        ExitDecision::KeepEditing,
-    )
 }
 
 /// The card of one section.
@@ -615,7 +580,8 @@ pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
     }
 }
 
-pub(super) fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
+/// The messages that make `current` what `draft`, the copy the page edited, is.
+fn preference_changes(current: &Settings, draft: &Settings) -> Vec<Message> {
     let mut messages = Vec::new();
     if draft.mark_read_on_open != current.mark_read_on_open {
         messages.push(Message::SetMarkReadOnOpen(draft.mark_read_on_open));

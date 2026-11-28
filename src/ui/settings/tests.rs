@@ -1,5 +1,5 @@
 use super::*;
-use crate::ui::test_support::{shape_text_rect, text_rect, visible_text_rect};
+use crate::ui::test_support::{click_events, shape_text_rect, text_rect, visible_text_rect};
 
 #[test]
 fn every_shortcut_key_stays_inside_its_section() {
@@ -295,8 +295,8 @@ fn about_offers_to_check_for_updates_and_says_what_the_last_check_found() {
         output.drop_without_applying_deltas();
         assert_eq!(download.is_some(), said == Some(lines[3]));
 
-        // The box turns checking on in the draft, for Apply to send;
-        // Download asks for the release's page.
+        // The box turns checking on in the copy the page edits; Download
+        // asks for the release's page.
         for target in [Some(checkbox), download].into_iter().flatten() {
             for pressed in [true, false] {
                 draw(vec![
@@ -320,47 +320,44 @@ fn about_offers_to_check_for_updates_and_says_what_the_last_check_found() {
 }
 
 #[test]
-fn unsaved_settings_actions_fit_at_large_zoom() {
-    let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(410.0, 240.0));
+fn a_choice_made_in_settings_is_asked_for_at_once() {
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
     let context = egui::Context::default();
-    context
-        .run_ui(
+    theme::install(&context);
+    let frame = |app: &App, events| {
+        let mut messages = Vec::new();
+        let output = context.run_ui(
             egui::RawInput {
-                screen_rect: Some(viewport),
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(720.0, 2000.0),
+                )),
+                events,
                 ..Default::default()
             },
-            |_| {
-                confirm_exit(&context);
+            |ui| {
+                let status = super::super::notifications::Status::Off;
+                show(ui, app, &mut messages, status, false);
             },
-        )
-        .drop_without_applying_deltas();
-    let output = context.run_ui(
-        egui::RawInput {
-            screen_rect: Some(viewport),
-            ..Default::default()
-        },
-        |_| {
-            confirm_exit(&context);
-        },
-    );
-
-    let actions = ["Keep editing", "Discard changes", "Apply and continue"].map(|label| {
-        (
-            label,
-            output
-                .shapes
-                .iter()
-                .find_map(|shape| crate::ui::test_support::shape_text_rect(&shape.shape, label)),
-        )
-    });
-    output.drop_without_applying_deltas();
-    for (label, text) in actions {
-        let text = text.unwrap_or_else(|| panic!("missing {label}"));
-        assert!(
-            viewport.contains_rect(text),
-            "{label} falls outside {viewport:?}"
         );
+        let checkbox = text_rect(&output.shapes, "Ask before opening a link");
+        output.drop_without_applying_deltas();
+        (messages, checkbox)
+    };
+    frame(&app, Vec::new());
+    let (untouched, checkbox) = frame(&app, Vec::new());
+    assert!(untouched.is_empty());
+
+    let click = click_events(checkbox.center(), egui::PointerButton::Primary);
+    let (asked, _) = frame(&app, click);
+    assert!(matches!(asked[..], [Message::SetConfirmLinks(false)]));
+    for message in asked {
+        let _ = app.update(message);
     }
+    assert!(!app.settings().confirm_links);
+    // Applied, nothing is left to ask for.
+    assert!(frame(&app, Vec::new()).0.is_empty());
 }
 
 #[test]
@@ -390,7 +387,7 @@ fn a_card_fills_the_page_however_little_it_says() {
 }
 
 #[test]
-fn apply_reports_only_preferences_changed_in_the_window() {
+fn only_the_preferences_changed_in_the_window_are_asked_for() {
     let current = Settings::default();
     let mut draft = current.clone();
     draft.window.width += 100.0;

@@ -5,6 +5,7 @@ use jiff::tz::TimeZone;
 
 use super::*;
 use crate::mail::{ConversationDetail, ConversationPage, MailboxError, SummaryKind};
+use crate::settings::Settings;
 use crate::test_support::summary;
 use crate::ui::test_support::{click_events, text_rect, visible_text_rect};
 
@@ -13,7 +14,6 @@ fn mailbox_frame(
     app: &App,
     state: &mut UiState,
     size: egui::Vec2,
-    mut draft: Option<&mut Settings>,
     input: egui::RawInput,
 ) -> (Vec<Message>, Vec<egui::epaint::ClippedShape>) {
     let mut messages = Vec::new();
@@ -22,7 +22,7 @@ fn mailbox_frame(
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             ..input
         },
-        |root| show(root, app, draft.as_deref_mut(), state, &mut messages),
+        |root| show(root, app, state, &mut messages),
     );
     let shapes = output.shapes.clone();
     output.drop_without_applying_deltas();
@@ -44,7 +44,7 @@ fn screen_readers_hear_the_search_field_by_its_name() {
             )),
             ..Default::default()
         },
-        |root| show(root, &app, None, &mut state, &mut Vec::new()),
+        |root| show(root, &app, &mut state, &mut Vec::new()),
     );
     let names = theme::text_field_names(&output);
     output.drop_without_applying_deltas();
@@ -75,8 +75,7 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
             let mut state = UiState::default();
             let mut shapes = Vec::new();
             for _ in 0..3 {
-                (_, shapes) =
-                    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
             }
             let search = visible_text_rect(
                 &shapes,
@@ -106,7 +105,6 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
                 &app,
                 &mut state,
                 size,
-                None,
                 egui::RawInput {
                     events: click_events(position, egui::PointerButton::Primary),
                     ..Default::default()
@@ -141,8 +139,7 @@ fn typing_a_search_leaves_the_list_where_it_was() {
             let mut state = UiState::default();
             let mut shapes = Vec::new();
             for _ in 0..3 {
-                (_, shapes) =
-                    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
             }
             shapes
         };
@@ -185,7 +182,7 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
                 screen_rect: Some(screen),
                 ..Default::default()
             },
-            |root| show(root, &app, None, &mut state, &mut messages),
+            |root| show(root, &app, &mut state, &mut messages),
         );
         label = visible_text_rect(&output.shapes, "Signing out…");
         output.drop_without_applying_deltas();
@@ -198,7 +195,7 @@ fn while_signing_out_the_sidebar_says_so_and_cannot_sign_out_again() {
                 events: click_events(position, egui::PointerButton::Primary),
                 ..Default::default()
             },
-            |root| show(root, &app, None, &mut state, &mut messages),
+            |root| show(root, &app, &mut state, &mut messages),
         )
         .drop_without_applying_deltas();
 
@@ -237,7 +234,6 @@ fn the_address_opens_the_accounts_to_switch_to_or_add() {
             &app,
             &mut state,
             egui::vec2(1100.0, 700.0),
-            None,
             egui::RawInput {
                 events,
                 ..Default::default()
@@ -492,7 +488,7 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                 state.compact_view = view;
                 for frame in 0..3 {
                     let (messages, shapes) =
-                        mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+                        mailbox_frame(&context, &app, &mut state, size, Default::default());
                     assert!(
                         !messages
                             .iter()
@@ -537,22 +533,14 @@ fn compact_navigation_and_settings_fit_both_themes_at_high_zoom() {
                     );
                 }
             }
-            let mut draft = app.settings().clone();
+            let _ = app.update(Message::ShowSettings(true));
             for _ in 0..3 {
-                let (_, shapes) = mailbox_frame(
-                    &context,
-                    &app,
-                    &mut state,
-                    size,
-                    Some(&mut draft),
-                    Default::default(),
+                let (_, shapes) =
+                    mailbox_frame(&context, &app, &mut state, size, Default::default());
+                assert!(
+                    window.contains_rect(visible_text_rect(&shapes, "Back to mail").unwrap()),
+                    "Back to mail clipped at zoom {zoom}"
                 );
-                for label in ["Back to mail", "Apply"] {
-                    assert!(
-                        window.contains_rect(visible_text_rect(&shapes, label).unwrap()),
-                        "{label} clipped at zoom {zoom}"
-                    );
-                }
             }
         }
     }
@@ -570,10 +558,10 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
     let mut state = UiState::default();
     let wide = egui::vec2(1100.0, 700.0);
     for _ in 0..3 {
-        mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+        mailbox_frame(&context, &app, &mut state, wide, Default::default());
     }
     set_list_offset(&context, &state, 500.0);
-    mailbox_frame(&context, &app, &mut state, wide, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, wide, Default::default());
     let before = state.conversation_scroll.as_ref().unwrap();
     let (scroll_id, offset) = (before.scroll_id, before.offset);
     let ratios = app.panels();
@@ -584,7 +572,7 @@ fn switching_between_compact_and_columns_keeps_the_list_offset_and_split_ratios(
             .width();
     for size in [egui::vec2(410.0, 240.0), wide] {
         for _ in 0..3 {
-            mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+            mailbox_frame(&context, &app, &mut state, size, Default::default());
             let after = state.conversation_scroll.as_ref().unwrap();
             assert_eq!(after.scroll_id, scroll_id);
             assert_eq!(after.offset, offset);
@@ -613,8 +601,7 @@ fn folding_the_sidebar_gives_its_room_to_the_reader_and_unfolding_takes_it_back(
     // A few frames, with the resizes they ask for applied, as the window does.
     let mut frames = |app: &mut App| {
         for _ in 0..3 {
-            let (messages, _) =
-                mailbox_frame(&context, app, &mut state, wide, None, Default::default());
+            let (messages, _) = mailbox_frame(&context, app, &mut state, wide, Default::default());
             for message in messages {
                 if matches!(message, Message::PanelsResized(_)) {
                     let _ = app.update(message);
@@ -672,15 +659,13 @@ fn accessible_frame(
         click_events(pos, egui::PointerButton::Primary)
     });
     let mut messages = Vec::new();
-    // As the window has it: a draft while Settings is open.
-    let mut draft = app.showing_settings().then(|| app.settings().clone());
     let output = context.run_ui(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
-        |root| show(root, app, draft.as_mut(), state, &mut messages),
+        |root| show(root, app, state, &mut messages),
     );
     let buttons = output
         .platform_output
@@ -884,7 +869,7 @@ fn the_button_that_folds_the_sidebar_is_drawn_whole() {
                     )),
                     ..Default::default()
                 },
-                |root| show(root, &app, None, &mut state, &mut Vec::new()),
+                |root| show(root, &app, &mut state, &mut Vec::new()),
             )
         };
         frame().drop_without_applying_deltas();
@@ -942,7 +927,7 @@ fn the_filter_button_lines_up_with_the_search_field_and_refresh() {
                         screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                         ..Default::default()
                     },
-                    |root| show(root, &app, None, &mut state, &mut Vec::new()),
+                    |root| show(root, &app, &mut state, &mut Vec::new()),
                 )
             };
             frame().drop_without_applying_deltas();
@@ -1103,7 +1088,7 @@ fn the_opening_skeleton_stands_where_the_mailbox_will() {
             let mut places = Vec::new();
             for _ in 0..3 {
                 let output = context.run_ui(raw(size), |root| {
-                    show(root, &app, None, &mut state, &mut Vec::new())
+                    show(root, &app, &mut state, &mut Vec::new())
                 });
                 loaded = node_top(&output, &|name| name.starts_with("Test sender, p0"));
                 places = accessible_frame_places(&output);
@@ -1183,9 +1168,8 @@ fn a_folded_sidebar_opens_with_skeletons_where_its_icons_will_be() {
         let mut state = UiState::default();
         let mut buttons = Vec::new();
         for _ in 0..3 {
-            let output = context.run_ui(raw(), |root| {
-                show(root, &app, None, &mut state, &mut Vec::new())
-            });
+            let output =
+                context.run_ui(raw(), |root| show(root, &app, &mut state, &mut Vec::new()));
             buttons = accessible_frame_places(&output);
             output.drop_without_applying_deltas();
         }
@@ -1282,16 +1266,16 @@ fn enter_in_the_search_field_searches_all_mail() {
             .any(|message| matches!(message, Message::SearchSubmitted))
     };
 
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
-    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
+    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, enter());
     assert!(
         !submitted(&messages),
         "Enter outside the field is not a search"
     );
 
     context.memory_mut(|memory| memory.request_focus(egui::Id::new("mail-search")));
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
-    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, None, enter());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
+    let (messages, _) = mailbox_frame(&context, &app, &mut state, size, enter());
     assert!(submitted(&messages), "Enter in the field searches all mail");
 }
 
@@ -1311,7 +1295,7 @@ fn high_zoom_uses_the_available_width_without_overwriting_panel_preferences() {
                     screen_rect: Some(window),
                     ..Default::default()
                 },
-                |root| show(root, &app, None, &mut state, &mut messages),
+                |root| show(root, &app, &mut state, &mut messages),
             )
             .drop_without_applying_deltas();
     }
@@ -1347,7 +1331,6 @@ fn a_conversation_chosen_while_writing_shows_under_the_folded_draft() {
                 app,
                 &mut state,
                 egui::vec2(1100.0, 700.0),
-                None,
                 Default::default(),
             );
         }
@@ -1428,7 +1411,6 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
             &app,
             &mut state,
             egui::vec2(1100.0, 700.0),
-            None,
             egui::RawInput::default(),
         );
         asked.extend(messages);
@@ -1504,7 +1486,7 @@ fn refresh_is_an_icon_that_says_its_name_and_asks_for_the_list_again() {
                     screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
                     ..Default::default()
                 },
-                |root| show(root, app, None, state, &mut Vec::new()),
+                |root| show(root, app, state, &mut Vec::new()),
             );
             let update = output.platform_output.accesskit_update.iter();
             found = update
@@ -1515,7 +1497,7 @@ fn refresh_is_an_icon_that_says_its_name_and_asks_for_the_list_again() {
         found
     };
     // No words on it: an icon, named for a screen reader and on hover.
-    let (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    let (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     assert!(visible_text_rect(&shapes, "Refresh").is_none());
     assert!(named(&app, &mut state, "Refresh"));
 
@@ -1524,7 +1506,7 @@ fn refresh_is_an_icon_that_says_its_name_and_asks_for_the_list_again() {
         events: click_events(icon.center(), egui::PointerButton::Primary),
         ..Default::default()
     };
-    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, click);
     assert!(matches!(asked.as_slice(), [Message::RefreshMailbox]));
 
     // Asked for, the refresh shows in its name until the list is back.
@@ -2202,8 +2184,8 @@ fn settings_replaces_mail_panes_and_preserves_their_split() {
         }
     }
 
-    let (app, _) = App::boot(true, Settings::default());
-    let mut draft = app.settings().clone();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ShowSettings(true));
     let mut state = UiState::default();
     let mut messages = Vec::new();
     let original_split = app.panels().conversations;
@@ -2218,7 +2200,7 @@ fn settings_replaces_mail_panes_and_preserves_their_split() {
             ..Default::default()
         },
         |root| {
-            show(root, &app, Some(&mut draft), &mut state, &mut messages);
+            show(root, &app, &mut state, &mut messages);
         },
     );
     assert!(
@@ -2257,7 +2239,6 @@ fn a_right_click_on_a_row_offers_its_actions_without_opening_it() {
             &app,
             &mut state,
             size,
-            None,
             egui::RawInput {
                 events,
                 ..Default::default()
@@ -2329,12 +2310,12 @@ fn the_compact_reader_opens_only_with_a_conversation_to_read() {
         ..Default::default()
     };
 
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
     assert_eq!(state.compact_view, CompactView::Mail, "nothing to read");
 
     let _ = app.update(Message::SelectConversation("demo-3".into()));
     state.compact_view = CompactView::Reader;
-    mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    mailbox_frame(&context, &app, &mut state, size, Default::default());
     assert_eq!(state.compact_view, CompactView::Reader);
 }
 
@@ -2362,7 +2343,7 @@ fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     let notice = visible_text_rect(&shapes, "Moved to Archive.").expect("an offer to undo");
@@ -2401,7 +2382,7 @@ fn undo_answers_while_the_list_refreshes() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
     let undo = visible_text_rect(&shapes, "Undo")
         .expect("the offer's Undo")
@@ -2411,7 +2392,7 @@ fn undo_answers_while_the_list_refreshes() {
         events: click_events(undo, egui::PointerButton::Primary),
         ..Default::default()
     };
-    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, click);
     assert!(
         asked
             .iter()
@@ -2437,7 +2418,7 @@ fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
         Folder::System(MailFolder::Archive),
     )));
     assert!(app.mailbox().unwrap().undo().is_some());
-    let mut draft = app.settings().clone();
+    let _ = app.update(Message::ShowSettings(true));
 
     // Wide and compact windows. A new area shows from its second frame.
     for size in [egui::vec2(1100.0, 700.0), egui::vec2(469.0, 700.0)] {
@@ -2446,14 +2427,7 @@ fn an_offer_to_undo_stays_on_screen_while_settings_is_open() {
         let mut state = UiState::default();
         let mut shapes = Vec::new();
         for _ in 0..3 {
-            (_, shapes) = mailbox_frame(
-                &context,
-                &app,
-                &mut state,
-                size,
-                Some(&mut draft),
-                Default::default(),
-            );
+            (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
         }
         assert!(
             visible_text_rect(&shapes, "Moved to Archive.").is_some(),
@@ -2815,13 +2789,13 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
     };
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(1.0, Vec::new()));
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, at(1.0, Vec::new()));
     }
     let notice = visible_text_rect(&shapes, "Message sent.").expect("a confirmation");
 
     // Past its own time, the pointer on it keeps it.
     let rest = vec![egui::Event::PointerMoved(notice.center())];
-    let (asked, shapes) = mailbox_frame(&context, &app, &mut state, size, None, at(9.0, rest));
+    let (asked, shapes) = mailbox_frame(&context, &app, &mut state, size, at(9.0, rest));
     assert!(
         !asked
             .iter()
@@ -2830,7 +2804,7 @@ async fn a_sent_message_is_confirmed_at_the_foot_while_the_pointer_rests_there()
     assert!(visible_text_rect(&shapes, "Message sent.").is_some());
 
     let away = vec![egui::Event::PointerGone];
-    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, at(16.0, away));
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, at(16.0, away));
     assert!(
         asked
             .iter()
@@ -2860,14 +2834,8 @@ fn a_bottom_notice_keeps_within_its_list_or_the_window_however_narrow() {
         let mut state = UiState::default();
         let mut shapes = Vec::new();
         for _ in 0..3 {
-            (_, shapes) = mailbox_frame(
-                &context,
-                &app,
-                &mut state,
-                size,
-                None,
-                egui::RawInput::default(),
-            );
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
         }
         let notice = context
             .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
@@ -2915,17 +2883,10 @@ fn a_bottom_notice_over_settings_leaves_its_buttons_uncovered() {
         egui::vec2(240.0, 210.0),
     ] {
         let mut state = UiState::default();
-        let mut draft = app.settings().clone();
         let mut shapes = Vec::new();
         for _ in 0..3 {
-            (_, shapes) = mailbox_frame(
-                &context,
-                &app,
-                &mut state,
-                size,
-                Some(&mut draft),
-                egui::RawInput::default(),
-            );
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
         }
         let notice = context
             .memory(|memory| memory.area_rect(egui::Id::new("bottom-notice")))
@@ -2935,14 +2896,12 @@ fn a_bottom_notice_over_settings_leaves_its_buttons_uncovered() {
             "at {size:?} the notice spans {:?}",
             notice.x_range()
         );
-        for button in ["Apply", "Back to mail"] {
-            let button = visible_text_rect(&shapes, button)
-                .unwrap_or_else(|| panic!("at {size:?} {button} is not drawn"));
-            assert!(
-                !button.intersects(notice),
-                "at {size:?} the notice {notice:?} covers {button:?}"
-            );
-        }
+        let button = visible_text_rect(&shapes, "Back to mail")
+            .unwrap_or_else(|| panic!("at {size:?} Back to mail is not drawn"));
+        assert!(
+            !button.intersects(notice),
+            "at {size:?} the notice {notice:?} covers {button:?}"
+        );
     }
 }
 
@@ -2986,8 +2945,8 @@ fn a_bottom_notice_stays_as_long_as_settings_say() {
             time: Some(time),
             ..Default::default()
         };
-        let _ = mailbox_frame(&context, app, &mut state, size, None, at(1.0));
-        let (asked, _) = mailbox_frame(&context, app, &mut state, size, None, at(1.0 + after));
+        let _ = mailbox_frame(&context, app, &mut state, size, at(1.0));
+        let (asked, _) = mailbox_frame(&context, app, &mut state, size, at(1.0 + after));
         !asked
             .iter()
             .any(|message| matches!(message, Message::DismissNotice(_)))
@@ -3020,14 +2979,8 @@ fn a_notice_centers_its_words_on_its_button_or_puts_the_button_below_them() {
         let mut state = UiState::default();
         let mut shapes = Vec::new();
         for _ in 0..3 {
-            (_, shapes) = mailbox_frame(
-                &context,
-                &app,
-                &mut state,
-                size,
-                None,
-                egui::RawInput::default(),
-            );
+            (_, shapes) =
+                mailbox_frame(&context, &app, &mut state, size, egui::RawInput::default());
         }
         let text = visible_text_rect(&shapes, words).expect("the words are drawn");
         let button = visible_text_rect(&shapes, "Download").expect("the button is drawn");
@@ -3059,7 +3012,6 @@ fn a_notice_centers_its_words_on_its_button_or_puts_the_button_below_them() {
             &app,
             &mut state,
             egui::vec2(1100.0, 700.0),
-            None,
             Default::default(),
         );
     }
@@ -3575,7 +3527,7 @@ fn command_and_shift_clicks_choose_a_row_together_with_others() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
 
@@ -3616,7 +3568,7 @@ fn rows_chosen_together_are_highlighted_and_their_menu_acts_on_all() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
 
     for id in ["demo-3", "demo-4"] {
@@ -3725,7 +3677,7 @@ fn a_rows_menu_moves_it_into_a_folder_and_switches_its_labels() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let primary = egui::PointerButton::Primary;
     let secondary = egui::PointerButton::Secondary;
     let (_, shapes) = frame(Default::default());
@@ -3781,7 +3733,7 @@ fn the_menu_of_rows_chosen_together_moves_all_into_a_folder_and_labels_none() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let primary = egui::PointerButton::Primary;
     let named = |shapes: &[egui::epaint::ClippedShape], text| {
         shapes
@@ -3832,7 +3784,7 @@ fn an_offer_to_undo_a_move_of_several_rows_says_how_many() {
     let size = egui::vec2(1100.0, 700.0);
     let mut shapes = Vec::new();
     for _ in 0..3 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     assert!(
@@ -3855,7 +3807,7 @@ fn one_column_can_show_the_rows_chosen_together() {
     let size = egui::vec2(480.0, 640.0);
     let mut shapes = Vec::new();
     for _ in 0..2 {
-        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+        (_, shapes) = mailbox_frame(&context, &app, &mut state, size, Default::default());
     }
 
     assert_eq!(
@@ -3873,7 +3825,7 @@ fn a_key_let_go_with_the_button_still_counts_for_the_click() {
     theme::install(&context);
     let mut state = UiState::default();
     let size = egui::vec2(1100.0, 700.0);
-    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, None, input);
+    let mut frame = |input| mailbox_frame(&context, &app, &mut state, size, input);
     let (_, shapes) = frame(Default::default());
     let row = visible_text_rect(&shapes, "demo-4").expect("the second row");
 

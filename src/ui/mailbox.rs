@@ -13,7 +13,7 @@ use crate::mail::{
     ConversationSummary, CustomKind, Folder, ListFilter, ListOrder, MailFolder, MailboxError,
     PlaceLook,
 };
-use crate::settings::{ComposePlacement, Panels, Settings};
+use crate::settings::{ComposePlacement, Panels};
 
 const SIDEBAR_PANEL_ID: &str = "mailbox-sidebar";
 const CONVERSATION_PANEL_ID: &str = "conversation-list";
@@ -52,7 +52,6 @@ pub(super) fn reset_panel_sizes(context: &egui::Context) {
 pub(super) fn show(
     root: &mut egui::Ui,
     app: &App,
-    settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) {
@@ -60,7 +59,7 @@ pub(super) fn show(
     let context = root.ctx().clone();
     let window_width = root.available_width();
     if one_column(root, app) {
-        let settings = show_compact(root, app, mailbox, settings_draft, state, messages);
+        let settings = show_compact(root, app, mailbox, state, messages);
         bottom_notice(&context, app, mailbox, state, settings, messages);
         return;
     }
@@ -96,17 +95,14 @@ pub(super) fn show(
 
     // The list, and where a notice sits: at the foot of the list, or of
     // Settings' page, above its buttons.
-    let (conversations, notice_place) = match settings_draft {
-        Some(draft) => {
-            let page = egui::CentralPanel::default()
-                .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
-                .show(root, |ui| {
-                    settings_pane(ui, app, draft, state, false, messages)
-                })
-                .inner;
-            (None, page)
-        }
-        None => {
+    let (conversations, notice_place) = if app.showing_settings() {
+        let page = egui::CentralPanel::default()
+            .frame(theme::top_panel_frame(theme::colors(root).panel, inset))
+            .show(root, |ui| settings_pane(ui, app, state, false, messages))
+            .inner;
+        (None, page)
+    } else {
+        {
             let remaining = (window_width - sidebar.response.rect.width())
                 .max(MIN_PANEL_WIDTH + MIN_READER_WIDTH);
             let conversations = egui::Panel::left(CONVERSATION_PANEL_ID)
@@ -326,10 +322,10 @@ fn show_compact(
     root: &mut egui::Ui,
     app: &App,
     mailbox: &Mailbox,
-    settings_draft: Option<&mut Settings>,
     state: &mut UiState,
     messages: &mut Vec<Message>,
 ) -> Option<egui::Rect> {
+    let showing_settings = app.showing_settings();
     let inset = theme::titlebar_inset(root.ctx());
     let writing = app.settings().compose_placement == ComposePlacement::ReadingPane
         && app.compose().is_some_and(|draft| !draft.folded());
@@ -356,20 +352,19 @@ fn show_compact(
                         .add_enabled(
                             enabled,
                             egui::Button::new(label)
-                                .selected(settings_draft.is_none() && state.compact_view == view),
+                                .selected(!showing_settings && state.compact_view == view),
                         )
                         .clicked()
                     {
                         state.compact_view = view;
-                        if settings_draft.is_some() {
-                            // Leaving Settings still goes through the existing unsaved-change guard.
+                        if showing_settings {
                             messages.push(Message::ShowSettings(false));
                         }
                     }
                 }
             });
         });
-    let fill = if settings_draft.is_none() && state.compact_view == CompactView::Folders {
+    let fill = if !showing_settings && state.compact_view == CompactView::Folders {
         theme::colors(root).sidebar
     } else {
         theme::colors(root).panel
@@ -377,8 +372,8 @@ fn show_compact(
     egui::CentralPanel::default()
         .frame(theme::panel_frame(fill))
         .show(root, |ui| {
-            if let Some(draft) = settings_draft {
-                return Some(settings_pane(ui, app, draft, state, true, messages));
+            if showing_settings {
+                return Some(settings_pane(ui, app, state, true, messages));
             }
             match state.compact_view {
                 CompactView::Folders => {
@@ -414,19 +409,11 @@ fn compact_mail(
 fn settings_pane(
     ui: &mut egui::Ui,
     app: &App,
-    draft: &mut Settings,
     state: &UiState,
     sections_row: bool,
     messages: &mut Vec<Message>,
 ) -> egui::Rect {
-    settings::show(
-        ui,
-        app,
-        draft,
-        messages,
-        state.notification_status,
-        sections_row,
-    )
+    settings::show(ui, app, messages, state.notification_status, sections_row)
 }
 
 fn reading_pane(

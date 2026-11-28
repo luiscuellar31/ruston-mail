@@ -144,8 +144,8 @@ of 100%, 150%, 175%, and 200% in both themes. At high scales, use Folders/Mail/
 Reader to navigate the compact view, scroll to the sidebar's final label,
 verify Settings/sign-out stay accessible, open a conversation, and write a
 draft with Cc/Bcc and attachments. Grow and shrink the window while preserving
-the open message, draft, and list position. Verify that unsaved Settings changes still require
-a decision when leaving. Run these checks on macOS and Linux as well; automated
+the open message, draft, and list position. Verify that a Settings change takes
+effect as it is made. Run these checks on macOS and Linux as well; automated
 egui geometry/input tests cover clipping and navigation, while native smoke
 checks cover compositor and platform behavior.
 
@@ -283,12 +283,11 @@ mail is needed. Record OS/build, display scaling, application zoom, and package.
 - Check **Settings…** in the application menu and **File > New Message** with
   their keyboard equivalents, from both windows and with the mailbox minimized.
   Preserve About, Services, Hide, and Quit. New Message must keep an existing
-  draft; dirty Settings must still ask before navigating. Mail commands must be
+  draft, and leaves Settings without asking. Mail commands must be
   disabled while signed out or a confirmation/native file dialog is open.
 - In both composer placements, write a draft, close the main window, repeat the
   close request, cancel, and confirm discard. Test menu Quit and Cmd+Q too.
-  Escape/backdrop dismissal must preserve the draft. Repeat with unapplied
-  Settings changes, choosing each Settings decision before resolving the draft.
+  Escape/backdrop dismissal must preserve the draft. Repeat from Settings.
 - While a demo send is pending, close requests must be cancelled; a failed send
   must preserve its message. An untouched composer may close without a prompt.
   Confirm file dialogs block closing until they complete. Repeat window close
@@ -491,7 +490,7 @@ not establish how a particular desktop shell displays them.
 ## Typography and local font coverage
 
 The existing bundled face remains the default. To compare, enable **Use system
-interface font** under Settings → Appearance and Apply; disabling it restores
+interface font** under Settings → Appearance; disabling it restores
 the bundled typography. Sizes and monospace primary stay unchanged. System
 language fallbacks are active in both modes, depending on installed fonts.
 

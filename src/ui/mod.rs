@@ -142,10 +142,6 @@ struct DesktopApp {
     auto_refresh: AutoRefresh,
     /// When to ask GitHub whether a newer release is out.
     update_schedule: crate::releases::Schedule,
-    /// Preferences being edited in the settings pane until Apply is pressed.
-    settings_draft: Option<Settings>,
-    /// Where to go after the user decides what to do with unsaved preferences.
-    pending_settings_exit: Option<SettingsExit>,
     /// Set while the root window asks whether to discard a written message,
     /// and what discarding it makes way for.
     pending_discard: Option<close::Leaving>,
@@ -191,11 +187,6 @@ struct DesktopApp {
     readme_screenshots: Option<readme_screenshots::Session>,
 }
 
-enum SettingsExit {
-    Navigate(Box<Message>),
-    CloseWindow,
-}
-
 /// What the screen drawn in one pass asks of the shell.
 #[derive(Default)]
 struct ScreenPass {
@@ -208,7 +199,6 @@ struct ScreenPass {
 
 /// The answers given in one pass to the prompts then open.
 struct PromptAnswers {
-    settings_exit: Option<settings::ExitDecision>,
     discard: Option<Message>,
     wait: Option<close::WaitDecision>,
 }
@@ -250,8 +240,6 @@ impl DesktopApp {
             unread_badge: None,
             auto_refresh: AutoRefresh::default(),
             update_schedule: crate::releases::Schedule::default(),
-            settings_draft: None,
-            pending_settings_exit: None,
             pending_discard: None,
             pending_account: None,
             window_close_approved: false,
@@ -307,36 +295,6 @@ impl DesktopApp {
             )
         {
             return;
-        }
-        let message = if self.app.showing_settings() {
-            match message {
-                Message::KeyPressed(press) if press.leaves_settings() => {
-                    Message::ShowSettings(false)
-                }
-                other => other,
-            }
-        } else {
-            message
-        };
-        if self.app.showing_settings()
-            && matches!(
-                message,
-                Message::ShowSettings(false)
-                    | Message::SelectFolder(_)
-                    | Message::OpenCompose
-                    | Message::Logout
-                    | Message::SwitchAccount(_)
-                    | Message::AddAccount
-            )
-        {
-            if self.pending_settings_exit.is_some() {
-                return;
-            }
-            if self.has_unapplied_settings() {
-                self.pending_settings_exit = Some(SettingsExit::Navigate(Box::new(message)));
-                context.request_repaint();
-                return;
-            }
         }
         let changing_account = matches!(message, Message::SwitchAccount(_) | Message::AddAccount);
         if matches!(message, Message::Logout) || changing_account {
@@ -430,47 +388,18 @@ impl DesktopApp {
             .cancel_superseded(|request| self.app.accepts_page(request), now);
     }
 
-    fn resolve_settings_exit(&mut self, decision: settings::ExitDecision, context: &egui::Context) {
-        let Some(destination) = self.pending_settings_exit.take() else {
-            return;
-        };
-        context.request_repaint();
-        match decision {
-            settings::ExitDecision::KeepEditing => return,
-            settings::ExitDecision::Discard => {}
-            settings::ExitDecision::Apply => {
-                if let Some(draft) = &self.settings_draft {
-                    for change in settings::preference_changes(self.app.settings(), draft) {
-                        self.dispatch(change, context);
-                    }
-                }
-            }
-        }
-        self.settings_draft = None;
-        match destination {
-            SettingsExit::Navigate(message) => self.dispatch(*message, context),
-            SettingsExit::CloseWindow => self.request_window_close(context),
-        }
-    }
-
     fn request_window_close(&mut self, context: &egui::Context) {
         if self.window_close_approved {
             return;
         }
-        // A send, a native file dialog or a settings prompt already open keeps
-        // the window open without asking anything more.
+        // A send or a native file dialog keeps the window open without asking
+        // anything more.
         let sending = self
             .app
             .compose()
             .is_some_and(crate::app::Compose::in_flight);
-        if sending || self.file_dialog_open || self.pending_settings_exit.is_some() {
+        if sending || self.file_dialog_open {
             Self::cancel_root_close(context);
-            return;
-        }
-        if self.has_unapplied_settings() {
-            Self::cancel_root_close(context);
-            self.pending_settings_exit = Some(SettingsExit::CloseWindow);
-            Self::bring_main_window_forward(context);
             return;
         }
         // A written draft is discarded only once asked, and so is one kept
@@ -522,17 +451,7 @@ impl DesktopApp {
     /// confirmation, or a native file dialog, whose result is what releases
     /// its slot. Shortcuts, menus, dropped files and activations wait for it.
     fn prompt_open(&self) -> bool {
-        self.pending_discard.is_some()
-            || self.pending_settings_exit.is_some()
-            || self.file_dialog_open
-    }
-
-    /// Whether the open settings page has changes that are not applied yet.
-    fn has_unapplied_settings(&self) -> bool {
-        self.app.showing_settings()
-            && self.settings_draft.as_ref().is_some_and(|draft| {
-                !settings::preference_changes(self.app.settings(), draft).is_empty()
-            })
+        self.pending_discard.is_some() || self.file_dialog_open
     }
 
     /// What signing out leaves: the demo mailbox, or the account.
@@ -619,11 +538,9 @@ impl DesktopApp {
                     egui::ViewportId::ROOT,
                     egui::ViewportCommand::Minimized(false),
                 );
-                // A new message comes forward in the draft's own window, unless
-                // leaving Settings first waits on its question in this one.
+                // A new message comes forward in the draft's own window.
                 let destination = if self.app.compose().is_some()
                     && self.app.settings().compose_placement == ComposePlacement::Window
-                    && self.pending_settings_exit.is_none()
                 {
                     compose::viewport_id()
                 } else {
@@ -841,13 +758,9 @@ impl DesktopApp {
         }
     }
 
-    /// Moves the zoom one offered step, keeping an open Settings page, whose
-    /// draft would otherwise put the old zoom back, in step with it.
+    /// Moves the zoom one offered step.
     fn step_zoom(&mut self, step: settings::ZoomStep, context: &egui::Context) {
         let zoom = settings::zoom_step(self.app.settings().zoom, step);
-        if let Some(draft) = &mut self.settings_draft {
-            draft.zoom = zoom;
-        }
         if (zoom - self.app.settings().zoom).abs() > f32::EPSILON {
             self.dispatch(Message::SetZoom(zoom), context);
         }
@@ -1102,15 +1015,6 @@ impl DesktopApp {
         self.window_close_approved || self.prompt_open()
     }
 
-    /// Drops the settings draft, and the exit waiting on it, once the
-    /// settings pane is gone.
-    fn forget_hidden_settings_draft(&mut self) {
-        if !self.app.showing_settings() || !self.app.auth_state().is_authenticated() {
-            self.settings_draft = None;
-            self.pending_settings_exit = None;
-        }
-    }
-
     /// Draws the screen the sign-in state calls for, and the composer's own
     /// window, gathering what they ask for in this pass.
     fn draw_screen(&mut self, ui: &mut egui::Ui, context: &egui::Context) -> ScreenPass {
@@ -1135,15 +1039,7 @@ impl DesktopApp {
             }
             AuthState::Authenticated { .. } => {
                 if self.app.mailbox().is_some() {
-                    let draft = if self.app.showing_settings() {
-                        Some(
-                            self.settings_draft
-                                .get_or_insert_with(|| self.app.settings().clone()),
-                        )
-                    } else {
-                        None
-                    };
-                    mailbox::show(ui, &self.app, draft, &mut self.ui, &mut pass.messages);
+                    mailbox::show(ui, &self.app, &mut self.ui, &mut pass.messages);
                 } else {
                     status_view(ui, "Opening mailbox…");
                 }
@@ -1154,7 +1050,7 @@ impl DesktopApp {
                     let window = compose::show_window(
                         context,
                         writing,
-                        self.pending_discard.is_some() || self.pending_settings_exit.is_some(),
+                        self.pending_discard.is_some(),
                         std::mem::take(&mut self.composer_edits),
                         &mut self.composer_title_bar,
                     );
@@ -1168,7 +1064,7 @@ impl DesktopApp {
             }
             AuthState::SigningOut => {
                 if self.app.mailbox().is_some() {
-                    mailbox::show(ui, &self.app, None, &mut self.ui, &mut pass.messages);
+                    mailbox::show(ui, &self.app, &mut self.ui, &mut pass.messages);
                 } else {
                     status_view(ui, "Signing out…");
                 }
@@ -1180,10 +1076,6 @@ impl DesktopApp {
     /// Draws the prompts open now and reads their answers.
     fn ask_prompts(&self, context: &egui::Context) -> PromptAnswers {
         PromptAnswers {
-            settings_exit: self
-                .pending_settings_exit
-                .as_ref()
-                .and_then(|_| settings::confirm_exit(context)),
             discard: self
                 .pending_discard
                 .and_then(|leaving| close::confirm_discard(context, leaving)),
@@ -1195,9 +1087,6 @@ impl DesktopApp {
     }
 
     fn apply_prompt_answers(&mut self, answers: PromptAnswers, context: &egui::Context) {
-        if let Some(decision) = answers.settings_exit {
-            self.resolve_settings_exit(decision, context);
-        }
         if let Some(decision) = answers.discard {
             self.resolve_discard(decision, context);
         }
@@ -1276,7 +1165,6 @@ impl eframe::App for DesktopApp {
         }
         let context = ui.ctx().clone();
         reader::forget_textures(&context, self.app.inline_images());
-        self.forget_hidden_settings_draft();
         let mut pass = self.draw_screen(ui, &context);
         if let Some(link) = self.app.pending_link() {
             pass.messages.extend(reader::link_dialog(&context, link));
