@@ -98,7 +98,9 @@ unfolds it. Ruston Mail remembers the choice, and
 column always shows the whole sidebar.
 While the desktop has focus, it checks for new mail about once a minute. While
 open without focus, it checks about every three minutes, including minimized
-windows. Returning after at least 30 seconds can trigger an earlier check,
+windows. On Linux under Wayland, a window that is minimized or hidden checks
+nothing, and announces no new mail, until it shows again; it then checks at
+once. Returning after at least 30 seconds can trigger an earlier check,
 unless one just succeeded or a failure is still backing off. Busy operations
 delay automatic checks; failed folder refreshes increase the wait to at most five minutes.
 Closing the app or signing out stops these checks. The demo does not poll Proton.

@@ -813,7 +813,11 @@ previous reference and release their slot; session expiry closes the mailbox.
 and 180-second background polls with one pending page request and backoff up to
 300 seconds. It is timed by the window's own clock (`DesktopApp::clock`), not
 egui's, which stands still while the window is minimized or covered and no
-pass is drawn; egui requests the timed wake-ups that run `logic` then. A
+pass is drawn; egui requests the timed wake-ups that run `logic` then. Not
+under Wayland: winit cannot tell that a window is minimized or hidden there,
+and its redraw waits for a frame the compositor does not ask for, so eframe
+0.36 runs nothing until the window shows again (seen with a probe build on
+headless Weston; eframe 0.37 runs `logic` after 250 ms without a frame). A
 minimized window counts as away (`has_keyboard`): egui keeps the focus its last
 pass saw, so it would still poll as in front. Busy mailbox
 or send operations defer polling. Returning after 30 seconds can refresh early
