@@ -386,7 +386,7 @@ impl App {
             return self.sign_out_of_duplicate(backend);
         }
         self.advance_session_epoch();
-        self.new_mail = super::notifications::NewMail::default();
+        self.session.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = None;
         let page_size = backend.page_size();
@@ -548,24 +548,11 @@ impl App {
         // waits in memory for its own account to sign in again.
         let account = self.account.take();
         self.park_draft(account.filter(|_| error == Some(AuthError::SessionExpired)));
-        self.pending_link = None;
-        // Pending email requests accepted in a session must not cross accounts.
-        self.pending_mailto.clear();
-        self.mailto_error = None;
         self.showing_settings = false;
-        // Never show one account's folders in the next session, nor ask for
-        // them again, show a refresh or read a conversation on its behalf.
-        self.folders.clear();
-        self.place_looks.clear();
-        self.refetch_folders = false;
-        self.automatic_refresh = None;
-        self.read_once_shown = None;
-        // A file one session saved is not news for the next one.
-        self.failed_save = None;
-        self.notice = None;
-        self.saving_attachment = None;
+        // Never show one account's folders, links, notices or files in the
+        // next session, nor ask, refresh or read anything on its behalf.
+        self.session = super::SessionState::default();
         self.forget_inline_images();
-        self.new_mail = super::notifications::NewMail::default();
         self.login_form.clear_all();
         self.auth_error = error;
         self.auth_state = AuthState::SignedOut;

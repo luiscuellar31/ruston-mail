@@ -157,7 +157,7 @@ impl App {
         // sidebar's, which stays beside it; link prompts allow only Escape.
         let shortcut_blocked = (self.showing_settings
             && !matches!(shortcut, Shortcut::ToggleSettings | Shortcut::ToggleSidebar))
-            || self.pending_link.is_some();
+            || self.session.pending_link.is_some();
         if shortcut_blocked && shortcut != Shortcut::Dismiss {
             return Effects::none();
         }
@@ -319,7 +319,7 @@ impl App {
     /// most recent.
     fn dismiss(&mut self) -> Effects {
         // The link prompt is a dialog over the whole window.
-        if self.pending_link.take().is_some() {
+        if self.session.pending_link.take().is_some() {
             return Effects::none();
         }
         // Leave settings before touching a message still open behind it.

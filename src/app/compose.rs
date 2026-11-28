@@ -1103,7 +1103,7 @@ impl App {
             // landed in catches up.
             Ok(()) => {
                 self.compose = None;
-                self.notice = Some(super::Notice::Sent);
+                self.session.notice = Some(super::Notice::Sent);
                 if let Some(mailbox) = &mut self.mailbox {
                     mailbox.invalidate_listings();
                     mailbox.invalidate_reader_cache();

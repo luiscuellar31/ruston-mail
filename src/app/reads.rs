@@ -43,14 +43,14 @@ impl App {
         if !self.draft_covers_reader() {
             return false;
         }
-        self.read_once_shown = Some(id.to_owned());
+        self.session.read_once_shown = Some(id.to_owned());
         true
     }
 
     /// Marks read what was opened while a draft covered the reader, now that
     /// the reader shows it; nothing if another conversation is open by then.
     pub(super) fn mark_read_once_shown(&mut self) -> Effects {
-        let Some(id) = self.read_once_shown.take() else {
+        let Some(id) = self.session.read_once_shown.take() else {
             return Effects::none();
         };
         if self.selected_conversation_id().as_deref() != Some(id.as_str()) {

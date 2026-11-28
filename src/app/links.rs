@@ -49,7 +49,7 @@ fn mail_target(link: &str) -> Option<String> {
 
 impl App {
     pub fn pending_link(&self) -> Option<&PendingLink> {
-        self.pending_link.as_ref()
+        self.session.pending_link.as_ref()
     }
 
     pub(super) fn open_link_target(&mut self, url: String) -> Effects {
@@ -58,7 +58,7 @@ impl App {
         }
         match Request::parse(&url) {
             Some(request) => self.receive_mailto(request),
-            None => self.mailto_error = Some(MailtoError::Unreadable),
+            None => self.session.mailto_error = Some(MailtoError::Unreadable),
         }
         Effects::none()
     }

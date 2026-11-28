@@ -869,6 +869,11 @@ whose lookup the ended session left unanswered. Another account's sign-in
 drops it, the sign-in screen says whose sign-in brings it back, and closing
 the window asks before discarding it. Nothing of it is written to disk.
 
+What else a session gathers, the account's folders, a link or an email request
+waiting, the notice at the foot, an attachment being saved and the mail
+already announced, is `App`'s `SessionState`, which `close_mailbox` replaces
+with an empty one, so nothing kept there can reach the next account.
+
 The composer's protection notice takes the same path. When a recipient field
 loses focus, or a reply opens with the recipients of a conversation Proton
 already holds, [`app/compose.rs`](../src/app/compose.rs) asks the backend

@@ -66,7 +66,7 @@ impl App {
         if let UpdateStatus::Available(version) = found
             && self.update_status != Some(found)
         {
-            self.notice = Some(Notice::UpdateAvailable(version));
+            self.session.notice = Some(Notice::UpdateAvailable(version));
         }
         self.update_status = Some(found);
     }

@@ -279,13 +279,13 @@ fn a_closed_mailbox_leaves_the_next_session_nothing_of_its_own_to_act_on() {
     // What a session keeps to itself between two messages: folders to ask
     // for again, its own refresh on its way, and a conversation to read once
     // a draft uncovers it.
-    app.refetch_folders = true;
-    app.automatic_refresh = Some(7);
-    app.read_once_shown = Some("demo-1".into());
+    app.session.refetch_folders = true;
+    app.session.automatic_refresh = Some(7);
+    app.session.read_once_shown = Some("demo-1".into());
 
     app.close_mailbox(None);
 
-    assert!(!app.refetch_folders);
-    assert_eq!(app.automatic_refresh, None);
-    assert_eq!(app.read_once_shown, None);
+    assert!(!app.session.refetch_folders);
+    assert_eq!(app.session.automatic_refresh, None);
+    assert_eq!(app.session.read_once_shown, None);
 }
