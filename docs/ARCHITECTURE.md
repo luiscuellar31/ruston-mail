@@ -1538,7 +1538,10 @@ directory and credentials in the OS keychain. The storage identifier is
 separately in `Ruston Mail`'s config directory. Core
 [`session/`](../crates/ruston-core/src/session/) stores access and refresh
 tokens as one keychain entry and the session's API address as another; loading
-rejects metadata whose address differs from it. Session writes and token refresh use a per-profile
+rejects metadata whose address differs from it. A `ProfileStorage` holds one
+profile's files and its secret store together, so the file of one profile is
+never read or written beside another's secrets; `Client` keeps the one its
+session is saved in. Session writes and token refresh use a per-profile
 file lock. A process waits at most 30 seconds for it, trying again every 50 ms,
 and then fails with a "profile is busy" session error, so another process
 stopped while holding it cannot stall it for good. Sign-in and resume read and save the session on Tokio's blocking

@@ -8,7 +8,7 @@ use crate::cache::{BatchCounts, Cache, CacheIdentity};
 use crate::error::{Error, Result};
 use crate::model::enums::{message_flag, resolve_folder, response_code};
 use crate::model::message::MessageMetadata;
-use crate::session::{KeyringStore, Paths, SecretStore, Session, validate_profile_name};
+use crate::session::ProfileStorage;
 use crate::transport::Doer;
 use futures::{FutureExt, StreamExt, stream};
 use std::borrow::{Borrow, Cow};
@@ -412,20 +412,16 @@ impl LocalCache {
     /// Opens the cache of the account saved under `profile`, which the
     /// saved session names, without asking Proton.
     pub fn open(profile: &str) -> Result<Self> {
-        validate_profile_name(profile)?;
-        let store = KeyringStore::new(profile.to_owned());
-        Self::open_saved(&Paths::system()?, &store, profile, |identity| {
+        Self::open_saved(&ProfileStorage::system(profile)?, |identity| {
             Cache::default_account_path(profile, identity)
         })
     }
 
     fn open_saved(
-        paths: &Paths,
-        store: &dyn SecretStore,
-        profile: &str,
+        storage: &ProfileStorage,
         path: impl FnOnce(&CacheIdentity) -> Result<PathBuf>,
     ) -> Result<Self> {
-        let loaded = Session::load(paths, profile, store)?.ok_or(Error::Unauthorized)?;
+        let loaded = storage.load()?.ok_or(Error::Unauthorized)?;
         let identity = CacheIdentity::new(&loaded.session.base_url, &loaded.session.user_id)?;
         let cache = Cache::open_for_account(&path(&identity)?, &identity)?;
         Ok(Self { cache })
@@ -451,7 +447,7 @@ impl LocalCache {
 
 impl Client {
     pub(crate) fn open_cache(&self) -> Result<Cache> {
-        let path = Cache::default_account_path(&self.profile, &self.cache_identity)?;
+        let path = Cache::default_account_path(self.storage.profile(), &self.cache_identity)?;
         Cache::open_for_account(&path, &self.cache_identity)
     }
 
@@ -538,7 +534,7 @@ impl Client {
         query: &str,
         limit: u32,
     ) -> Result<Option<Vec<MessageMetadata>>> {
-        let path = Cache::existing_account_path(&self.profile, &self.cache_identity)?;
+        let path = Cache::existing_account_path(self.storage.profile(), &self.cache_identity)?;
         let (identity, query) = (self.cache_identity.clone(), query.to_owned());
         super::off_thread(move || {
             Cache::open_existing_for_account(&path, &identity)?

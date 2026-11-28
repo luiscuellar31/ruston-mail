@@ -220,11 +220,13 @@ async fn invalid_attachments_are_rejected_before_draft_creation() {
     let client = Client {
         http: HttpClient::new(server.uri(), "Other"),
         keys: crypto::keys::KeyStore { addresses: vec![] },
-        paths: crate::session::Paths::with_base(path.with_extension("session")),
-        profile: "test".into(),
+        storage: crate::session::ProfileStorage::new(
+            crate::session::Paths::with_base(path.with_extension("session")),
+            "test",
+            std::sync::Arc::new(crate::session::MemoryStore::new()),
+        ),
         session_uid: "test".into(),
         cache_identity: crate::cache::CacheIdentity::new(&server.uri(), "outgoing-test").unwrap(),
-        store: std::sync::Arc::new(crate::session::MemoryStore::new()),
         sender_cache: tokio::sync::Mutex::new(Default::default()),
     };
     let opts = SendOptions {

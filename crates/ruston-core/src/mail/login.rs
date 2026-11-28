@@ -9,7 +9,7 @@ use crate::cache::CacheIdentity;
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::model::enums::password_mode;
-use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens, validate_profile_name};
+use crate::session::{ProfileStorage, Session, Tokens};
 use crate::transport::{Doer, HttpClient};
 use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
@@ -108,20 +108,12 @@ async fn api_client(
 impl Client {
     /// Shares the saved session with other processes: a refresh starts from
     /// the tokens saved last, under the profile lock, and saves the new ones.
-    pub(crate) fn wire_refresh(
-        http: &mut HttpClient,
-        store: Arc<dyn SecretStore>,
-        paths: Paths,
-        profile: &str,
-    ) {
-        let load_store = store.clone();
-        let load_profile = profile.to_owned();
-        http.set_refresh_load(Arc::new(move || {
-            Session::lock_and_load_tokens(&paths, &load_profile, load_store.as_ref())
-        }));
+    pub(crate) fn wire_refresh(http: &mut HttpClient, storage: &ProfileStorage) {
+        let saved = storage.clone();
+        http.set_refresh_load(Arc::new(move || saved.lock_and_load_tokens()));
+        let saved = storage.clone();
         http.set_refresh_persist_fallible(Arc::new(move |tokens| {
-            Session::save_tokens(
-                store.as_ref(),
+            saved.save_tokens(
                 tokens.access.expose_secret(),
                 tokens.refresh.expose_secret(),
             )
@@ -144,7 +136,7 @@ impl Client {
     }
 
     pub(super) async fn login_inner(opts: LoginOptions, prompts: LoginPrompts) -> Result<Client> {
-        validate_profile_name(&opts.profile)?;
+        let storage = ProfileStorage::system(&opts.profile)?;
         let base_url = opts
             .base_url
             .as_deref()
@@ -155,7 +147,6 @@ impl Client {
             .as_deref()
             .unwrap_or(DEFAULT_APP_VERSION)
             .to_owned();
-        let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
         let mut http = api_client(&base_url, &app_version, opts.user_agent.as_deref()).await?;
         if let Some(resolver) = &opts.hv {
             http.set_hv_resolver(resolver.clone());
@@ -176,19 +167,17 @@ impl Client {
             &prompts,
             &base_url,
             app_version,
-            store.clone(),
+            storage.clone(),
         );
-        let (keys, paths, cache_identity) = auth::or_end_session(&http, opened).await?;
+        let (keys, cache_identity) = auth::or_end_session(&http, opened).await?;
 
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), &opts.profile);
+        Self::wire_refresh(&mut http, &storage);
         Ok(Client {
             http,
             keys,
-            paths,
-            profile: opts.profile,
+            storage,
             session_uid: login.tokens.uid,
             cache_identity,
-            store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
         })
     }
@@ -202,8 +191,8 @@ impl Client {
         prompts: &LoginPrompts,
         base_url: &str,
         app_version: String,
-        store: Arc<dyn SecretStore>,
-    ) -> Result<(KeyStore, Paths, CacheIdentity)> {
+        storage: ProfileStorage,
+    ) -> Result<(KeyStore, CacheIdentity)> {
         let (salts, (user, addresses)) =
             tokio::try_join!(api::keys::get_key_salts(http), account(http))?;
         let cache_identity = CacheIdentity::new(base_url, &user.id)?;
@@ -238,36 +227,26 @@ impl Client {
             user_agent: opts.user_agent.clone(),
             user_id,
         };
-        let paths = Paths::system()?;
-        let (saved_in, profile, tokens) =
-            (paths.clone(), opts.profile.clone(), login.tokens.clone());
-        off_thread(move || session.save(&saved_in, &profile, store.as_ref(), &tokens, &skp))
-            .await?;
-        Ok((keys, paths, cache_identity))
+        let tokens = login.tokens.clone();
+        off_thread(move || storage.save(&session, &tokens, &skp)).await?;
+        Ok((keys, cache_identity))
     }
 
     /// Opens the session saved under `profile`, unlocking the account's keys
     /// with the key passphrase saved beside it.
     pub async fn resume(profile: &str) -> Result<Client> {
-        validate_profile_name(profile)?;
-        let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(profile.to_string()));
-        Self::resume_from(profile, Paths::system()?, store).await
+        Self::resume_from(ProfileStorage::system(profile)?).await
     }
 
     /// `resume`, with the session's files and secrets where the caller says.
-    pub(super) async fn resume_from(
-        profile: &str,
-        paths: Paths,
-        store: Arc<dyn SecretStore>,
-    ) -> Result<Client> {
-        tracing::info!(target: "ruston_core::mail", profile, "resume: loading saved session");
+    pub(super) async fn resume_from(storage: ProfileStorage) -> Result<Client> {
+        tracing::info!(target: "ruston_core::mail", profile = storage.profile(), "resume: loading saved session");
         // The credential store may wait for the person to unlock it, and the
         // profile lock for another process.
-        let loaded = {
-            let (paths, profile, store) = (paths.clone(), profile.to_owned(), store.clone());
-            off_thread(move || Session::load(&paths, &profile, store.as_ref())).await?
-        }
-        .ok_or(Error::Unauthorized)?;
+        let saved = storage.clone();
+        let loaded = off_thread(move || saved.load())
+            .await?
+            .ok_or(Error::Unauthorized)?;
         tracing::debug!(target: "ruston_core::mail", uid = %loaded.session.uid, "resume: session found; fetching user + addresses, unlocking keys");
 
         let mut http = api_client(
@@ -282,7 +261,7 @@ impl Client {
             refresh,
         } = loaded.tokens;
         http.set_tokens(uid, access, refresh).await;
-        Self::wire_refresh(&mut http, store.clone(), paths.clone(), profile);
+        Self::wire_refresh(&mut http, &storage);
 
         let (user, addresses) = account(&http).await?;
         let cache_identity = CacheIdentity::new(&loaded.session.base_url, &user.id)?;
@@ -295,11 +274,9 @@ impl Client {
         Ok(Client {
             http,
             keys,
-            paths,
-            profile: profile.to_string(),
+            storage,
             session_uid: loaded.session.uid,
             cache_identity,
-            store,
             sender_cache: Mutex::new(SenderKeyCache::default()),
         })
     }
@@ -310,15 +287,11 @@ impl Client {
     /// storage failures are returned to the caller. Returns whether Proton
     /// confirmed that the session ended.
     pub async fn logout(&self) -> Result<bool> {
-        let paths = self.paths.clone();
-        let profile = self.profile.clone();
+        let storage = self.storage.clone();
         let session_uid = self.session_uid.clone();
-        let store = self.store.clone();
-        let cleanup = tokio::task::spawn_blocking(move || {
-            Session::clear_if_current(&paths, &profile, store.as_ref(), &session_uid)
-        })
-        .await
-        .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?;
+        let cleanup = tokio::task::spawn_blocking(move || storage.clear_if_current(&session_uid))
+            .await
+            .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?;
 
         // Only revocation has a deadline. A timeout must never cancel local cleanup.
         let revoked = matches!(
@@ -333,21 +306,17 @@ impl Client {
     /// bound to another API address. Proton is not contacted, so a server
     /// session that still exists is not revoked.
     pub async fn forget_session(profile: &str) -> Result<()> {
-        validate_profile_name(profile)?;
-        let profile = profile.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let store = KeyringStore::new(profile.clone());
-            Session::clear(&Paths::system()?, &profile, &store)
-        })
-        .await
-        .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
+        let storage = ProfileStorage::system(profile)?;
+        tokio::task::spawn_blocking(move || storage.clear())
+            .await
+            .map_err(|error| Error::Session(format!("session cleanup task failed: {error}")))?
     }
 
     /// Whether `profile` has a saved session to resume, judged by its
     /// metadata file alone: the keychain is not asked, so the answer comes
     /// at once, and a session whose secrets are gone still counts.
     pub fn has_saved_session(profile: &str) -> bool {
-        Paths::system().is_ok_and(|paths| Session::is_saved(&paths, profile))
+        ProfileStorage::system(profile).is_ok_and(|storage| storage.is_saved())
     }
 
     /// Waits until no token refresh is under way, so a program about to end
@@ -363,9 +332,8 @@ impl Client {
     /// client at hand, and keep the session. Gives up with an error after as
     /// long as any other wait for that lock.
     pub async fn settle_session(profile: &str) -> Result<()> {
-        validate_profile_name(profile)?;
-        let profile = profile.to_owned();
-        tokio::task::spawn_blocking(move || Session::wait_unlocked(&Paths::system()?, &profile))
+        let storage = ProfileStorage::system(profile)?;
+        tokio::task::spawn_blocking(move || storage.wait_unlocked())
             .await
             .map_err(|error| Error::Session(format!("session wait task failed: {error}")))?
     }

@@ -616,13 +616,21 @@ fn failed_mailbox_unlock_is_an_invalid_mailbox_password() {
 
 #[test]
 fn a_session_bound_to_another_address_asks_to_sign_in_again() {
-    use ruston_core::session::{MemoryStore, Paths, Session, Tokens};
+    use ruston_core::session::{MemoryStore, Paths, ProfileStorage, Session, Tokens};
+    use std::sync::Arc;
 
     let folder =
         std::env::temp_dir().join(format!("ruston-session-address-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&folder);
     let paths = Paths::with_base(&folder);
-    let save = |base_url: &str, store: &MemoryStore| {
+    let storage = |store: &Arc<MemoryStore>| {
+        ProfileStorage::new(
+            paths.clone(),
+            ruston_core::DEFAULT_SESSION_PROFILE,
+            store.clone(),
+        )
+    };
+    let save = |base_url: &str, store: &Arc<MemoryStore>| {
         let session = Session {
             uid: "UID1".into(),
             app_version: "Other".into(),
@@ -636,22 +644,16 @@ fn a_session_bound_to_another_address_asks_to_sign_in_again() {
             access: SecretString::from("access"),
             refresh: SecretString::from("refresh"),
         };
-        session
-            .save(
-                &paths,
-                ruston_core::DEFAULT_SESSION_PROFILE,
-                store,
-                &tokens,
-                &SecretString::from("skp"),
-            )
+        storage(store)
+            .save(&session, &tokens, &SecretString::from("skp"))
             .unwrap();
     };
     // The secret store keeps the first address; the file now names another.
-    let bound = MemoryStore::new();
+    let bound = Arc::new(MemoryStore::new());
     save("https://mail.proton.me/api", &bound);
-    save("https://example.test/api", &MemoryStore::new());
+    save("https://example.test/api", &Arc::new(MemoryStore::new()));
 
-    let Err(error) = Session::load(&paths, ruston_core::DEFAULT_SESSION_PROFILE, &bound) else {
+    let Err(error) = storage(&bound).load() else {
         panic!("a session bound to another address must not load");
     };
     std::fs::remove_dir_all(&folder).unwrap();

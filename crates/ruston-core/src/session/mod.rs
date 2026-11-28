@@ -12,6 +12,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::path::{Component, Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use zeroize::Zeroizing;
 
@@ -147,20 +148,72 @@ fn set_unix_mode(_path: &Path, _mode: u32) -> Result<()> {
     Ok(())
 }
 
-impl Session {
-    fn lock(paths: &Paths, profile: &str) -> Result<File> {
-        Self::lock_within(paths, profile, PROFILE_LOCK_TIMEOUT)
+/// Where one profile's session is saved: its files under `paths` and its
+/// secrets in `store`. Held together, the file of one profile is never read
+/// or written beside the secrets of another.
+#[derive(Clone)]
+pub struct ProfileStorage {
+    paths: Paths,
+    profile: String,
+    store: Arc<dyn SecretStore>,
+}
+
+impl ProfileStorage {
+    /// `profile`'s session where the platform keeps it: this system's
+    /// configuration folder and credential store.
+    pub fn system(profile: &str) -> Result<Self> {
+        validate_profile_name(profile)?;
+        Ok(Self::new(
+            Paths::system()?,
+            profile,
+            Arc::new(KeyringStore::new(profile)),
+        ))
+    }
+
+    /// `profile`'s session under `paths` and in `store` instead, as tests
+    /// keep it.
+    pub fn new(paths: Paths, profile: impl Into<String>, store: Arc<dyn SecretStore>) -> Self {
+        Self {
+            paths,
+            profile: profile.into(),
+            store,
+        }
+    }
+
+    /// The profile's name.
+    pub fn profile(&self) -> &str {
+        &self.profile
+    }
+
+    /// The store of its secrets, for tests that look into it.
+    #[cfg(test)]
+    pub(crate) fn store(&self) -> &dyn SecretStore {
+        self.store.as_ref()
+    }
+
+    /// The same profile's files with its secrets in `store` instead.
+    #[cfg(test)]
+    pub(crate) fn with_store(&self, store: Arc<dyn SecretStore>) -> Self {
+        Self {
+            store,
+            ..self.clone()
+        }
+    }
+
+    fn lock(&self) -> Result<File> {
+        self.lock_within(PROFILE_LOCK_TIMEOUT)
     }
 
     /// Takes the profile lock, giving up after `timeout`: a process that
     /// holds it, stopped with Ctrl-Z or waiting on an unanswered keychain
     /// prompt, must not stall every other one for good.
-    fn lock_within(paths: &Paths, profile: &str, timeout: Duration) -> Result<File> {
+    fn lock_within(&self, timeout: Duration) -> Result<File> {
+        let profile = self.profile.as_str();
         validate_profile_name(profile)?;
-        let dir = paths.sessions_dir();
+        let dir = self.paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
         set_unix_mode(&dir, PRIVATE_DIR_MODE)?;
-        let path = paths.lock_file(profile);
+        let path = self.paths.lock_file(profile);
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -187,69 +240,58 @@ impl Session {
 
     /// Whether the profile's session metadata is on disk. Its secrets are
     /// not looked at, so no keychain is asked.
-    pub(crate) fn is_saved(paths: &Paths, profile: &str) -> bool {
-        validate_profile_name(profile).is_ok() && paths.metadata_file(profile).is_file()
+    pub(crate) fn is_saved(&self) -> bool {
+        validate_profile_name(&self.profile).is_ok()
+            && self.paths.metadata_file(&self.profile).is_file()
     }
 
     /// Waits for whoever holds the profile lock, and lets it go at once. A
     /// token refresh holds it from sending the old refresh token until the
     /// new pair is saved. A profile never signed in to has no lock file,
     /// and nothing to wait for.
-    pub(crate) fn wait_unlocked(paths: &Paths, profile: &str) -> Result<()> {
-        validate_profile_name(profile)?;
-        if !paths.lock_file(profile).exists() {
+    pub(crate) fn wait_unlocked(&self) -> Result<()> {
+        validate_profile_name(&self.profile)?;
+        if !self.paths.lock_file(&self.profile).exists() {
             return Ok(());
         }
-        Self::lock(paths, profile).map(drop)
+        self.lock().map(drop)
     }
 
-    pub(crate) fn lock_and_load(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-    ) -> Result<(File, Option<LoadedSession>)> {
-        let lock = Self::lock(paths, profile)?;
-        let loaded = Self::load_unlocked(paths, profile, store)?;
+    pub(crate) fn lock_and_load(&self) -> Result<(File, Option<LoadedSession>)> {
+        let lock = self.lock()?;
+        let loaded = self.load_unlocked()?;
         Ok((lock, loaded))
     }
 
-    /// Saves the session under `profile`: this metadata in its file, and in
-    /// `store` the `tokens`, the key password `skp` and the API address the
+    /// Saves `session` under the profile: its metadata in its file, and in
+    /// the store the `tokens`, the key password `skp` and the API address the
     /// tokens belong to.
-    pub fn save(
-        &self,
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-        tokens: &Tokens,
-        skp: &SecretString,
-    ) -> Result<()> {
-        let _lock = Self::lock(paths, profile)?;
+    pub fn save(&self, session: &Session, tokens: &Tokens, skp: &SecretString) -> Result<()> {
+        let _lock = self.lock()?;
         // The previous login's secrets go before any of this one is written,
         // so a save that fails part way leaves no earlier tokens beside this
         // session's metadata and API address, where they would be sent.
-        store.delete(K_TOKENS)?;
-        store.delete(K_SKP)?;
-        self.write_metadata(paths, profile)?;
-        store.set(K_BASE_URL, &self.base_url)?;
-        Self::save_tokens(
-            store,
+        self.store.delete(K_TOKENS)?;
+        self.store.delete(K_SKP)?;
+        self.write_metadata(session)?;
+        self.store.set(K_BASE_URL, &session.base_url)?;
+        self.save_tokens(
             tokens.access.expose_secret(),
             tokens.refresh.expose_secret(),
         )?;
-        store.set(K_SKP, skp.expose_secret())?;
+        self.store.set(K_SKP, skp.expose_secret())?;
         Ok(())
     }
 
     /// Replaces the metadata file in one rename, so a write that fails part
     /// way leaves the previous file whole. The caller holds the profile lock.
-    fn write_metadata(&self, paths: &Paths, profile: &str) -> Result<()> {
-        let dir = paths.sessions_dir();
+    fn write_metadata(&self, session: &Session) -> Result<()> {
+        let dir = self.paths.sessions_dir();
         std::fs::create_dir_all(&dir)?;
         set_unix_mode(&dir, PRIVATE_DIR_MODE)?;
-        let file = paths.metadata_file(profile);
-        let temporary = paths.metadata_temp_file(profile);
-        let json = serde_json::to_vec_pretty(self)?;
+        let file = self.paths.metadata_file(&self.profile);
+        let temporary = self.paths.metadata_temp_file(&self.profile);
+        let json = serde_json::to_vec_pretty(session)?;
         let written = std::fs::write(&temporary, json)
             .map_err(Error::from)
             .and_then(|()| set_unix_mode(&temporary, PRIVATE_FILE_MODE))
@@ -262,44 +304,32 @@ impl Session {
 
     /// Saves the pair of tokens a refresh issued, and nothing else of the
     /// session.
-    pub fn save_tokens(store: &dyn SecretStore, access: &str, refresh: &str) -> Result<()> {
+    pub fn save_tokens(&self, access: &str, refresh: &str) -> Result<()> {
         let pair = Zeroizing::new(serde_json::to_string(&StoredTokens { access, refresh })?);
-        store.set(K_TOKENS, &pair)?;
+        self.store.set(K_TOKENS, &pair)?;
         Ok(())
     }
 
-    /// The session saved under `profile`. `None` when any part of it is
+    /// The session saved under the profile. `None` when any part of it is
     /// missing, or its file holds no session.
-    pub fn load(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-    ) -> Result<Option<LoadedSession>> {
-        let (_lock, loaded) = Self::lock_and_load(paths, profile, store)?;
+    pub fn load(&self) -> Result<Option<LoadedSession>> {
+        let (_lock, loaded) = self.lock_and_load()?;
         Ok(loaded)
     }
 
     /// The saved tokens under the profile lock, for a token refresh: it needs
     /// neither the key passphrase nor anything else from the store.
-    pub(crate) fn lock_and_load_tokens(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-    ) -> Result<(File, Option<Tokens>)> {
-        let lock = Self::lock(paths, profile)?;
-        let tokens = Self::load_tokens_unlocked(paths, profile, store)?.map(|(_, tokens)| tokens);
+    pub(crate) fn lock_and_load_tokens(&self) -> Result<(File, Option<Tokens>)> {
+        let lock = self.lock()?;
+        let tokens = self.load_tokens_unlocked()?.map(|(_, tokens)| tokens);
         Ok((lock, tokens))
     }
 
-    fn load_unlocked(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-    ) -> Result<Option<LoadedSession>> {
-        let Some((session, tokens)) = Self::load_tokens_unlocked(paths, profile, store)? else {
+    fn load_unlocked(&self) -> Result<Option<LoadedSession>> {
+        let Some((session, tokens)) = self.load_tokens_unlocked()? else {
             return Ok(None);
         };
-        let Some(skp) = store.get(K_SKP)? else {
+        let Some(skp) = self.store.get(K_SKP)? else {
             return Ok(None);
         };
         Ok(Some(LoadedSession {
@@ -311,15 +341,11 @@ impl Session {
 
     /// The saved metadata and tokens, when both are present and the tokens'
     /// API address is the one the metadata names.
-    fn load_tokens_unlocked(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-    ) -> Result<Option<(Session, Tokens)>> {
-        let Some(session) = Self::read_metadata(paths, profile)? else {
+    fn load_tokens_unlocked(&self) -> Result<Option<(Session, Tokens)>> {
+        let Some(session) = self.read_metadata()? else {
             return Ok(None);
         };
-        let Some(pair) = store.get(K_TOKENS)? else {
+        let Some(pair) = self.store.get(K_TOKENS)? else {
             return Ok(None);
         };
         let pair = Zeroizing::new(pair);
@@ -327,7 +353,7 @@ impl Session {
             .map_err(|e| Error::Session(format!("invalid stored auth tokens: {e}")))?;
         // The metadata file is not secret, yet it names where the saved tokens
         // are sent. Trust only an address the secret store vouches for.
-        if store.get(K_BASE_URL)?.as_deref() != Some(session.base_url.as_str()) {
+        if self.store.get(K_BASE_URL)?.as_deref() != Some(session.base_url.as_str()) {
             return Err(Error::SessionAddressMismatch);
         }
         let tokens = Tokens {
@@ -338,32 +364,30 @@ impl Session {
         Ok(Some((session, tokens)))
     }
 
-    /// Removes the session saved under `profile`, its file and its secrets.
-    pub fn clear(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
-        let _lock = Self::lock(paths, profile)?;
-        Self::clear_unlocked(paths, profile, store)
+    /// Removes the session saved under the profile, its file and its secrets.
+    pub fn clear(&self) -> Result<()> {
+        let _lock = self.lock()?;
+        self.clear_unlocked()
     }
 
     /// A pending logout must not remove a later login in the same profile.
-    pub(crate) fn clear_if_current(
-        paths: &Paths,
-        profile: &str,
-        store: &dyn SecretStore,
-        uid: &str,
-    ) -> Result<()> {
-        let _lock = Self::lock(paths, profile)?;
+    pub(crate) fn clear_if_current(&self, uid: &str) -> Result<()> {
+        let _lock = self.lock()?;
         // Incomplete metadata cannot resume a session; still remove its secrets.
-        if Self::read_metadata(paths, profile)?.is_some_and(|session| session.uid != uid) {
+        if self
+            .read_metadata()?
+            .is_some_and(|session| session.uid != uid)
+        {
             return Ok(());
         }
-        Self::clear_unlocked(paths, profile, store)
+        self.clear_unlocked()
     }
 
-    /// The saved metadata of `profile`. `None` when there is none, or when it
+    /// The profile's saved metadata. `None` when there is none, or when it
     /// is not a session: either way no session can resume from it. Any other
     /// failure to read it is an error.
-    fn read_metadata(paths: &Paths, profile: &str) -> Result<Option<Session>> {
-        let bytes = match std::fs::read(paths.metadata_file(profile)) {
+    fn read_metadata(&self) -> Result<Option<Session>> {
+        let bytes = match std::fs::read(self.paths.metadata_file(&self.profile)) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(error) => return Err(error.into()),
@@ -371,19 +395,19 @@ impl Session {
         Ok(serde_json::from_slice(&bytes).ok())
     }
 
-    fn clear_unlocked(paths: &Paths, profile: &str, store: &dyn SecretStore) -> Result<()> {
-        let file = paths.metadata_file(profile);
+    fn clear_unlocked(&self) -> Result<()> {
+        let file = self.paths.metadata_file(&self.profile);
         // What an interrupted metadata write left behind goes too.
-        let _ = std::fs::remove_file(paths.metadata_temp_file(profile));
+        let _ = std::fs::remove_file(self.paths.metadata_temp_file(&self.profile));
         let metadata = match std::fs::remove_file(&file) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(Error::from(e)),
         };
         // Attempt every removal under the lock even if an earlier one fails.
-        let tokens = store.delete(K_TOKENS);
-        let skp = store.delete(K_SKP);
-        let base_url = store.delete(K_BASE_URL);
+        let tokens = self.store.delete(K_TOKENS);
+        let skp = self.store.delete(K_SKP);
+        let base_url = self.store.delete(K_BASE_URL);
         metadata.and(tokens).and(skp).and(base_url)
     }
 }

@@ -23,10 +23,9 @@ use crate::cache::CacheIdentity;
 use crate::crypto::keys::KeyStore;
 use crate::error::{Error, Result};
 use crate::model::enums::key_flag;
-use crate::session::{Paths, SecretStore};
+use crate::session::ProfileStorage;
 use crate::transport::HttpClient;
 use std::collections::{HashMap, VecDeque};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 
@@ -79,11 +78,10 @@ impl SenderKeyCache {
 pub struct Client {
     http: HttpClient,
     keys: KeyStore,
-    paths: Paths,
-    profile: String,
+    /// Where the session it runs on is saved.
+    storage: ProfileStorage,
     session_uid: String,
     cache_identity: CacheIdentity,
-    store: Arc<dyn SecretStore>,
     sender_cache: Mutex<SenderKeyCache>,
 }
 
