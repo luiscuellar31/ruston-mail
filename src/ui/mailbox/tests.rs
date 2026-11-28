@@ -86,7 +86,7 @@ fn search_stays_above_visible_conversations_in_wide_and_compact_mailboxes() {
                 },
             )
             .expect("search must be visible");
-            let refresh = visible_text_rect(&shapes, "Refresh").unwrap();
+            let refresh = refresh_icon(&shapes);
             assert!(
                 search.top() - refresh.bottom() < ROW_HEIGHT,
                 "search consumed the pane height: {search:?} in {size:?}"
@@ -976,16 +976,14 @@ fn the_filter_button_lines_up_with_the_search_field_and_refresh() {
                 near(filter.bottom(), field.bottom()),
                 "{at}: {filter:?} {field:?}"
             );
-            // Under Refresh, as wide, where the field keeps its room.
+            // Under Refresh, ending where it ends, and the field keeps its
+            // room.
             assert!(
                 near(filter.right(), refresh.right()),
                 "{at}: {filter:?} {refresh:?}"
             );
+            assert!(refresh.bottom() <= filter.top(), "{at}: {refresh:?}");
             assert!(field.width() >= MIN_SEARCH_WIDTH, "{at}: {field:?}");
-            assert!(
-                near(filter.left(), refresh.left()),
-                "{at}: {filter:?} {refresh:?}"
-            );
         }
     }
 }
@@ -1442,7 +1440,7 @@ fn a_long_folder_name_is_shortened_beside_refresh_without_widening_the_list() {
             .any(|message| matches!(message, Message::PanelsResized(_))),
         "the name must not widen the list"
     );
-    let refresh = visible_text_rect(&shapes, "Refresh").expect("Refresh stays in view");
+    let refresh = refresh_icon(&shapes);
     let title = text_rect(&shapes, name);
     assert!(
         title.right() <= refresh.left(),
@@ -1475,6 +1473,70 @@ fn pagination_page(start: i64, count: i64, total: u32) -> ConversationPage {
         total,
         inspect_candidates: Vec::new(),
     }
+}
+
+/// The list's Refresh button, by its icon: the one that ends above Filter.
+fn refresh_icon(shapes: &[egui::epaint::ClippedShape]) -> egui::Rect {
+    let filter = visible_text_rect(shapes, "Filter").expect("the list's Filter");
+    shapes
+        .iter()
+        .filter_map(|clipped| match &clipped.shape {
+            egui::epaint::Shape::Rect(rect) if rect.brush.is_some() => Some(rect.rect),
+            _ => None,
+        })
+        .filter(|icon| {
+            icon.bottom() <= filter.top() && (icon.center().x - filter.center().x).abs() < 40.0
+        })
+        .max_by(|a, b| a.bottom().total_cmp(&b.bottom()))
+        .expect("Refresh's icon above Filter")
+}
+
+#[test]
+fn refresh_is_an_icon_that_says_its_name_and_asks_for_the_list_again() {
+    let context = egui::Context::default();
+    theme::install(&context);
+    context.enable_accesskit();
+    let (mut app, _) = App::boot(true, Settings::default());
+    let _ = app.update(Message::ConversationsLoaded(
+        1,
+        Ok(pagination_page(0, 50, 120)),
+    ));
+    let mut state = UiState::default();
+    let size = egui::vec2(1100.0, 700.0);
+    let named = |app: &App, state: &mut UiState, name: &str| {
+        let mut found = false;
+        for _ in 0..2 {
+            let output = context.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                    ..Default::default()
+                },
+                |root| show(root, app, None, state, &mut Vec::new()),
+            );
+            let update = output.platform_output.accesskit_update.iter();
+            found = update
+                .flat_map(|update| &update.nodes)
+                .any(|(_, node)| node.label() == Some(name));
+            output.drop_without_applying_deltas();
+        }
+        found
+    };
+    // No words on it: an icon, named for a screen reader and on hover.
+    let (_, shapes) = mailbox_frame(&context, &app, &mut state, size, None, Default::default());
+    assert!(visible_text_rect(&shapes, "Refresh").is_none());
+    assert!(named(&app, &mut state, "Refresh"));
+
+    let icon = refresh_icon(&shapes);
+    let click = egui::RawInput {
+        events: click_events(icon.center(), egui::PointerButton::Primary),
+        ..Default::default()
+    };
+    let (asked, _) = mailbox_frame(&context, &app, &mut state, size, None, click);
+    assert!(matches!(asked.as_slice(), [Message::RefreshMailbox]));
+
+    // Asked for, the refresh shows in its name until the list is back.
+    let _ = app.update(Message::RefreshMailbox);
+    assert!(named(&app, &mut state, "Refreshing…"));
 }
 
 /// Draws the list pane 320 pt wide, with a click at `click`, and answers
@@ -1556,7 +1618,6 @@ fn the_filter_menu_chooses_what_the_list_shows_and_its_order() {
     let search = rect_of(&texts, "Search mail…");
     assert!((filter.center().y - search.center().y).abs() <= 2.0);
     assert!(search.right() < filter.left());
-    assert!(rect_of(&texts, "Refresh").bottom() < filter.top());
 
     // Opens the menu and clicks `choice` in it: what that asks for.
     let choose = |choice: &str| {
@@ -1771,6 +1832,8 @@ fn load_more_keeps_reader_and_viewport_while_waiting_and_after_success_or_failur
             let reader = mailbox.reader_state().clone();
             let (context, mut state, before) = pagination_view(&mailbox);
             let button = before.button.unwrap();
+            // In the middle of the list, 320 pt wide here, under its rows.
+            assert!((button.x - 160.0).abs() <= 1.0, "Load more at {button:?}");
             for pressed in [true, false] {
                 let frame = pagination_frame(
                     &context,
@@ -2310,7 +2373,7 @@ fn the_offer_to_undo_sits_under_the_list_it_was_made_from() {
     }
 
     let notice = visible_text_rect(&shapes, "Moved to Archive.").expect("an offer to undo");
-    let list = visible_text_rect(&shapes, "Refresh").expect("the list's header");
+    let list = refresh_icon(&shapes);
     let search = visible_text_rect(&shapes, "Search mail…").expect("the list's search");
     // Between the list's left edge, near its search text, and its Refresh.
     assert!(

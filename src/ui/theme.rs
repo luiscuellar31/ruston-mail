@@ -190,6 +190,8 @@ pub enum Icon {
     Sidebar,
     /// Leaving Settings for the mailbox.
     Back,
+    /// Loading the list again.
+    Refresh,
     // Settings' sections, the ones Writing's Compose does not stand for.
     Reading,
     Palette,
@@ -226,6 +228,9 @@ impl Icon {
                 egui::include_image!("../../assets/icons/bootstrap/layout-sidebar.svg")
             }
             Self::Back => egui::include_image!("../../assets/icons/bootstrap/arrow-left.svg"),
+            Self::Refresh => {
+                egui::include_image!("../../assets/icons/bootstrap/arrow-clockwise.svg")
+            }
             Self::Reading => {
                 egui::include_image!("../../assets/icons/bootstrap/envelope-open.svg")
             }

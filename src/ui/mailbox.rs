@@ -231,33 +231,37 @@ fn compact_navigation_skeleton(ui: &mut egui::Ui) {
 }
 
 /// The head of the list while a saved session opens, as tall as the list's
-/// own: skeletons where its title, Refresh, the search field and Unread go,
+/// own: skeletons where its title, Refresh, the search field and Filter go,
 /// and the line under them, so the rows under it stand where the list's will.
 fn list_head_skeleton(ui: &mut egui::Ui) {
     let fill = theme::skeleton_fill(ui);
     let scale = theme::text_scale(ui.ctx());
     let width = ui.available_width();
     let gap = ui.spacing().item_spacing.x;
-    let button = refresh_width(ui);
+    let refresh = theme::icon_button_size(ui);
     let (row, _) =
         ui.allocate_exact_size(egui::vec2(width, list_title_row_height(ui)), Sense::hover());
     let title = egui::Rect::from_min_size(
         egui::pos2(row.left(), row.center().y - 7.0 * scale),
-        egui::vec2((width - button - gap).min(120.0 * scale), 14.0 * scale),
+        egui::vec2((width - refresh.x - gap).min(120.0 * scale), 14.0 * scale),
     );
     theme::paint_skeleton(ui.painter(), title, fill);
-    let refresh = egui::Rect::from_min_max(egui::pos2(row.right() - button, row.top()), row.max);
+    let refresh = egui::Rect::from_center_size(
+        egui::pos2(row.right() - refresh.x / 2.0, row.center().y),
+        refresh,
+    );
     theme::paint_skeleton(ui.painter(), refresh, fill);
     ui.add_space(6.0);
     let (row, _) =
         ui.allocate_exact_size(egui::vec2(width, search_field_height(ui)), Sense::hover());
+    let button = filter_width(ui);
     let field = egui::Rect::from_min_max(
         row.min,
         egui::pos2(row.right() - button - gap, row.bottom()),
     );
     theme::paint_skeleton(ui.painter(), field, fill);
-    let unread = egui::Rect::from_min_max(egui::pos2(row.right() - button, row.top()), row.max);
-    theme::paint_skeleton(ui.painter(), unread, fill);
+    let filter = egui::Rect::from_min_max(egui::pos2(row.right() - button, row.top()), row.max);
+    theme::paint_skeleton(ui.painter(), filter, fill);
     // The line the list keeps under the field, empty until something is typed.
     ui.label(egui::RichText::new("").small());
     ui.add_space(4.0);
@@ -1352,14 +1356,17 @@ fn conversation_pane(
     }
 }
 
-/// Refresh, which says when a refresh someone asked for is on its way. The
-/// app's own check every minute leaves it as it is, and it keeps the width
-/// of its longer title, so nothing beside it moves.
+/// Refresh, as the arrow that turns round; marked, and named Refreshing…,
+/// while a refresh someone asked for is on its way. The app's own check
+/// every minute leaves it as it is.
 fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mut Vec<Message>) {
     let quiet = app.refreshing_on_its_own();
     let shown = matches!(mailbox.status(), ListStatus::Refreshing(_)) && !quiet;
-    let button = egui::Button::new(if shown { "Refreshing…" } else { "Refresh" })
-        .min_size(egui::vec2(refresh_width(ui), 0.0));
+    let name = if shown { "Refreshing…" } else { "Refresh" };
+    let mut button = theme::IconButton::new(theme::Icon::Refresh, name);
+    if shown {
+        button = button.selected(true);
+    }
     // Pressed during the app's own refresh, it shows that one instead.
     if ui
         .add_enabled(!mailbox.is_busy() || quiet, button)
@@ -1378,17 +1385,18 @@ fn list_title(ui: &egui::Ui, title: &str) -> egui::RichText {
 }
 
 /// How tall the list's first row is: its title, or Refresh beside it,
-/// whichever is taller, as a button of words is laid out.
+/// whichever is taller.
 fn list_title_row_height(ui: &egui::Ui) -> f32 {
-    let galley_height = |text: egui::WidgetText, style: egui::TextStyle| {
-        text.into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, style)
-            .size()
-            .y
-    };
-    let title = galley_height(list_title(ui, "Inbox").into(), egui::TextStyle::Heading);
-    let words = galley_height("Refresh".into(), egui::TextStyle::Button);
-    let button = (words + 2.0 * ui.spacing().button_padding.y).max(ui.spacing().interact_size.y);
-    title.max(button)
+    let title = egui::WidgetText::from(list_title(ui, "Inbox"))
+        .into_galley(
+            ui,
+            Some(egui::TextWrapMode::Extend),
+            f32::INFINITY,
+            egui::TextStyle::Heading,
+        )
+        .size()
+        .y;
+    title.max(theme::icon_button_size(ui).y)
 }
 
 /// How tall the search field is: a line of text inside its margin.
@@ -1396,15 +1404,15 @@ fn search_field_height(ui: &egui::Ui) -> f32 {
     ui.text_style_height(&egui::TextStyle::Body) + 2.0 * f32::from(SEARCH_MARGIN_Y)
 }
 
-/// The width Refresh keeps whatever it says, its longer title's.
-fn refresh_width(ui: &egui::Ui) -> f32 {
-    let widest = egui::WidgetText::from("Refreshing…").into_galley(
+/// How wide Filter is: its name inside a button's padding.
+fn filter_width(ui: &egui::Ui) -> f32 {
+    let name = egui::WidgetText::from("Filter").into_galley(
         ui,
         Some(egui::TextWrapMode::Extend),
         f32::INFINITY,
         egui::TextStyle::Button,
     );
-    widest.size().x + 2.0 * ui.spacing().button_padding.x
+    name.size().x + 2.0 * ui.spacing().button_padding.x
 }
 
 /// Which of a folder's conversations the Filter menu offers to show, by name.
@@ -1424,14 +1432,13 @@ const FILTER_MENU_WIDTH: f32 = 170.0;
 
 /// Opens the choice of which of the folder's conversations the list shows,
 /// and in which order; selected while that is not all of them, newest first.
-/// As tall as the search field beside it, and as wide as Refresh above it,
-/// so the two stand as a column, unless that would leave the field too
-/// narrow to read.
+/// As tall as the search field beside it, and narrower only where that field
+/// would otherwise be too narrow to read.
 fn list_filter(ui: &mut egui::Ui, mailbox: &Mailbox, height: f32, messages: &mut Vec<Message>) {
     let (filter, order) = (mailbox.filter(), mailbox.order());
     let changed = filter != ListFilter::All || order != ListOrder::NewestFirst;
     let room = ui.available_width() - MIN_SEARCH_WIDTH - ui.spacing().item_spacing.x;
-    let width = refresh_width(ui).min(room);
+    let width = filter_width(ui).min(room);
     let button = egui::Button::new("Filter")
         .selected(changed)
         .min_size(egui::vec2(width, height));
@@ -2345,12 +2352,19 @@ fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) 
                 "Loading more conversations",
             )
         });
-    } else if mailbox.has_more()
-        && ui
-            .add_enabled(!mailbox.is_busy(), egui::Button::new("Load more"))
-            .clicked()
-    {
-        messages.push(Message::LoadMoreConversations);
+    } else if mailbox.has_more() {
+        // In the middle of the room a row takes, under the last one.
+        let room = egui::vec2(
+            ui.available_width(),
+            row_height(theme::text_scale(ui.ctx())),
+        );
+        let centered = Layout::top_down(Align::Center).with_main_align(Align::Center);
+        let button = ui.allocate_ui_with_layout(room, centered, |ui| {
+            ui.add_enabled(!mailbox.is_busy(), egui::Button::new("Load more"))
+        });
+        if button.inner.clicked() {
+            messages.push(Message::LoadMoreConversations);
+        }
     }
 }
 
