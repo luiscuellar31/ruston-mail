@@ -553,9 +553,13 @@ impl App {
         self.pending_mailto.clear();
         self.mailto_error = None;
         self.showing_settings = false;
-        // Never show one account's folders in the next session.
+        // Never show one account's folders in the next session, nor ask for
+        // them again, show a refresh or read a conversation on its behalf.
         self.folders.clear();
         self.place_looks.clear();
+        self.refetch_folders = false;
+        self.automatic_refresh = None;
+        self.read_once_shown = None;
         // A file one session saved is not news for the next one.
         self.failed_save = None;
         self.notice = None;
