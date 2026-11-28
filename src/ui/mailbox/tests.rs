@@ -46,7 +46,7 @@ fn screen_readers_hear_the_search_field_by_its_name() {
         },
         |root| show(root, &app, &mut state, &mut Vec::new()),
     );
-    let names = theme::text_field_names(&output);
+    let names = widgets::text_field_names(&output);
     output.drop_without_applying_deltas();
 
     assert!(

@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use super::theme;
+use super::{theme, widgets};
 use crate::app::{App, AuthState, Message, SignInStep};
 use crate::settings::Appearance;
 
@@ -378,14 +378,14 @@ fn submit_label(step: SignInStep, busy: bool) -> &'static str {
 /// A step's primary button, across the card; whether it was clicked.
 fn submit_button(ui: &mut egui::Ui, label: &str, busy: bool) -> bool {
     ui.scope(|ui| {
-        theme::primary_visuals(ui);
+        widgets::primary_visuals(ui);
         let button = egui::Button::new((egui::Atom::grow(), label, egui::Atom::grow()))
             .min_size(egui::vec2(ui.available_width(), SUBMIT_HEIGHT))
             .stroke(egui::Stroke::NONE);
         if busy {
             // Readable while the sign-in runs, yet it takes no clicks and
             // screen readers still hear it as unavailable.
-            theme::busy_visuals(ui);
+            widgets::busy_visuals(ui);
             ui.add(button.sense(egui::Sense::hover()))
                 .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, false, label));
             false
@@ -409,7 +409,7 @@ fn edit_field(
     let response = ui
         .add_enabled(
             !busy,
-            theme::text_field(ui, measured(ui, value, &mut unseen))
+            widgets::text_field(ui, measured(ui, value, &mut unseen))
                 .hint_text(hint)
                 .desired_width(f32::INFINITY),
         )
@@ -440,7 +440,7 @@ fn edit_secret_field(
             let response = ui
                 .add_enabled(
                     !busy,
-                    theme::text_field(ui, measured(ui, value, &mut unseen))
+                    widgets::text_field(ui, measured(ui, value, &mut unseen))
                         .hint_text(label)
                         .password(!*show_password)
                         .desired_width(width),

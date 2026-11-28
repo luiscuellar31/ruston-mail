@@ -2,7 +2,7 @@ use std::path::Path;
 
 use eframe::egui::{self, Align, Layout};
 
-use super::theme;
+use super::{theme, widgets};
 use crate::app::{App, Message, SettingsSection, UpdateStatus};
 use crate::mail::{BodyFormat, MailFolder};
 use crate::settings::{
@@ -141,7 +141,7 @@ fn page(
 /// and what a message may open or show beyond its own text.
 fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, title(SettingsSection::Reading), |ui| {
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.mark_read_on_open,
             "Mark mail as read when I open it",
         ));
@@ -151,7 +151,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.expand_all_messages,
             "Open every message in a conversation",
         ));
@@ -161,7 +161,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_quoted_text,
             "Show quoted text without unfolding it",
         ));
@@ -171,7 +171,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_hidden_text,
             "Show text the sender hid",
         ));
@@ -181,7 +181,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.sender_text_styles,
             "Use the sender's text styles",
         ));
@@ -191,7 +191,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.data_tables,
             "Show tables of data in columns",
         ));
@@ -201,7 +201,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.confirm_links,
             "Ask before opening a link",
         ));
@@ -211,7 +211,7 @@ fn reading(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.show_inline_images,
             "Show pictures a message carries within it",
         ));
@@ -261,7 +261,7 @@ fn appearance(ui: &mut egui::Ui, settings: &mut Settings, messages: &mut Vec<Mes
     section(ui, title(SettingsSection::Appearance), |ui| {
         appearance_choice(ui, settings);
         ui.add_space(8.0);
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.system_font,
             "Use system interface font",
         ));
@@ -340,11 +340,14 @@ fn general(
         );
         ui.add_space(8.0);
         if let Some((label, what_it_does)) = UNREAD_BADGE {
-            ui.add(theme::Checkbox::new(&mut settings.show_unread_badge, label));
+            ui.add(widgets::Checkbox::new(
+                &mut settings.show_unread_badge,
+                label,
+            ));
             description(ui, what_it_does);
             ui.add_space(8.0);
         }
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.desktop_notifications,
             "Show desktop notifications for new mail",
         ));
@@ -433,7 +436,7 @@ const UNREAD_BADGE: Option<(&str, &str)> = if cfg!(target_os = "macos") {
 /// Choices that ask Proton, or this device, for more than the defaults do.
 fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
     section(ui, title(SettingsSection::Advanced), |ui| {
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.check_recipient_protection,
             "Check recipient encryption while writing",
         ));
@@ -443,7 +446,7 @@ fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.accept_international_domains,
             "Accept international domain names",
         ));
@@ -453,7 +456,7 @@ fn advanced(ui: &mut egui::Ui, settings: &mut Settings) {
         );
         ui.add_space(6.0);
 
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.search_device_offline,
             "Search this device when Proton cannot be reached",
         ));
@@ -528,19 +531,19 @@ fn about(
         );
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
-            if ui.add(theme::compact_button(ui, "Source code")).clicked() {
+            if ui.add(widgets::compact_button(ui, "Source code")).clicked() {
                 messages.push(Message::OpenSourceCode);
             }
             if third_party_notices.is_some()
                 && ui
-                    .add(theme::compact_button(ui, "Third-party notices"))
+                    .add(widgets::compact_button(ui, "Third-party notices"))
                     .clicked()
             {
                 messages.push(Message::OpenThirdPartyNotices);
             }
         });
         ui.add_space(12.0);
-        ui.add(theme::Checkbox::new(
+        ui.add(widgets::Checkbox::new(
             &mut settings.check_for_updates,
             "Check for updates",
         ));
@@ -572,7 +575,7 @@ fn update_found(ui: &mut egui::Ui, status: UpdateStatus, messages: &mut Vec<Mess
 /// Opens a newer release's page, where it is downloaded from.
 pub(super) fn download_button(ui: &mut egui::Ui, messages: &mut Vec<Message>) {
     if ui
-        .add(theme::compact_button(ui, "Download"))
+        .add(widgets::compact_button(ui, "Download"))
         .on_hover_text("Opens the release page in your browser.")
         .clicked()
     {

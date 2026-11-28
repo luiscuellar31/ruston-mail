@@ -470,6 +470,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   bounds connection and reply to three seconds and falls back to opening the
   containing folder with `xdg-open`. Finder's `open -R` and that `xdg-open`
   are waited for like the browser opener below.
+  The widgets the views share, icon buttons and their menus, the check box,
+  text fields, buttons with their emphasis and confirmations, are in
+  [`ui/widgets.rs`](../src/ui/widgets.rs), which takes its colours, sizes and
+  icons from the theme.
   The appearance preference is applied by [`ui/theme.rs`](../src/ui/theme.rs)
   to egui visuals and custom-painted widget colors; egui gives each window's
   title bar the same theme when it changes. Following the system sets egui's

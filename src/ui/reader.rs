@@ -5,7 +5,7 @@ use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 use jiff::tz::TimeZone;
 
 use super::mailbox::{detail, folder_icon};
-use super::{UiState, theme};
+use super::{UiState, theme, widgets};
 use crate::app::{
     AnswerKind, ConversationReader, InlineImage, Mailbox, Message, PendingLink, ReaderState,
 };
@@ -101,7 +101,7 @@ pub(super) fn show(
 /// window's question, so it shows wherever the reader is, and the address
 /// scrolls inside it, so a long one cannot push the buttons away.
 pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option<Message> {
-    theme::confirmation_with(
+    widgets::confirmation_with(
         context,
         "link-prompt",
         &format!("Open a link to {}?", link.target),
@@ -113,9 +113,9 @@ pub(super) fn link_dialog(context: &egui::Context, link: &PendingLink) -> Option
                 .show(ui, |ui| ui.add(egui::Label::new(link.url.as_str()).wrap()));
         },
         &[
-            ("Cancel", theme::Emphasis::Secondary, Message::DismissLink),
-            ("Copy link", theme::Emphasis::Secondary, Message::CopyLink),
-            ("Open", theme::Emphasis::Primary, Message::OpenLink),
+            ("Cancel", widgets::Emphasis::Secondary, Message::DismissLink),
+            ("Copy link", widgets::Emphasis::Secondary, Message::CopyLink),
+            ("Open", widgets::Emphasis::Primary, Message::OpenLink),
         ],
         Message::DismissLink,
     )
@@ -511,7 +511,7 @@ fn move_and_flag_buttons(
         risky,
     } in moves(location)
     {
-        let mut button = theme::IconButton::new(icon, label);
+        let mut button = widgets::IconButton::new(icon, label);
         if risky {
             button = button.danger();
         }
@@ -536,7 +536,7 @@ fn move_and_flag_buttons(
     } in flags
     {
         if ui
-            .add_enabled(enabled, theme::IconButton::new(icon, label).selected(on))
+            .add_enabled(enabled, widgets::IconButton::new(icon, label).selected(on))
             .clicked()
         {
             messages.push(Message::ApplyAction(action));
@@ -888,13 +888,13 @@ fn label_menu(
     // The tag, as the sidebar marks labels; filled, like the star, while the
     // conversation carries any. Its size never changes, so a count arriving
     // with the detail cannot move the card.
-    let mut button = theme::IconButton::new(theme::Icon::Label, &title);
+    let mut button = widgets::IconButton::new(theme::Icon::Label, &title);
     if applied > 0 {
         button = button.selected(true);
     }
 
     ui.separator();
-    theme::icon_menu(ui, enabled, button, |ui| {
+    widgets::icon_menu(ui, enabled, button, |ui| {
         if let Some(action) = label_list(ui, &labels) {
             messages.push(Message::ApplyAction(action));
             ui.close();
@@ -928,7 +928,7 @@ fn label_list(ui: &mut egui::Ui, labels: &[(&Folder, bool)]) -> Option<MailActio
             for &(label, carried) in labels {
                 let mut on = carried;
                 if ui
-                    .add(theme::Checkbox::new(&mut on, label.name()))
+                    .add(widgets::Checkbox::new(&mut on, label.name()))
                     .changed()
                 {
                     switched = Some(MailAction::SetLabel {
@@ -1006,7 +1006,7 @@ fn address_menu(ui: &mut egui::Ui, message: &MailMessage, messages: &mut Vec<Mes
 
 fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec<Message>) {
     ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), theme::compact_button_height(ui)),
+        egui::vec2(ui.available_width(), widgets::compact_button_height(ui)),
         // A narrow reader moves a button to the next row rather than letting
         // the row widen the card past the pane, which would cut off the body.
         Layout::left_to_right(Align::Center)
@@ -1020,7 +1020,7 @@ fn reply_toolbar(ui: &mut egui::Ui, message_id: Option<&str>, messages: &mut Vec
                 ("Forward", AnswerKind::Forward),
             ] {
                 if ui
-                    .add_enabled(message_id.is_some(), theme::compact_button(ui, label))
+                    .add_enabled(message_id.is_some(), widgets::compact_button(ui, label))
                     .clicked()
                     && let Some(message_id) = message_id
                 {
@@ -1470,7 +1470,7 @@ fn attachment_row(
         if ui
             .add_enabled(
                 !saving,
-                theme::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
+                widgets::compact_button(ui, if this_one { "Saving…" } else { "Save" }),
             )
             .clicked()
         {
@@ -1480,7 +1480,7 @@ fn attachment_row(
             });
         }
         if ui
-            .add_enabled(!saving, theme::compact_button(ui, "Save as…"))
+            .add_enabled(!saving, widgets::compact_button(ui, "Save as…"))
             .clicked()
         {
             messages.push(Message::SaveAttachmentAs {
@@ -1576,7 +1576,7 @@ fn rich_body(
             let run = quoted_run(rest, 0);
             let expanded = reader.is_quote_expanded(message_id, quote_index, reading);
             if ui
-                .add(theme::compact_button(
+                .add(widgets::compact_button(
                     ui,
                     if expanded {
                         "Hide quoted text"

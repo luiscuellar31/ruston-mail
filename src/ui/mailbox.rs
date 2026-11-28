@@ -2,7 +2,7 @@ use eframe::egui::AtomExt as _;
 use eframe::egui::{self, Align, Align2, Color32, CornerRadius, FontId, Layout, Sense, Stroke};
 use jiff::ZonedDateTime;
 
-use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme};
+use super::{BottomNotice, TimedNotice, UiState, compose, reader, settings, theme, widgets};
 use crate::accounts::MAX_ACCOUNTS;
 use crate::app::{
     App, AuthState, DeviceIndex, ListAttempt, ListStatus, MIN_PANEL_WIDTH, MIN_READER_WIDTH,
@@ -234,7 +234,7 @@ fn list_head_skeleton(ui: &mut egui::Ui) {
     let scale = theme::text_scale(ui.ctx());
     let width = ui.available_width();
     let gap = ui.spacing().item_spacing.x;
-    let refresh = theme::icon_button_size(ui);
+    let refresh = widgets::icon_button_size(ui);
     let (row, _) =
         ui.allocate_exact_size(egui::vec2(width, list_title_row_height(ui)), Sense::hover());
     let title = egui::Rect::from_min_size(
@@ -305,7 +305,7 @@ fn rail_skeleton(ui: &mut egui::Ui) {
             theme::paint_skeleton(ui.painter(), place, fill);
         });
     };
-    let side = theme::icon_button_size(ui).y;
+    let side = widgets::icon_button_size(ui).y;
     mark(ui, title_row_height(ui), side, theme::ICON_SIZE);
     ui.add_space(12.0);
     let side = theme::text_size(ui, FOLDER_HEIGHT);
@@ -513,7 +513,7 @@ fn title_row_height(ui: &egui::Ui) -> f32 {
         f32::INFINITY,
         egui::TextStyle::Heading,
     );
-    name.size().y.max(theme::icon_button_size(ui).y)
+    name.size().y.max(widgets::icon_button_size(ui).y)
 }
 
 fn sidebar_content(
@@ -523,7 +523,7 @@ fn sidebar_content(
     place: SidebarPlace,
     messages: &mut Vec<Message>,
 ) {
-    let fold = theme::icon_button_size(ui);
+    let fold = widgets::icon_button_size(ui);
     let title = ui
         .scope(|ui| {
             if place != SidebarPlace::Column {
@@ -551,7 +551,10 @@ fn sidebar_content(
         // button counted in its width would widen it on every frame.
         if ui
             .new_child(egui::UiBuilder::new().max_rect(button))
-            .add(theme::IconButton::new(theme::Icon::Sidebar, "Hide sidebar"))
+            .add(widgets::IconButton::new(
+                theme::Icon::Sidebar,
+                "Hide sidebar",
+            ))
             .clicked()
         {
             messages.push(Message::FoldSidebar(true));
@@ -778,7 +781,7 @@ const ACCOUNT_CHEVRON_SIZE: f32 = 12.0;
 fn new_message_button(ui: &mut egui::Ui) -> egui::AtomLayoutResponse {
     let width = ui.available_width();
     ui.scope(|ui| {
-        theme::primary_visuals(ui);
+        widgets::primary_visuals(ui);
         egui::Button::new((
             egui::Atom::grow(),
             egui::RichText::new("New message")
@@ -1008,7 +1011,7 @@ fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
         .auto_shrink([false, false])
         .show(ui, |ui| {
             // As tall as the button that folds the sidebar, in its row.
-            let side = theme::icon_button_size(ui).y;
+            let side = widgets::icon_button_size(ui).y;
             let unfold = rail_slot(ui, title_row_height(ui), side, |ui| {
                 rail_button(ui, theme::Icon::Sidebar, "Show sidebar", false, false, side)
             });
@@ -1056,7 +1059,7 @@ fn folded_sidebar(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
                 }
                 let chosen = current.is_some_and(|open| places.contains(&open));
                 let button = rail_place(ui, icon, name, chosen, false);
-                theme::menu_below(ui, &button, |ui| {
+                widgets::menu_below(ui, &button, |ui| {
                     for place in places {
                         let depth = f32::from(app.place_look(place).depth);
                         ui.horizontal(|ui| {
@@ -1160,7 +1163,7 @@ fn rail_new_message(ui: &mut egui::Ui) -> egui::Response {
     let side = theme::text_size(ui, FOLDER_HEIGHT);
     let layout = ui
         .scope(|ui| {
-            theme::primary_visuals(ui);
+            widgets::primary_visuals(ui);
             ui.spacing_mut().button_padding = egui::Vec2::ZERO;
             egui::Button::new((egui::Atom::grow(), theme::icon_atom(), egui::Atom::grow()))
                 .min_size(egui::vec2(side, side))
@@ -1246,12 +1249,12 @@ fn conversation_pane(
             messages.push(Message::SearchChanged(String::new()));
         }
         // The text starts where the rows' text does, inside the outline.
-        let frame = theme::field_frame(ui).inner_margin(egui::Margin::symmetric(
+        let frame = widgets::field_frame(ui).inner_margin(egui::Margin::symmetric(
             ROW_HORIZONTAL_PADDING as i8 - SEARCH_OUTLINE,
             SEARCH_MARGIN_Y - SEARCH_OUTLINE,
         ));
         let response = ui.add(
-            theme::text_field(ui, &mut query)
+            widgets::text_field(ui, &mut query)
                 .id(egui::Id::new("mail-search"))
                 .hint_text("Search mail…")
                 .frame(frame)
@@ -1350,7 +1353,7 @@ fn refresh_button(ui: &mut egui::Ui, app: &App, mailbox: &Mailbox, messages: &mu
     let quiet = app.refreshing_on_its_own();
     let shown = matches!(mailbox.status(), ListStatus::Refreshing(_)) && !quiet;
     let name = if shown { "Refreshing…" } else { "Refresh" };
-    let mut button = theme::IconButton::new(theme::Icon::Refresh, name);
+    let mut button = widgets::IconButton::new(theme::Icon::Refresh, name);
     if shown {
         button = button.selected(true);
     }
@@ -1383,7 +1386,7 @@ fn list_title_row_height(ui: &egui::Ui) -> f32 {
         )
         .size()
         .y;
-    title.max(theme::icon_button_size(ui).y)
+    title.max(widgets::icon_button_size(ui).y)
 }
 
 /// How tall the search field is: a line of text inside its margin.
@@ -1464,7 +1467,7 @@ fn state_message(ui: &mut egui::Ui, text: &str, color: Color32) {
 
 /// Asks again for what failed: the folder, its next page, or the search.
 fn try_again(ui: &mut egui::Ui, attempt: ListAttempt, messages: &mut Vec<Message>) {
-    if ui.add(theme::compact_button(ui, "Try again")).clicked() {
+    if ui.add(widgets::compact_button(ui, "Try again")).clicked() {
         messages.push(match attempt {
             ListAttempt::Folder => Message::RefreshMailbox,
             ListAttempt::More => Message::LoadMoreConversations,
@@ -1602,7 +1605,7 @@ fn notice_content(
             // The move back waits while the list loads or loads more.
             let ready = mailbox.takes_actions();
             if ui
-                .add_enabled(ready, theme::compact_button(ui, "Undo"))
+                .add_enabled(ready, widgets::compact_button(ui, "Undo"))
                 .clicked()
             {
                 messages.push(Message::UndoMove);
@@ -1621,7 +1624,7 @@ fn notice_content(
                 |name| name.to_string_lossy().into_owned(),
             );
             notice_words(ui, format!("Saved {name}.")).on_hover_text(path.display().to_string());
-            if ui.add(theme::compact_button(ui, REVEAL_LABEL)).clicked() {
+            if ui.add(widgets::compact_button(ui, REVEAL_LABEL)).clicked() {
                 messages.push(Message::RevealAttachment(path.clone()));
             }
         }
@@ -1648,7 +1651,7 @@ fn notice_words(ui: &mut egui::Ui, words: impl Into<egui::WidgetText>) -> egui::
     // A wrapping row starts shorter than the button, and would center a
     // label's first line on that shorter height.
     if one_line {
-        ui.set_row_height(theme::compact_button_height(ui));
+        ui.set_row_height(widgets::compact_button_height(ui));
     }
     let response = ui.label(words);
     if !one_line {

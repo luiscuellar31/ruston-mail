@@ -11,7 +11,7 @@ fn screen_readers_hear_each_field_by_its_name() {
     let output = context.run_ui(egui::RawInput::default(), |ui| {
         show(ui, app.compose().unwrap(), &mut Vec::new());
     });
-    let names = theme::text_field_names(&output);
+    let names = widgets::text_field_names(&output);
     output.drop_without_applying_deltas();
 
     for name in ["To", "Cc", "Bcc", "Subject", "Message"] {

@@ -21,6 +21,7 @@ mod taskbar;
 #[cfg(test)]
 mod test_support;
 mod theme;
+mod widgets;
 mod window_place;
 
 use eframe::egui;

@@ -98,7 +98,7 @@ fn screen_readers_hear_each_sign_in_field_by_its_name() {
         let output = context.run_ui(egui::RawInput::default(), |ui| {
             sign_in(ui, &mut app, &mut false, &mut Vec::new());
         });
-        names.extend(theme::text_field_names(&output));
+        names.extend(widgets::text_field_names(&output));
         output.drop_without_applying_deltas();
     }
 
