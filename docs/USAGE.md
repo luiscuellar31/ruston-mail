@@ -648,9 +648,11 @@ Screen readers cannot read the composer when it opens in a new window yet:
 with one, keep **Settings** › **Writing** on **Reading pane**, the default.
 
 On macOS, turning on **Reduce motion** (System Settings › Accessibility ›
-Display), or on Windows turning off **Animation effects** (Windows Settings ›
-Accessibility › Visual effects), holds Ruston still too: no fades or gliding
-scrolls, and loading placeholders and a waiting ring that do not pulse.
+Display), on Windows turning off **Animation effects** (Windows Settings ›
+Accessibility › Visual effects), or on Linux turning animations off in the
+desktop's accessibility settings, as GNOME's has, holds Ruston still too: no
+fades or gliding scrolls, and loading placeholders and a waiting ring that do
+not pulse.
 
 Screen readers announce each conversation row with what it shows: whether it is
 unread, who and what it is about, its date, its star, how many messages it has

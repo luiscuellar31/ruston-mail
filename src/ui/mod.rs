@@ -15,6 +15,8 @@ mod notifications;
 mod reader;
 #[cfg(feature = "readme-screenshots")]
 mod readme_screenshots;
+#[cfg(any(target_os = "linux", test))]
+mod reduced_motion;
 mod settings;
 #[cfg(target_os = "windows")]
 mod taskbar;
@@ -1380,8 +1382,14 @@ fn system_reduces_motion() -> bool {
     objc2_app_kit::NSWorkspace::sharedWorkspace().accessibilityDisplayShouldReduceMotion()
 }
 
-/// Linux's reduced-motion setting is not read yet.
-#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+/// Whether a Linux desktop asks for less motion, which its settings portal
+/// tells and a thread of its own follows.
+#[cfg(target_os = "linux")]
+fn system_reduces_motion() -> bool {
+    reduced_motion::asked()
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
 fn system_reduces_motion() -> bool {
     false
 }

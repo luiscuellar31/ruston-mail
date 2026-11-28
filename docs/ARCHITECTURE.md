@@ -490,7 +490,10 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   (`NSWorkspace`'s `accessibilityDisplayShouldReduceMotion`), each read on
   every pass, `theme` sets egui's animation time to zero and scrolls without
   gliding, so loading pulses keep the still picture of an unfocused window.
-  Linux's reduced-motion setting is not read yet. winit gives a Windows title bar
+  On Linux [`ui/reduced_motion.rs`](../src/ui/reduced_motion.rs) asks the
+  desktop's settings portal on a thread of its own, and follows its changes:
+  `reduced-motion` where the portal has that setting, and GNOME's
+  `enable-animations` where it does not yet. winit gives a Windows title bar
   the Windows theme again whenever Windows announces a changed setting, so
   `theme::TitleBar` repeats egui's request for the main and composer windows
   when the Windows theme changes or the window comes back to the front. A
