@@ -11,6 +11,7 @@ use crate::mail::{
 };
 
 use super::{App, Effects, Message, ReaderState, UiEffect};
+use crate::settings::ComposePlacement;
 
 pub type ComposeId = u64;
 
@@ -657,6 +658,21 @@ pub(super) struct ParkedDraft {
 impl App {
     pub fn compose(&self) -> Option<&Compose> {
         self.compose.as_ref()
+    }
+
+    /// Whether a draft fills the reading pane; a folded one leaves the reader
+    /// in view.
+    pub(super) fn draft_covers_reader(&self) -> bool {
+        self.compose
+            .as_ref()
+            .is_some_and(|compose| !compose.folded())
+            && self.settings.compose_placement == ComposePlacement::ReadingPane
+    }
+
+    /// A draft in its own window takes that window's Escape and Send keys;
+    /// the keys `handle_key` takes come from the mailbox window.
+    pub(super) fn draft_in_window(&self) -> bool {
+        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
     }
 
     /// Whether a message waits for its account to sign in again.

@@ -1,7 +1,6 @@
 //! Mailbox keyboard shortcuts. The UI only reports raw key presses.
 
 use super::{App, Effects, Mailbox, Step, UiEffect};
-use crate::settings::ComposePlacement;
 
 /// What a key press means to the mailbox.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,21 +128,6 @@ impl KeyPress {
 }
 
 impl App {
-    /// Whether a draft fills the reading pane; a folded one leaves the reader
-    /// in view.
-    pub(super) fn draft_covers_reader(&self) -> bool {
-        self.compose
-            .as_ref()
-            .is_some_and(|compose| !compose.folded())
-            && self.settings.compose_placement == ComposePlacement::ReadingPane
-    }
-
-    /// A draft in its own window takes that window's Escape and Send keys;
-    /// the keys handled here come from the mailbox window.
-    pub(super) fn draft_in_window(&self) -> bool {
-        self.compose.is_some() && self.settings.compose_placement == ComposePlacement::Window
-    }
-
     pub(super) fn handle_key(&mut self, press: KeyPress) -> Effects {
         let Some(shortcut) = shortcut(press) else {
             return Effects::none();
@@ -205,42 +189,7 @@ impl App {
 
                 self.select_conversation(selected)
             }
-            // One layer at a time, starting with the most recent.
-            Shortcut::Dismiss => {
-                // The link prompt is a dialog over the whole window.
-                if self.pending_link.take().is_some() {
-                    return Effects::none();
-                }
-                // Leave settings before touching a message still open behind it.
-                if self.showing_settings {
-                    self.showing_settings = false;
-                    return Effects::none();
-                }
-                // In-flight messages cannot be dismissed, and a folded draft
-                // leaves the key to the reader it shows.
-                if self.draft_covers_reader()
-                    && let Some(compose) = self.compose().filter(|c| !c.in_flight())
-                {
-                    if compose.confirming_discard() {
-                        self.cancel_discard();
-                    } else {
-                        self.close_compose();
-                    }
-                    return Effects::none();
-                }
-                if let Some(mailbox) = self.active_mailbox() {
-                    if mailbox.clear_selection() {
-                        return Effects::none();
-                    }
-                    if mailbox.has_search_text() {
-                        mailbox.set_search_query(String::new());
-                    } else {
-                        mailbox.close_reader();
-                    }
-                }
-
-                Effects::none()
-            }
+            Shortcut::Dismiss => self.dismiss(),
             Shortcut::Refresh => self.refresh_mailbox(),
             Shortcut::Search => Effects::ui(UiEffect::FocusSearch),
             Shortcut::ToggleSettings => {
@@ -270,6 +219,44 @@ impl App {
                 Effects::none()
             }
         }
+    }
+
+    /// What Escape does: it takes away one layer at a time, starting with the
+    /// most recent.
+    fn dismiss(&mut self) -> Effects {
+        // The link prompt is a dialog over the whole window.
+        if self.pending_link.take().is_some() {
+            return Effects::none();
+        }
+        // Leave settings before touching a message still open behind it.
+        if self.showing_settings {
+            self.showing_settings = false;
+            return Effects::none();
+        }
+        // In-flight messages cannot be dismissed, and a folded draft
+        // leaves the key to the reader it shows.
+        if self.draft_covers_reader()
+            && let Some(compose) = self.compose().filter(|c| !c.in_flight())
+        {
+            if compose.confirming_discard() {
+                self.cancel_discard();
+            } else {
+                self.close_compose();
+            }
+            return Effects::none();
+        }
+        if let Some(mailbox) = self.active_mailbox() {
+            if mailbox.clear_selection() {
+                return Effects::none();
+            }
+            if mailbox.has_search_text() {
+                mailbox.set_search_query(String::new());
+            } else {
+                mailbox.close_reader();
+            }
+        }
+
+        Effects::none()
     }
 }
 
