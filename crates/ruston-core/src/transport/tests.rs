@@ -61,7 +61,9 @@ async fn settled_outlasts_a_request_cut_short_during_its_refresh() {
         .expect("settled once the refresh ended");
     let auth = c.auth.read().await;
     assert_eq!(
-        auth.refresh.as_ref().map(|t| t.expose_secret().to_owned()),
+        auth.tokens
+            .as_ref()
+            .map(|tokens| tokens.refresh.expose_secret().to_owned()),
         Some("new-ref".to_owned())
     );
 }
@@ -725,11 +727,10 @@ async fn an_expired_access_token_is_renewed_and_the_request_sent_again() {
     assert_eq!(decoded.value, 99);
     server.verify().await;
     let auth = http.auth.read().await;
-    let held =
-        |token: &Option<SecretString>| token.as_ref().map(|token| token.expose_secret().to_owned());
+    let held = auth.tokens.as_ref().unwrap();
     assert_eq!(
-        (held(&auth.access), held(&auth.refresh)),
-        (Some("new-acc".to_owned()), Some("new-ref".to_owned()))
+        (held.access.expose_secret(), held.refresh.expose_secret()),
+        ("new-acc", "new-ref")
     );
 }
 
@@ -767,8 +768,14 @@ async fn refresh_persistence_failure_reaches_the_request() {
         .unwrap_err();
     assert!(matches!(err, Error::Session(message) if message == "keyring unavailable"));
     let state = c.auth.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
 }
 
 #[tokio::test]
@@ -952,8 +959,14 @@ async fn a_request_cancelled_mid_refresh_keeps_the_rotated_tokens() {
     );
     let state = http.auth_state();
     let state = state.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
     server.verify().await;
 }
 
@@ -1128,8 +1141,14 @@ async fn concurrent_401s_refresh_shared_session_once() {
     assert_eq!(a.unwrap().value, 99);
     assert_eq!(b.unwrap().value, 99);
     let state = auth.read().await;
-    assert_eq!(state.access.as_ref().unwrap().expose_secret(), "new-acc");
-    assert_eq!(state.refresh.as_ref().unwrap().expose_secret(), "new-ref");
+    assert_eq!(
+        state.tokens.as_ref().unwrap().access.expose_secret(),
+        "new-acc"
+    );
+    assert_eq!(
+        state.tokens.as_ref().unwrap().refresh.expose_secret(),
+        "new-ref"
+    );
 }
 
 #[tokio::test]

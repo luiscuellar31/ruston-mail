@@ -262,12 +262,8 @@ pub struct Response {
 /// every one of them.
 #[derive(Debug, Clone)]
 pub struct AuthState {
-    /// The session's ID, sent as `x-pm-uid` once signed in.
-    pub uid: Option<String>,
-    /// The token each request presents once signed in.
-    pub access: Option<SecretString>,
-    /// The token that renews `access` when Proton refuses it.
-    pub refresh: Option<SecretString>,
+    /// The session's ID and its pair of tokens, once signed in.
+    pub tokens: Option<Tokens>,
     /// The client name and version every request gives in `x-pm-appversion`.
     pub app_version: String,
     /// The `User-Agent` every request sends, if one is set.
@@ -279,9 +275,7 @@ impl AuthState {
     pub fn unauthenticated(app_version: impl Into<String>) -> Self {
         let app_version = app_version.into();
         Self {
-            uid: None,
-            access: None,
-            refresh: None,
+            tokens: None,
             app_version,
             user_agent: None,
         }
@@ -432,9 +426,11 @@ impl HttpClient {
     /// tokens.
     pub async fn set_tokens(&self, uid: String, access: SecretString, refresh: SecretString) {
         let mut auth = self.auth.write().await;
-        auth.uid = Some(uid);
-        auth.access = Some(access);
-        auth.refresh = Some(refresh);
+        auth.tokens = Some(Tokens {
+            uid,
+            access,
+            refresh,
+        });
     }
 
     /// Sends `ua` as the `User-Agent` of every request.
@@ -518,22 +514,24 @@ impl HttpClient {
         // Keep the check, refresh request, and token replacement under the
         // shared state lock so concurrent 401s reuse a successful rotation.
         let mut a = self.auth.clone().write_owned().await;
-        if a.uid != sent_auth.uid
-            || !same_token(a.access.as_ref(), sent_auth.access.as_ref())
-            || !same_token(a.refresh.as_ref(), sent_auth.refresh.as_ref())
-        {
+        let unchanged = match (&a.tokens, &sent_auth.tokens) {
+            (Some(now), Some(sent)) => now.same_as(sent),
+            (now, sent) => now.is_none() && sent.is_none(),
+        };
+        if !unchanged {
             return Ok(Refresh::Reused);
         }
         let session_lock = match self.coordinate_with_saved_session(&mut a).await? {
             Coordination::Adopted => return Ok(Refresh::Reused),
             Coordination::Rotate(lock) => lock,
         };
-        let (Some(uid), Some(refresh)) = (a.uid.clone(), a.refresh.as_ref()) else {
+        let Some(tokens) = &a.tokens else {
             return Err(Error::Unauthorized);
         };
+        let uid = tokens.uid.clone();
         let body = serde_json::json!({
             "UID": uid,
-            "RefreshToken": refresh.expose_secret(),
+            "RefreshToken": tokens.refresh.expose_secret(),
             "ResponseType": "token",
             "GrantType": "refresh_token",
             "RedirectURI": "https://protonmail.ch",
@@ -575,17 +573,13 @@ impl HttpClient {
             .await
             .map_err(|e| Error::Session(format!("refresh lock task failed: {e}")))??;
         let saved = saved.ok_or(Error::Unauthorized)?;
-        if a.uid.as_deref() != Some(saved.uid.as_str()) {
+        let Some(used) = a.tokens.as_ref().filter(|used| used.uid == saved.uid) else {
             return Err(Error::Unauthorized);
-        }
+        };
         // A pair this client rotated but could not save is newer than the
         // saved one, which then must not replace it.
-        if !self.refresh_unsaved.load(Ordering::Acquire)
-            && (!same_token(a.access.as_ref(), Some(&saved.access))
-                || !same_token(a.refresh.as_ref(), Some(&saved.refresh)))
-        {
-            a.access = Some(saved.access);
-            a.refresh = Some(saved.refresh);
+        if !self.refresh_unsaved.load(Ordering::Acquire) && !used.same_as(&saved) {
+            a.tokens = Some(saved);
             return Ok(Coordination::Adopted);
         }
         Ok(Coordination::Rotate(Some(lock)))
@@ -599,11 +593,6 @@ enum Coordination {
     /// The pair in use is the newest: it is rotated, under the profile's
     /// lock when sessions are saved.
     Rotate(Option<File>),
-}
-
-/// Whether two tokens, either of which may be missing, are the same.
-fn same_token(a: Option<&SecretString>, b: Option<&SecretString>) -> bool {
-    a.map(ExposeSecret::expose_secret) == b.map(ExposeSecret::expose_secret)
 }
 
 /// How [`HttpClient::refresh_tokens`] replaced the tokens a refused request
@@ -659,8 +648,7 @@ impl Rotation {
             access: SecretString::from(parsed.access_token),
             refresh: SecretString::from(parsed.refresh_token),
         };
-        a.access = Some(tokens.access.clone());
-        a.refresh = Some(tokens.refresh.clone());
+        a.tokens = Some(tokens.clone());
         if self.on_refresh.is_some() {
             self.refresh_unsaved.store(true, Ordering::Release);
         }

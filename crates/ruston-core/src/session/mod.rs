@@ -53,7 +53,7 @@ struct LoadedTokens {
 }
 
 /// A session's ID and the pair of tokens its requests carry.
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct Tokens {
     /// The session's ID.
     pub uid: String,
@@ -61,6 +61,15 @@ pub struct Tokens {
     pub access: SecretString,
     /// The token that renews `access`.
     pub refresh: SecretString,
+}
+
+impl Tokens {
+    /// Whether these are `other`'s: the same session with the same pair.
+    pub fn same_as(&self, other: &Tokens) -> bool {
+        self.uid == other.uid
+            && self.access.expose_secret() == other.access.expose_secret()
+            && self.refresh.expose_secret() == other.refresh.expose_secret()
+    }
 }
 
 /// What a session's file holds: nothing secret.
