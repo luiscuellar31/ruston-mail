@@ -4,8 +4,9 @@ use eframe::egui::text::LayoutJob;
 use eframe::egui::{self, Align, Color32, FontId, Layout, Sense, Stroke};
 use jiff::tz::TimeZone;
 
-use super::mailbox::{detail, folder_icon};
-use super::{UiState, theme, widgets};
+use super::mailbox::folder_icon;
+use super::widgets::{self, detail};
+use super::{UiState, theme};
 use crate::app::{
     AnswerKind, ConversationReader, InlineImage, Mailbox, Message, PendingLink, ReaderState,
 };

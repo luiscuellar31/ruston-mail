@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use eframe::egui::{self, Align, Layout};
 
 use super::settings::ZoomStep;
-use super::widgets::{self, Emphasis};
-use super::{identity, mailbox::detail, reader, theme};
+use super::widgets::{self, Emphasis, detail};
+use super::{identity, reader, theme};
 use crate::app::{AnswerKind, Answering, Compose, ComposeField, ComposeId, Message, Sending};
 use crate::mail::SendError;
 use crate::settings::MIN_WINDOW_SIZE;

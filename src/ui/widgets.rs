@@ -406,5 +406,11 @@ pub fn confirmation_with<T: Clone>(
     decision
 }
 
+/// A line of small, muted text beside what it tells about: a count, a size,
+/// a scope.
+pub fn detail(ui: &mut egui::Ui, text: &str) {
+    ui.label(egui::RichText::new(text).small().color(colors(ui).muted));
+}
+
 #[cfg(test)]
 mod tests;

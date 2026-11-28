@@ -593,7 +593,7 @@ fn sidebar_content(
             .collect();
         if !places.is_empty() {
             ui.add_space(14.0);
-            detail(ui, heading);
+            widgets::detail(ui, heading);
             for place in places {
                 let look = app.place_look(&place);
                 if look.depth == 0 {
@@ -1316,7 +1316,7 @@ fn conversation_pane(
         }),
         (_, true) if mailbox.has_search_text() => empty_state(ui, |ui| {
             state_message(ui, "No matches in the conversations loaded so far.", muted);
-            detail(ui, "Press Enter to search all of your mail.");
+            widgets::detail(ui, "Press Enter to search all of your mail.");
             load_more(ui, mailbox, messages);
         }),
         (_, true) => empty_state(ui, |ui| {
@@ -2370,14 +2370,6 @@ fn load_more(ui: &mut egui::Ui, mailbox: &Mailbox, messages: &mut Vec<Message>) 
             messages.push(Message::LoadMoreConversations);
         }
     }
-}
-
-pub(super) fn detail(ui: &mut egui::Ui, text: &str) {
-    ui.label(
-        egui::RichText::new(text)
-            .small()
-            .color(theme::colors(ui).muted),
-    );
 }
 
 fn search_scope_label(results: Option<&str>, on_device: bool, loaded: usize) -> String {
