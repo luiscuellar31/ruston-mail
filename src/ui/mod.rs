@@ -1263,19 +1263,22 @@ fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
         .filter(|(pressed, _)| command && input.key_pressed(*pressed))
         .map(|&(_, key)| KeyPress::with_command(key))
         .collect();
-    // Outside a text field, which takes it for its text, Command and A choose
-    // every conversation. Read from the key's own event: the macOS Edit menu's
-    // Select All sends it when clicked, with no key held.
-    let select_all = input.events.iter().any(|event| {
-        matches!(event, egui::Event::Key {
-            key: egui::Key::A,
-            pressed: true,
-            modifiers,
-            ..
-        } if modifiers.command && !modifiers.alt && !modifiers.shift)
-    });
-    if select_all && !focus.typing {
-        presses.push(KeyPress::with_command(Key::Character('a')));
+    // Outside a text field, which takes them for its text, Command and A
+    // choose every conversation and Command and Z take back a move. Read from
+    // the key's own event: the macOS Edit menu sends it when its item is
+    // clicked, with no key held.
+    for (edit, letter) in [(egui::Key::A, 'a'), (egui::Key::Z, 'z')] {
+        let asked = input.events.iter().any(|event| {
+            matches!(event, egui::Event::Key {
+                key,
+                pressed: true,
+                modifiers,
+                ..
+            } if *key == edit && modifiers.command && !modifiers.alt && !modifiers.shift)
+        });
+        if asked && !focus.typing {
+            presses.push(KeyPress::with_command(Key::Character(letter)));
+        }
     }
     if !focus.menu_open && input.key_pressed(egui::Key::Escape) {
         presses.push(KeyPress::plain(Key::Escape));
@@ -1306,15 +1309,17 @@ fn key_presses(input: &egui::InputState, focus: KeyFocus) -> Vec<KeyPress> {
         presses.push(KeyPress::with_shift(Key::ArrowDown));
     } else if shift_only && unclaimed(egui::Key::ArrowUp) {
         presses.push(KeyPress::with_shift(Key::ArrowUp));
-    } else if plain && !focus.typing {
-        let letter = input.events.iter().find_map(|event| match event {
-            egui::Event::Text(text) => text
-                .chars()
-                .next()
-                .filter(|first| matches!(first, 'j' | 'k')),
+    } else if !command && !input.modifiers.alt && !focus.typing && !focus.menu_open {
+        // What was typed, so that a symbol is its own key on every layout;
+        // Shift counts with a letter alone.
+        let typed = input.events.iter().find_map(|event| match event {
+            egui::Event::Text(text) => text.chars().next(),
             _ => None,
         });
-        presses.extend(letter.map(|letter| KeyPress::plain(Key::Character(letter))));
+        presses.extend(typed.map(|typed| KeyPress {
+            shift: typed.is_alphabetic() && input.modifiers.shift,
+            ..KeyPress::plain(Key::Character(typed.to_ascii_lowercase()))
+        }));
     } else if !focus.wants_keys && command && !input.modifiers.alt && !input.modifiers.shift {
         if input.key_pressed(egui::Key::Backspace) {
             presses.push(KeyPress::with_command(Key::Backspace));

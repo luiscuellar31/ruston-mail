@@ -740,6 +740,54 @@ fn ctrl_alt_types_on_windows_instead_of_taking_ctrl_shortcuts() {
 }
 
 #[test]
+fn a_typed_key_is_a_shortcut_unless_a_field_has_the_keyboard() {
+    let context = egui::Context::default();
+    let mut desktop = DesktopApp::with_context(&context, true, Settings::default());
+    theme::install(&context);
+    let mut field = String::new();
+    let mut frame = |desktop: &mut DesktopApp, typed: &str, shift: bool, in_field: bool| {
+        let modifiers = egui::Modifiers {
+            shift,
+            ..Default::default()
+        };
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::ModifiersChanged(modifiers),
+                egui::Event::Text(typed.to_owned()),
+            ],
+            ..Default::default()
+        };
+        context
+            .run_ui(raw, |ui| {
+                let edit = ui.text_edit_singleline(&mut field);
+                if in_field {
+                    edit.request_focus();
+                } else {
+                    edit.surrender_focus();
+                }
+                desktop.keyboard_shortcuts(ui.ctx());
+            })
+            .drop_without_applying_deltas();
+    };
+
+    frame(&mut desktop, "", false, true);
+    frame(&mut desktop, "n", false, true);
+    assert!(desktop.app.compose().is_none(), "typed into the field");
+    frame(&mut desktop, "", false, false);
+
+    // Shift counts with a letter, and not with a symbol it types.
+    frame(&mut desktop, "U", true, false);
+    assert_eq!(
+        desktop.app.mailbox().unwrap().filter(),
+        crate::mail::ListFilter::Unread
+    );
+    frame(&mut desktop, "n", false, false);
+    assert!(desktop.app.compose().is_some());
+    frame(&mut desktop, "?", true, false);
+    assert!(desktop.app.showing_settings());
+}
+
+#[test]
 fn f9_folds_the_sidebar_where_no_menu_does() {
     let context = egui::Context::default();
     let mut desktop = DesktopApp::with_context(&context, true, Settings::default());

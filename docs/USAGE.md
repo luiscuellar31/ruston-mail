@@ -608,17 +608,31 @@ always draw with OpenGL.
 | `Enter` | Open the selected conversation; search all mail from the search field |
 | `Esc` | Close the open menu, or else the topmost view or prompt |
 | `Cmd`/`Ctrl` + `R` | Refresh the folder |
-| `Cmd`/`Ctrl` + `F` | Focus the search field |
+| `/`, or `Cmd`/`Ctrl` + `F` | Focus the search field |
 | `Cmd`/`Ctrl` + `,` | Open Settings on macOS; open or close Settings on Linux/Windows |
-| `Cmd`/`Ctrl` + `N` | Write a new message |
+| `n`, or `Cmd`/`Ctrl` + `N` | Write a new message |
 | `Cmd`/`Ctrl` + `Enter` | Send the message being written |
+| `r` | Mark as read; once it is read, reply to the open conversation's newest message |
+| `Shift` + `R`, `Shift` + `F` | Reply to all, or forward, the open conversation's newest message |
+| `u` | Mark as unread |
+| `*` | Add the star, or remove it when every conversation chosen has it |
+| `i`, `a`, `s` | Move to Inbox, Archive or Spam |
 | `Shift` + `Down` or `Up` | Choose the next or previous conversation too |
 | `Cmd`/`Ctrl` + `A` | Choose every conversation listed, outside a text field |
-| `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move the selected conversation, or all those chosen, to Trash |
+| `t`, `Delete`, or `Cmd`/`Ctrl` + `Backspace` | Move to Trash |
+| `Cmd`/`Ctrl` + `Z` | Undo a move, while the list still offers to |
+| `Shift` + `U`, `Shift` + `A` | List the unread conversations alone, or all of them |
+| `?` | Show these keys, in Settings |
 | `F9` on Linux/Windows, `Ctrl` + `Cmd` + `S` on macOS | Fold the sidebar into a strip of icons, or unfold it |
 | `Cmd`/`Ctrl` + `+` (or `=`), `-`, `0` | Zoom in, zoom out, or back to 100%, in the interface scale's steps |
 
-Shortcuts do not run while a text field is using the same key. When `Tab` has
+The single keys are Proton Mail's own, and those that act on mail act on the
+selected conversation or on all those chosen. Ruston Mail does not take Proton's
+`g` keys for folders, `m`, `l`, `x` or its command panel, and `Cmd`/`Ctrl` +
+`Backspace` moves to Trash here, where Proton deletes for good.
+
+Shortcuts do not run while a text field is using the same key, and the single
+keys wait while a menu is open. When `Tab` has
 put focus on a button or a row, which shows a violet ring, the arrows move that
 focus and `Enter` presses it; `j` and `k` still move through the list. On
 Windows, `Ctrl` + `Alt` with a key runs no `Ctrl` shortcut, since Windows types

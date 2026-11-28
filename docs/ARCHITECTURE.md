@@ -207,6 +207,11 @@ CLI:     parser -> dispatch -> command handler -> ruston-core -> Proton API
   owning the window, and the keyboard shortcuts, the macOS menu, dropped files
   and activations all wait for it: the send key in the main window cannot send
   a draft whose own window is still choosing files.
+  `key_presses` reports what was pressed and `app/keys.rs` alone says what a
+  key means: the arrows and the Command or Ctrl keys, and Proton Mail's single
+  keys, which the terminal interface takes too. A single key is read from the
+  text typed, so a symbol is the same key on every keyboard layout, and only
+  while no text field has the keyboard and no menu is open.
 - [`src/app/`](../src/app/) owns application state and decisions. `App::update`
   consumes messages and returns `Effects`; [`effect.rs`](../src/app/effect.rs)
   defines the work requested by the state machine. Its dispatch only names

@@ -469,7 +469,7 @@ fn keyboard(ui: &mut egui::Ui) {
     section(ui, title(SettingsSection::Keyboard), |ui| {
         description(
             ui,
-            "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type.",
+            "A key a focused field takes never reaches the mailbox, so these stay out of the way while you type. The single keys are Proton Mail's own.",
         );
         ui.add_space(6.0);
         let width = keys_width(ui);
@@ -706,7 +706,7 @@ pub(super) fn zoom_step(current: f32, step: ZoomStep) -> f32 {
 
 /// What the mailbox already answers to. Listed here because a shortcut no one
 /// can find is a shortcut no one uses; the keys themselves live in `ui::mod`.
-const SHORTCUTS: [(&str, &str); 12] = [
+const SHORTCUTS: [(&str, &str); 20] = [
     ("j  /  Down", "Open the next conversation"),
     ("k  /  Up", "Open the previous one"),
     (
@@ -722,23 +722,39 @@ const SHORTCUTS: [(&str, &str); 12] = [
     (COMMAND_COMMA, "Open or close Settings"),
     (COMMAND_N, "Write a new message"),
     (COMMAND_ENTER, "Send the message being written"),
-    (COMMAND_TRASH, "Move selected conversation to Trash"),
+    (
+        "r",
+        "Mark as read, or reply to the open conversation once it is read",
+    ),
+    ("Shift + R  /  Shift + F", "Reply to all, or forward"),
+    ("u", "Mark as unread"),
+    ("*", "Add the star, or remove it"),
+    ("i  /  a  /  s", "Move to Inbox, Archive or Spam"),
+    (COMMAND_TRASH, "Move to Trash"),
+    (COMMAND_Z, "Undo a move, while the list offers to"),
+    (
+        "Shift + U  /  Shift + A",
+        "List the unread conversations alone, or all of them",
+    ),
     (FOLD_SIDEBAR, "Fold or unfold the sidebar"),
     (COMMAND_ZOOM, "Zoom in, zoom out, or back to 100%"),
+    ("?", "Show these keys"),
 ];
 
 #[cfg(target_os = "macos")]
 const COMMAND_R: &str = "Cmd + R";
 #[cfg(target_os = "macos")]
-const COMMAND_F: &str = "Cmd + F";
+const COMMAND_F: &str = "Slash  /  Cmd + F";
 #[cfg(target_os = "macos")]
 const COMMAND_COMMA: &str = "Cmd + ,";
 #[cfg(target_os = "macos")]
-const COMMAND_N: &str = "Cmd + N";
+const COMMAND_N: &str = "n  /  Cmd + N";
 #[cfg(target_os = "macos")]
 const COMMAND_ENTER: &str = "Cmd + Enter";
 #[cfg(target_os = "macos")]
-const COMMAND_TRASH: &str = "Cmd + Backspace";
+const COMMAND_TRASH: &str = "t  /  Cmd + Backspace";
+#[cfg(target_os = "macos")]
+const COMMAND_Z: &str = "Cmd + Z";
 #[cfg(target_os = "macos")]
 const COMMAND_ZOOM: &str = "Cmd + Plus / Minus / 0";
 #[cfg(target_os = "macos")]
@@ -747,15 +763,17 @@ const FOLD_SIDEBAR: &str = "Ctrl + Cmd + S";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_R: &str = "Ctrl + R";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_F: &str = "Ctrl + F";
+const COMMAND_F: &str = "Slash  /  Ctrl + F";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_COMMA: &str = "Ctrl + ,";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_N: &str = "Ctrl + N";
+const COMMAND_N: &str = "n  /  Ctrl + N";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_ENTER: &str = "Ctrl + Enter";
 #[cfg(not(target_os = "macos"))]
-const COMMAND_TRASH: &str = "Delete / Ctrl + Backspace";
+const COMMAND_TRASH: &str = "t  /  Delete  /  Ctrl + Backspace";
+#[cfg(not(target_os = "macos"))]
+const COMMAND_Z: &str = "Ctrl + Z";
 #[cfg(not(target_os = "macos"))]
 const COMMAND_ZOOM: &str = "Ctrl + Plus / Minus / 0";
 #[cfg(not(target_os = "macos"))]

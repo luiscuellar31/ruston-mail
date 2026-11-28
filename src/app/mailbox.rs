@@ -1059,15 +1059,17 @@ impl Mailbox {
     /// The rows an action acts on: those chosen together, in the order of the
     /// list, or else the open one.
     pub fn rows_acted_on(&self) -> Vec<String> {
+        let rows = self.summaries_acted_on();
+        rows.into_iter().map(|row| row.id.clone()).collect()
+    }
+
+    /// Those rows as the list shows them.
+    pub(super) fn summaries_acted_on(&self) -> Vec<&ConversationSummary> {
         let chosen = self.selected_rows();
         if chosen.is_empty() {
-            return self
-                .selected_summary()
-                .map(|row| row.id.clone())
-                .into_iter()
-                .collect();
+            return self.selected_summary().into_iter().collect();
         }
-        chosen.into_iter().map(|row| row.id.clone()).collect()
+        chosen
     }
 
     /// Adds a row to those chosen, the open one counted among them, or takes
